@@ -1,0 +1,12 @@
+# Copy this provider block into ~/.codex/config.toml.
+# The proxy exposes the OpenAI Responses API; no Ollama or LM Studio is used.
+
+model_provider = "deepfree"
+model = "deepseek-chat"
+model_catalog_json = "C:/Users/Damas/.codex/models.json"
+
+[model_providers.deepfree]
+name = "DeepFree local proxy"
+base_url = "http://127.0.0.1:8788/v1"
+wire_api = "responses"
+requires_openai_auth = false
