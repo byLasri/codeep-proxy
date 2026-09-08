@@ -6,6 +6,8 @@ interface Env {
   DEEPSEEK_AUTHORIZATION?: string
   DEEPSEEK_COOKIE?: string
   AUTH_KV: KVNamespace
+  CAPTURE_LOG?: string
+  DEBUG_BUCKET?: R2Bucket
 }
 
 interface ChatRequest {
@@ -475,6 +477,38 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Capture request to R2 if enabled
+    const captureLog = env.CAPTURE_LOG === 'true'
+    if (captureLog && env.DEBUG_BUCKET) {
+      try {
+        // Clone request to read body without consuming original
+        const requestForLog = request.clone()
+        let body = ''
+        try {
+          const contentType = requestForLog.headers.get('content-type') ?? ''
+          if (contentType.includes('application/json')) {
+            body = await requestForLog.text()
+          } else {
+            body = await requestForLog.text()
+          }
+        } catch (e) {
+          body = `[Error reading body: ${e}]`
+        }
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          method: request.method,
+          url: request.url,
+          headers: Object.fromEntries(request.headers.entries()),
+          body: body,
+        }
+        const key = `temp-debug/${Date.now()}-${crypto.randomUUID()}.json`
+        await env.DEBUG_BUCKET.put(key, JSON.stringify(logEntry, null, 2))
+      } catch (e) {
+        // Fail silently to not disrupt normal operation
+        console.warn('Failed to capture log to R2:', e)
+      }
+    }
+
     const pathname = new URL(request.url).pathname;
     if (pathname === '/v1/auth') {
       if (request.method === 'POST') {

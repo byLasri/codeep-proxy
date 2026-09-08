@@ -4,7 +4,13 @@ compatibility_date = "2026-09-07"
 
 [vars]
 DEEPSEEK_ORIGIN = "https://chat.deepseek.com"
+# Set CAPTURE_LOG to "true" to enable request logging to R2
+CAPTURE_LOG = "true"
 
 [[kv_namespaces]]
 binding = "AUTH_KV"
 id = "local-auth"
+
+[[r2_buckets]]
+binding = "DEBUG_BUCKET"
+bucket_name = "debug-logs"
