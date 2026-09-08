@@ -95,7 +95,46 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     }),
   })
   if (!response.ok) return json({ error: { message: `DeepSeek completion failed (${response.status})` } }, response.status)
-  return response
+  if (!response.body) return json({ error: { message: 'DeepSeek returned no response stream' } }, 502)
+
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ''
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true })
+      const lines = pending.split(/\r?\n/)
+      pending = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line === 'event: close') {
+          controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          continue
+        }
+        if (!line.startsWith('data:')) continue
+        try {
+          const value = JSON.parse(line.slice(5).trim()).v
+          if (typeof value === 'string') {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: value }, finish_reason: null }] })}\n\n`))
+          }
+        } catch {
+          // Ignore DeepSeek metadata events that do not contain text.
+        }
+      }
+    },
+    flush(controller) {
+      if (pending.startsWith('event: close')) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+      }
+    },
+  })
+  response.body.pipeTo(transform.writable)
+  return new Response(transform.readable, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  })
 }
 
 export default {
