@@ -1,7 +1,7 @@
 {
   "capture": {
     "type": "proxy_to_deepseek",
-    "timestamp": "2026-09-09T13:42:36.725Z",
+    "timestamp": "2026-09-09T14:56:23.976Z",
     "source": "proxy",
     "destination": "deepseek"
   },
@@ -19,14 +19,14 @@
     "x-client-platform": "web",
     "x-client-timezone-offset": "420",
     "x-client-version": "2.4.0",
-    "x-ds-pow-response": "eyJhbGdvcml0aG0iOiJEZWVwU2Vla0hhc2hWMSIsImNoYWxsZW5nZSI6IjllYjY2MWFhNWY1NjBmMDA4OTgwYWMwNjVjMjU4MTdhOWI0MDA0MTU4MzBmNGYxMjM4Mzk2NGJlYjU4MTFiNzQiLCJzYWx0IjoiYjU0MzRhNGI0Y2ZlZDk2NGIyNzEiLCJzaWduYXR1cmUiOiJiNzY2ZDIzODM2MzJkM2FlYzliZWNmYmVhNmIxNDRmN2E2Y2U0OTE4MjA4Zjg1ZDY0OWExODE3ZTZjMWY5MmQ3IiwiZGlmZmljdWx0eSI6MTQ0MDAwLCJleHBpcmVfYXQiOjE3ODg5NjE2NTM1ODIsImV4cGlyZV9hZnRlciI6MzAwMDAwLCJ0YXJnZXRfcGF0aCI6Ii9hcGkvdjAvY2hhdC9jb21wbGV0aW9uIiwiYW5zd2VyIjo0MTc4M30="
+    "x-ds-pow-response": "eyJhbGdvcml0aG0iOiJEZWVwU2Vla0hhc2hWMSIsImNoYWxsZW5nZSI6ImM5ZmMzODY2M2U4MDQ1MTYxNjdmNDA3NGQ4NjA5Y2I0NmUzYTdiMGU2NmY5MTBhNzdlZTdjZjFlM2EzNTQ0MzAiLCJzYWx0IjoiNWE2NzQ5NjI5ZjIwYTlhOTBlOGMiLCJzaWduYXR1cmUiOiI5YTM5NTcwMzJlMjUwMTVjMDQ5NTZjMTZlMzYwYWJhYWQ3YmUzNzk1YjRhOTkwNjllMmJlYzMwZGExYjZhNjQzIiwiZGlmZmljdWx0eSI6MTQ0MDAwLCJleHBpcmVfYXQiOjE3ODg5NjYwODEyNzgsImV4cGlyZV9hZnRlciI6MzAwMDAwLCJ0YXJnZXRfcGF0aCI6Ii9hcGkvdjAvY2hhdC9jb21wbGV0aW9uIiwiYW5zd2VyIjo3NzAxMn0="
   },
-  "rawBody": "{\"chat_session_id\":\"6a9a3ffd-8e3a-4427-9468-9650b5e0b478\",\"parent_message_id\":null,\"model_type\":\"default\",\"prompt\":\"hello who are you ?\",\"ref_file_ids\":[],\"thinking_enabled\":false,\"search_enabled\":false,\"action\":null,\"preempt\":false}",
+  "rawBody": "{\"chat_session_id\":\"42c3b400-6afa-4314-a8b9-56f42922079c\",\"parent_message_id\":\"42c3b400-6afa-4314-a8b9-56f42922079c:null\",\"model_type\":\"default\",\"prompt\":\"hello\",\"ref_file_ids\":[],\"thinking_enabled\":false,\"search_enabled\":false,\"action\":null,\"preempt\":false}",
   "parsedBody": {
-    "chat_session_id": "6a9a3ffd-8e3a-4427-9468-9650b5e0b478",
-    "parent_message_id": null,
+    "chat_session_id": "42c3b400-6afa-4314-a8b9-56f42922079c",
+    "parent_message_id": "42c3b400-6afa-4314-a8b9-56f42922079c:null",
     "model_type": "default",
-    "prompt": "hello who are you ?",
+    "prompt": "hello",
     "ref_file_ids": [],
     "thinking_enabled": false,
     "search_enabled": false,

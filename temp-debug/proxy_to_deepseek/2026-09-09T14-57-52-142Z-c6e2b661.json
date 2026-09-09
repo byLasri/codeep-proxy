@@ -1,7 +1,7 @@
 {
   "capture": {
     "type": "proxy_to_deepseek",
-    "timestamp": "2026-09-09T13:42:42.460Z",
+    "timestamp": "2026-09-09T14:57:52.142Z",
     "source": "proxy",
     "destination": "deepseek"
   },
@@ -19,14 +19,14 @@
     "x-client-platform": "web",
     "x-client-timezone-offset": "420",
     "x-client-version": "2.4.0",
-    "x-ds-pow-response": "eyJhbGdvcml0aG0iOiJEZWVwU2Vla0hhc2hWMSIsImNoYWxsZW5nZSI6IjNhNTYxYmNmYzZlOWIyZGZhZmM4M2EzOTFhNjU4YzQ0NjA0ZjkzOWMyNmQ3MTQ2ZjIxM2RjZjkyMjlmNjY2N2QiLCJzYWx0IjoiZWUxYjExZThlNWYzMDVmNTM1MDAiLCJzaWduYXR1cmUiOiJjNzk5YTRmMDhmYWEzYjdiMTY5MDhjOTc4MzZlODVkYWU2NWQwZGU3YjM1M2ExMWU5NTM3OWJlMmFiMjg0MDAxIiwiZGlmZmljdWx0eSI6MTQ0MDAwLCJleHBpcmVfYXQiOjE3ODg5NjE2NjAyOTUsImV4cGlyZV9hZnRlciI6MzAwMDAwLCJ0YXJnZXRfcGF0aCI6Ii9hcGkvdjAvY2hhdC9jb21wbGV0aW9uIiwiYW5zd2VyIjo2NzAyNH0="
+    "x-ds-pow-response": "eyJhbGdvcml0aG0iOiJEZWVwU2Vla0hhc2hWMSIsImNoYWxsZW5nZSI6IjI5ZjJjODY1MTgyMjdhODgzMjI4MGRiMDhhNWNhNjQzMGNmMGJmZTY0NWUxNTZhMjFiYmRmNmRmN2UyMmVmN2UiLCJzYWx0IjoiMGZmZjFkOTBjM2UzNDNhMzQ2NzUiLCJzaWduYXR1cmUiOiI1OWFjNGRkOGE3YWY0YjdhMmFiODQ2ZDc4Y2M2MzcwYzVkZWQ0ZGJlNmM2ZGY4YzgwNWYzYzBmMTI5MGI1MDQ5IiwiZGlmZmljdWx0eSI6MTQ0MDAwLCJleHBpcmVfYXQiOjE3ODg5NjYxNjQ3NTMsImV4cGlyZV9hZnRlciI6MzAwMDAwLCJ0YXJnZXRfcGF0aCI6Ii9hcGkvdjAvY2hhdC9jb21wbGV0aW9uIiwiYW5zd2VyIjoxMjE3MDB9"
   },
-  "rawBody": "{\"chat_session_id\":\"9d82116e-01e5-46a4-8fbb-2fa58d78be95\",\"parent_message_id\":null,\"model_type\":\"default\",\"prompt\":\"hello who are you ?\",\"ref_file_ids\":[],\"thinking_enabled\":false,\"search_enabled\":false,\"action\":null,\"preempt\":false}",
+  "rawBody": "{\"chat_session_id\":\"f897d41c-a734-42f6-ae89-d06a437e71c8\",\"parent_message_id\":\"f897d41c-a734-42f6-ae89-d06a437e71c8:null\",\"model_type\":\"expert\",\"prompt\":\"hello\",\"ref_file_ids\":[],\"thinking_enabled\":false,\"search_enabled\":false,\"action\":null,\"preempt\":false}",
   "parsedBody": {
-    "chat_session_id": "9d82116e-01e5-46a4-8fbb-2fa58d78be95",
-    "parent_message_id": null,
-    "model_type": "default",
-    "prompt": "hello who are you ?",
+    "chat_session_id": "f897d41c-a734-42f6-ae89-d06a437e71c8",
+    "parent_message_id": "f897d41c-a734-42f6-ae89-d06a437e71c8:null",
+    "model_type": "expert",
+    "prompt": "hello",
     "ref_file_ids": [],
     "thinking_enabled": false,
     "search_enabled": false,

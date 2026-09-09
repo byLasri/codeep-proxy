@@ -1,0 +1,30 @@
+{
+  "capture": {
+    "type": "proxy_to_codex",
+    "timestamp": "2026-09-09T14:56:26.062Z",
+    "source": "proxy",
+    "destination": "codex"
+  },
+  "status": 200,
+  "statusText": "OK",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "rawBody": "{\"id\":\"chatcmpl_c6e86870-a672-4f22-8168-74bc4ebe4e3c\",\"object\":\"chat.completion\",\"created\":1788965786,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":\"stop\"}]}",
+  "parsedBody": {
+    "id": "chatcmpl_c6e86870-a672-4f22-8168-74bc4ebe4e3c",
+    "object": "chat.completion",
+    "created": 1788965786,
+    "model": "deepseek-v4-flash",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+}

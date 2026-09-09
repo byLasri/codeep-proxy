@@ -1,0 +1,26 @@
+{
+  "capture": {
+    "type": "deepseek_to_proxy",
+    "timestamp": "2026-09-09T14:57:52.704Z",
+    "source": "deepseek",
+    "destination": "proxy"
+  },
+  "status": 422,
+  "statusText": "Unprocessable Entity",
+  "headers": {
+    "connection": "keep-alive",
+    "content-length": "176",
+    "content-type": "application/octet-stream",
+    "date": "Wed, 09 Sep 2026 14:57:52 GMT",
+    "server": "elb",
+    "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+    "via": "1.1 0bfc6b87e9420bc059d4e18edfb7571c.cloudfront.net (CloudFront)",
+    "x-amz-cf-id": "a5kFk_H8SvT5zwaa1XB9lkKiOt-bQTEmG3-90t-r8rZS-TKB4yUaNQ==",
+    "x-amz-cf-pop": "MAD56-P4",
+    "x-cache": "Error from cloudfront",
+    "x-content-type-options": "nosniff",
+    "x-ds-trace-id": "0da9ff616336f8152da1ba3c0293af8e"
+  },
+  "rawBody": "Failed to deserialize the JSON body into the target type: parent_message_id: invalid type: string \"c6a25f50-426d-4f1d-92c4-bc76f6e20fc0:null\", expected u32 at line 1 column 121",
+  "parsedBody": "Failed to deserialize the JSON body into the target type: parent_message_id: invalid type: string \"c6a25f50-426d-4f1d-92c4-bc76f6e20fc0:null\", expected u32 at line 1 column 121"
+}

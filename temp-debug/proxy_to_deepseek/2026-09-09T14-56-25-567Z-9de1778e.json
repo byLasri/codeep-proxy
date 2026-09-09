@@ -1,0 +1,36 @@
+{
+  "capture": {
+    "type": "proxy_to_deepseek",
+    "timestamp": "2026-09-09T14:56:25.567Z",
+    "source": "proxy",
+    "destination": "deepseek"
+  },
+  "url": "https://chat.deepseek.com/api/v0/chat/completion",
+  "method": "POST",
+  "headers": {
+    "accept": "*/*",
+    "authorization": "Bearer oXY3Ai7vDOWY3qO7NZ2F1JWNeF3Um+AdLJSfB0G3X8xjZntED1rxpa5CpYunNm+x",
+    "content-type": "application/json",
+    "cookie": "ds_session_id=b708f2727a8c4e30b290798c325ceaf3; aws-waf-token=c36d69a2-691f-4a19-8c1e-40aa16b740ba:CgoAqfghzpInAAAA:fSEZHgkYQ3B3fy1D90+dpVefPeIp0pPuxI8u48pa1chfRCY43szXggQXWIjwRbYpTZAD8WPjPruzrRLFyUKxxehsIebyawl4Rc1ZIjKXt6Ljv11kPygeibLA0Gw8a2cP3e5/kQ1bGkK63SRKLH+WOzqUgz5WmGyNhvMACnkeUsQ7LofFBG/Tq8rO7f+INav8RFtx/nKwbTDhdfWcS+GwHlUEuqih6SFn2jI1CF3v2o33LZZyV/icUORnUGcginOS8EsBGSFA; smidV2=20260907215413bb46193f23514facab1fd8143ebb928f00798499de894b560; .thumbcache_6b2e5483f9d858d7c661c5e276b6a6ae=HVSETnMwICmoBi5cxhCLe2iApd5iTupyGezPyGNqfbkqC3md5/CYnRIUoPLZSxULSubla1vBsS5TmbNKue4q+g%3D%3D",
+    "origin": "https://chat.deepseek.com",
+    "referer": "https://chat.deepseek.com/",
+    "x-client-bundle-id": "com.deepseek.chat",
+    "x-client-locale": "en_US",
+    "x-client-platform": "web",
+    "x-client-timezone-offset": "420",
+    "x-client-version": "2.4.0",
+    "x-ds-pow-response": "eyJhbGdvcml0aG0iOiJEZWVwU2Vla0hhc2hWMSIsImNoYWxsZW5nZSI6IjRmMzNlOWVmZWY3YTRiNTkxMTM5YmVlZDU5NzI2MGU4ZDA2MzI1YTVmZGY4NjFhMWIzNDU1MDg2NzUzM2FhODIiLCJzYWx0IjoiOWFhZmM3MDAyYmVmYjAxNzU2YzEiLCJzaWduYXR1cmUiOiIxNWM3NjdiNjBkOWNiZThiZDcyNzkyYWUwMjk0NDJjMzViZGM2NTgxNmU0ZjEzYmUzM2RkNzFjMzllZTRkYjk0IiwiZGlmZmljdWx0eSI6MTQ0MDAwLCJleHBpcmVfYXQiOjE3ODg5NjYwODEyODEsImV4cGlyZV9hZnRlciI6MzAwMDAwLCJ0YXJnZXRfcGF0aCI6Ii9hcGkvdjAvY2hhdC9jb21wbGV0aW9uIiwiYW5zd2VyIjo1MTE3NH0="
+  },
+  "rawBody": "{\"chat_session_id\":\"5924ef40-e004-4d3f-8554-2f1817b0298b\",\"parent_message_id\":\"5924ef40-e004-4d3f-8554-2f1817b0298b:null\",\"model_type\":\"default\",\"prompt\":\"hello\",\"ref_file_ids\":[],\"thinking_enabled\":false,\"search_enabled\":false,\"action\":null,\"preempt\":false}",
+  "parsedBody": {
+    "chat_session_id": "5924ef40-e004-4d3f-8554-2f1817b0298b",
+    "parent_message_id": "5924ef40-e004-4d3f-8554-2f1817b0298b:null",
+    "model_type": "default",
+    "prompt": "hello",
+    "ref_file_ids": [],
+    "thinking_enabled": false,
+    "search_enabled": false,
+    "action": null,
+    "preempt": false
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "capture": {
+    "type": "codex_to_proxy",
+    "timestamp": "2026-09-09T14:56:35.825Z",
+    "source": "codex",
+    "destination": "proxy"
+  },
+  "method": "GET",
+  "url": "http://127.0.0.1:8787/v1/models/deepseek-v4-pro",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "br, gzip",
+    "authorization": "Bearer no-key-required",
+    "host": "127.0.0.1:8787",
+    "user-agent": "python-httpx/0.28.1"
+  },
+  "rawBody": "",
+  "parsedBody": ""
+}

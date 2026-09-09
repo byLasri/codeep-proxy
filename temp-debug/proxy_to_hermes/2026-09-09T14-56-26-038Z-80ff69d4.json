@@ -1,0 +1,19 @@
+{
+  "capture": {
+    "type": "proxy_to_codex",
+    "timestamp": "2026-09-09T14:56:26.038Z",
+    "source": "proxy",
+    "destination": "codex"
+  },
+  "status": 422,
+  "statusText": "Unprocessable Entity",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "rawBody": "{\"error\":{\"message\":\"DeepSeek completion failed (422)\"}}",
+  "parsedBody": {
+    "error": {
+      "message": "DeepSeek completion failed (422)"
+    }
+  }
+}

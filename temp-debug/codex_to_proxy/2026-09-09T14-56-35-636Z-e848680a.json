@@ -1,0 +1,18 @@
+{
+  "capture": {
+    "type": "codex_to_proxy",
+    "timestamp": "2026-09-09T14:56:35.636Z",
+    "source": "codex",
+    "destination": "proxy"
+  },
+  "method": "GET",
+  "url": "http://127.0.0.1:8787/v1/models",
+  "headers": {
+    "accept-encoding": "br, gzip",
+    "authorization": "Bearer no-key-required",
+    "host": "127.0.0.1:8787",
+    "user-agent": "hermes-cli/0.21.1"
+  },
+  "rawBody": "",
+  "parsedBody": ""
+}
