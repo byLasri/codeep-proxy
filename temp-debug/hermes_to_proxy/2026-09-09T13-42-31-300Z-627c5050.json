@@ -1,7 +1,7 @@
 {
   "capture": {
     "type": "codex_to_proxy",
-    "timestamp": "2026-09-09T13:00:26.237Z",
+    "timestamp": "2026-09-09T13:42:31.300Z",
     "source": "codex",
     "destination": "proxy"
   },
