@@ -39,6 +39,7 @@ interface ResponsesRequest {
 
 interface SessionState {
   deepSeekSessionId: string
+  lastMessageId: string | null
   instructionsApplied: boolean
 }
 
@@ -151,7 +152,7 @@ async function saveSession(env: Env, identifiers: string[], state: SessionState)
   ))
 }
 
-async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string): Promise<Response> {
+async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string, parentMessageId: string | null = null): Promise<Response> {
   if (!input.messages?.length) return json({ error: { message: 'messages is required' } }, 400)
 
   const challenge = await createChallenge(env)
@@ -164,7 +165,7 @@ async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string):
     headers: new Headers({ ...Object.fromEntries(await headers(env)), 'x-ds-pow-response': pow }),
     body: JSON.stringify({
       chat_session_id: sessionId,
-      parent_message_id: null,
+      parent_message_id: parentMessageId,
       model_type: reasoningEnabled ? 'expert' : 'default',
       prompt,
       ref_file_ids: [],
