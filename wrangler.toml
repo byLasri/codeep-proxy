@@ -2,6 +2,9 @@ name = "deepfree-cloudflare-proxy"
 main = "src/index.ts"
 compatibility_date = "2026-09-07"
 
+[dev]
+port = 3568
+
 [vars]
 DEEPSEEK_ORIGIN = "https://chat.deepseek.com"
 # Set CAPTURE_LOG to "true" to enable request logging to R2

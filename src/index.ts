@@ -14,6 +14,9 @@ interface ChatRequest {
   model?: string
   messages?: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>
   stream?: boolean
+  reasoning?: {
+    effort?: string
+  }
 }
 
 interface AuthCookie {
@@ -35,6 +38,9 @@ interface ResponsesRequest {
   instructions?: string
   previous_response_id?: string
   stream?: boolean
+  reasoning?: {
+    effort?: string
+  }
 }
 
 interface SessionState {
@@ -77,6 +83,39 @@ const headers = async (env: Env): Promise<Headers> => {
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
+
+function parseJsonLike(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+function captureKey(type: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `debug/${type}/${stamp}-${crypto.randomUUID().slice(0, 8)}.json`
+}
+
+async function captureToR2(env: Env, type: string, data: any): Promise<void> {
+  if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
+    try {
+      const logEntry = {
+        capture: {
+          type,
+          timestamp: new Date().toISOString(),
+          source: type.split('_to_')[0],
+          destination: type.split('_to_')[1],
+        },
+        ...data,
+      }
+      const key = captureKey(type)
+      await env.DEBUG_BUCKET.put(key, JSON.stringify(logEntry, null, 2))
+    } catch (e) {
+      console.warn(`Failed to capture log to R2 for type ${type}:`, e)
+    }
+  }
+}
 
 async function readJson(response: Response): Promise<any> {
   const value = await response.text()
@@ -151,29 +190,82 @@ async function saveSession(env: Env, identifiers: string[], state: SessionState)
   ))
 }
 
+function normalizeModelSlug(value?: string): string {
+  return (value || '').trim().toLowerCase().replace(/\s+/g, '-')
+}
+
+function isCustomProxyModel(model?: string): boolean {
+  if (!model) return false;
+  const normalized = model.toLowerCase();
+  return normalized === 'deepseek-v4-pro' || normalized === 'deepseek-v4-flash';
+}
+
+function resolveDeepSeekRequestMode(model?: string, reasoningEffort?: string): { model_type: 'default' | 'expert'; thinking_enabled: boolean } {
+  const normalized = (model || '').toLowerCase();
+  const isExpert = normalized === 'deepseek-v4-pro';
+  const effort = (reasoningEffort || 'low').toLowerCase();
+  return {
+    model_type: isExpert ? 'expert' : 'default',
+    thinking_enabled: effort === 'max'
+  };
+}
+
 async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string): Promise<Response> {
   if (!input.messages?.length) return json({ error: { message: 'messages is required' } }, 400)
 
   const challenge = await createChallenge(env)
   const pow = btoa(JSON.stringify(solvePow(challenge as PowChallenge)))
   const prompt = messageText(input.messages[input.messages.length - 1])
-  const reasoningEnabled = input.model === 'deepseek-reasoner'
+  const { model_type, thinking_enabled } = resolveDeepSeekRequestMode(input.model, input.reasoning?.effort)
   const origin = env.DEEPSEEK_ORIGIN || 'https://chat.deepseek.com'
-  return fetch(`${origin}/api/v0/chat/completion`, {
+  
+  // Build request options for logging
+  const requestOptions = {
     method: 'POST',
     headers: new Headers({ ...Object.fromEntries(await headers(env)), 'x-ds-pow-response': pow }),
     body: JSON.stringify({
       chat_session_id: sessionId,
       parent_message_id: null,
-      model_type: reasoningEnabled ? 'expert' : 'default',
+      model_type,
       prompt,
       ref_file_ids: [],
-      thinking_enabled: reasoningEnabled,
+      thinking_enabled,
       search_enabled: false,
       action: null,
       preempt: false,
     }),
+  }
+
+  // Capture outgoing request to DeepSeek (proxy_to_deepseek)
+  await captureToR2(env, 'proxy_to_deepseek', {
+    url: `${origin}/api/v0/chat/completion`,
+    method: requestOptions.method,
+    headers: Object.fromEntries(requestOptions.headers.entries()),
+    rawBody: requestOptions.body,
+    parsedBody: parseJsonLike(requestOptions.body),
   })
+
+  // Make the actual request
+  const response = await fetch(`${origin}/api/v0/chat/completion`, requestOptions)
+
+  // Capture incoming response from DeepSeek (deepseek_to_proxy)
+  if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
+    try {
+      const responseClone = response.clone()
+      const body = await responseClone.text()
+      await captureToR2(env, 'deepseek_to_proxy', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        rawBody: body,
+        parsedBody: parseJsonLike(body),
+      })
+    } catch (e) {
+      console.warn('Failed to capture deepseek_to_proxy:', e)
+    }
+  }
+
+  return response
 }
 
 function openAiChunk(text: string): string {
@@ -417,11 +509,37 @@ async function translateStream(response: Response, format: 'chat' | 'responses',
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
   const input = await request.json() as ChatRequest
-  return translateStream(await requestDeepSeek(input, env, await createSession(env)), 'chat')
+  if (!isCustomProxyModel(input.model)) {
+    return json({ error: { message: `Model '${input.model ?? 'unknown'}' is not handled by this proxy; use the native Codex endpoint.` } }, 400)
+  }
+  const sessionId = await createSession(env)
+  const deepSeekResponse = await requestDeepSeek(input, env, sessionId)
+  
+  // Capture outgoing response to client (proxy_to_codex) before returning
+  const response = await translateStream(deepSeekResponse, 'chat')
+  if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
+    try {
+      const resultClone = response.clone()
+      const body = await resultClone.text()
+      await captureToR2(env, 'proxy_to_codex', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        rawBody: body,
+        parsedBody: parseJsonLike(body),
+      })
+    } catch (e) {
+      console.warn('Failed to capture proxy_to_codex:', e)
+    }
+  }
+  return response
 }
 
 async function handleResponses(request: Request, env: Env): Promise<Response> {
   const input = await request.json() as ResponsesRequest
+  if (!isCustomProxyModel(input.model)) {
+    return json({ error: { message: `Model '${input.model ?? 'unknown'}' is not handled by this proxy; use the native Codex endpoint.` } }, 400)
+  }
   const prompt = responseInputText(input)
   if (!prompt) return json({ error: { message: 'A user input is required' } }, 400)
   const responseId = `resp_${crypto.randomUUID()}`
@@ -441,6 +559,7 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
   const deepSeekResponse = await requestDeepSeek({
     model: input.model,
     stream: true,
+    reasoning: input.reasoning,
     messages: [{ role: 'user', content: fullPrompt }],
   }, env, sessionId)
   if (input.stream === false) {
@@ -470,9 +589,43 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
     if (pending.startsWith('data:')) {
       try { parseDelta(JSON.parse(pending.slice(5).trim()) as DeepSeekDelta) } catch {}
     }
-    return json({ id: responseId, object: 'response', status: 'completed', output_text: text, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] })
+    const result = json({ id: responseId, object: 'response', status: 'completed', output_text: text, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] })
+    // Capture outgoing response to client (proxy_to_codex) for non-streaming case
+    if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
+      try {
+        const resultClone = result.clone()
+        const body = await resultClone.text()
+        await captureToR2(env, 'proxy_to_codex', {
+          status: result.status,
+          statusText: result.statusText,
+          headers: Object.fromEntries(result.headers.entries()),
+          rawBody: body,
+          parsedBody: parseJsonLike(body),
+        })
+      } catch (e) {
+        console.warn('Failed to capture proxy_to_codex:', e)
+      }
+    }
+    return result
   }
-  return translateStream(deepSeekResponse, 'responses', responseId)
+  const response = await translateStream(deepSeekResponse, 'responses', responseId)
+  // Capture outgoing response to client (proxy_to_codex) for streaming case
+  if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
+    try {
+      const resultClone = response.clone()
+      const body = await resultClone.text()
+      await captureToR2(env, 'proxy_to_codex', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        rawBody: body,
+        parsedBody: parseJsonLike(body),
+      })
+    } catch (e) {
+      console.warn('Failed to capture proxy_to_codex:', e)
+    }
+  }
+  return response
 }
 
 export default {
@@ -483,26 +636,14 @@ export default {
       try {
         // Clone request to read body without consuming original
         const requestForLog = request.clone()
-        let body = ''
-        try {
-          const contentType = requestForLog.headers.get('content-type') ?? ''
-          if (contentType.includes('application/json')) {
-            body = await requestForLog.text()
-          } else {
-            body = await requestForLog.text()
-          }
-        } catch (e) {
-          body = `[Error reading body: ${e}]`
-        }
-        const logEntry = {
-          timestamp: new Date().toISOString(),
+        const rawBody = await requestForLog.text().catch((e) => `[Error reading body: ${e}]`)
+        await captureToR2(env, 'codex_to_proxy', {
           method: request.method,
           url: request.url,
           headers: Object.fromEntries(request.headers.entries()),
-          body: body,
-        }
-        const key = `temp-debug/${Date.now()}-${crypto.randomUUID()}.json`
-        await env.DEBUG_BUCKET.put(key, JSON.stringify(logEntry, null, 2))
+          rawBody,
+          parsedBody: parseJsonLike(rawBody),
+        })
       } catch (e) {
         // Fail silently to not disrupt normal operation
         console.warn('Failed to capture log to R2:', e)
@@ -548,134 +689,133 @@ export default {
       }
     }
     if (request.method === 'GET' && pathname === '/v1/models') {
-      const models = [
-        {
-          slug: 'deepseek-chat',
-          prefer_websockets: false,
-          display_name: 'DeepSeek Chat',
-          description: 'DeepSeek chat model served through the local DeepFree proxy.',
-          default_reasoning_level: 'low',
-          supported_reasoning_levels: [
-            { effort: 'low', description: 'Fast responses with lighter reasoning' },
-            { effort: 'medium', description: 'Balances speed and reasoning depth' },
-            { effort: 'high', description: 'Greater reasoning depth for complex problems' },
-          ],
-          shell_type: 'unified_exec',
-          visibility: 'list',
-          supported_in_api: true,
-          priority: 1,
-          additional_speed_tiers: [],
-          service_tiers: [],
-          default_service_tier: null,
-          availability_nux: null,
-          upgrade: null,
-          model_messages: {
-            instructions_template: 'You are DeepSeek, an AI coding assistant. Follow the user request and return concise, accurate results.',
-          },
-          include_skills_usage_instructions: false,
-          include_plugin_usage_instructions: false,
-          include_apps_usage_instructions: false,
-          supports_reasoning_summary_parameter: false,
-          default_reasoning_summary: 'none',
-          support_verbosity: false,
-          supports_parallel_tool_calls: true,
-          reasoning_summary_format: 'none',
-          minimal_client_version: '0.144.0',
-          default_verbosity: null,
-          apply_patch_tool_type: null,
-          web_search_tool_type: 'text',
-          truncation_policy: { mode: 'tokens', limit: 10000 },
-          supports_image_detail_original: false,
-          context_window: 128000,
-          max_context_window: 128000,
-          auto_compact_token_limit: null,
-          comp_hash: null,
-          effective_context_window_percent: 95,
-          experimental_supported_tools: [],
-          input_modalities: ['text'],
-          used_fallback_model_metadata: false,
-          supports_search_tool: false,
-          supports_experimental_context: false,
-          use_responses_lite: false,
-          guardian: null,
-          node_repl_auto_review_required: false,
-          node_repl_disabled: false,
-          auto_review_model_override: null,
-          model_specialty: null,
-          tool_mode: 'code_mode_only',
-          multi_agent_version: null,
-          multi_agent_reasoning_effort: null,
-        },
-        {
-          slug: 'deepseek-reasoner',
-          prefer_websockets: false,
-          display_name: 'DeepSeek Reasoner',
-          description: 'DeepSeek reasoning model served through the local DeepFree proxy.',
-          default_reasoning_level: 'high',
-          supported_reasoning_levels: [
-            { effort: 'medium', description: 'Balances speed and reasoning depth' },
-            { effort: 'high', description: 'Greater reasoning depth for complex problems' },
-          ],
-          shell_type: 'unified_exec',
-          visibility: 'list',
-          supported_in_api: true,
-          priority: 2,
-          additional_speed_tiers: [],
-          service_tiers: [],
-          default_service_tier: null,
-          availability_nux: null,
-          upgrade: null,
-          model_messages: {
-            instructions_template: 'You are DeepSeek, an AI coding assistant. Follow the user request and return concise, accurate results.',
-          },
-          include_skills_usage_instructions: false,
-          include_plugin_usage_instructions: false,
-          include_apps_usage_instructions: false,
-          supports_reasoning_summary_parameter: false,
-          default_reasoning_summary: 'none',
-          support_verbosity: false,
-          supports_parallel_tool_calls: true,
-          reasoning_summary_format: 'none',
-          minimal_client_version: '0.144.0',
-          default_verbosity: null,
-          apply_patch_tool_type: null,
-          web_search_tool_type: 'text',
-          truncation_policy: { mode: 'tokens', limit: 10000 },
-          supports_image_detail_original: false,
-          context_window: 128000,
-          max_context_window: 128000,
-          auto_compact_token_limit: null,
-          comp_hash: null,
-          effective_context_window_percent: 95,
-          experimental_supported_tools: [],
-          input_modalities: ['text'],
-          used_fallback_model_metadata: false,
-          supports_search_tool: false,
-          supports_experimental_context: false,
-          use_responses_lite: false,
-          guardian: null,
-          node_repl_auto_review_required: false,
-          node_repl_disabled: false,
-          auto_review_model_override: null,
-          model_specialty: null,
-          tool_mode: 'code_mode_only',
-          multi_agent_version: null,
-          multi_agent_reasoning_effort: null,
-        },
-      ]
-      return json({
-        object: 'list',
-        models,
-        data: models.map(({ slug, display_name, description }) => ({
-          id: slug,
-          slug,
-          object: 'model',
-          owned_by: 'deepfree',
-          name: display_name,
-          description,
-        })),
-      })
-    }
+const models = [
+             {
+               slug: 'deepseek-v4-pro',
+               prefer_websockets: false,
+               display_name: 'Deepseek V4 Pro',
+               description: 'Custom Deepseek V4 Pro proxy model with low and max thinking modes.',
+               default_reasoning_level: 'low',
+               supported_reasoning_levels: [
+                 { effort: 'low', description: 'No Thinking (thinking_enabled: false)' },
+                 { effort: 'max', description: 'Max reasoning (thinking_enabled: true)' }
+               ],
+               shell_type: 'unified_exec',
+               visibility: 'list',
+               supported_in_api: true,
+               priority: 1,
+               additional_speed_tiers: [],
+               service_tiers: [],
+               default_service_tier: null,
+               availability_nux: null,
+               upgrade: null,
+               model_messages: {
+                 instructions_template: 'You are a coding assistant. Follow the user request carefully and provide concise, accurate results.',
+               },
+               include_skills_usage_instructions: false,
+               include_plugin_usage_instructions: false,
+               include_apps_usage_instructions: false,
+               supports_reasoning_summary_parameter: false,
+               default_reasoning_summary: 'none',
+               support_verbosity: false,
+               supports_parallel_tool_calls: true,
+               reasoning_summary_format: 'none',
+               minimal_client_version: '0.144.0',
+               default_verbosity: null,
+               apply_patch_tool_type: null,
+               web_search_tool_type: 'text',
+               truncation_policy: { mode: 'tokens', limit: 10000 },
+               supports_image_detail_original: false,
+               context_window: 128000,
+               max_context_window: 128000,
+               auto_compact_token_limit: null,
+               comp_hash: null,
+               effective_context_window_percent: 95,
+               experimental_supported_tools: [],
+               input_modalities: ['text'],
+               used_fallback_model_metadata: false,
+               supports_search_tool: false,
+               supports_experimental_context: false,
+               use_responses_lite: false,
+               guardian: null,
+               node_repl_auto_review_required: false,
+               node_repl_disabled: false,
+               auto_review_model_override: null,
+               model_specialty: null,
+               tool_mode: 'code_mode_only',
+               multi_agent_version: null,
+               multi_agent_reasoning_effort: null,
+             },
+             {
+               slug: 'deepseek-v4-flash',
+               prefer_websockets: false,
+               display_name: 'Deepseek V4 Flash',
+               description: 'Custom Deepseek V4 Flash proxy model with low and max thinking modes.',
+               default_reasoning_level: 'low',
+               supported_reasoning_levels: [
+                 { effort: 'low', description: 'No Thinking (thinking_enabled: false)' },
+                 { effort: 'max', description: 'Max reasoning (thinking_enabled: true)' }
+               ],
+               shell_type: 'unified_exec',
+               visibility: 'list',
+               supported_in_api: true,
+               priority: 1,
+               additional_speed_tiers: [],
+               service_tiers: [],
+               default_service_tier: null,
+               availability_nux: null,
+               upgrade: null,
+               model_messages: {
+                 instructions_template: 'You are a coding assistant. Follow the user request carefully and provide concise, accurate results.',
+               },
+               include_skills_usage_instructions: false,
+               include_plugin_usage_instructions: false,
+               include_apps_usage_instructions: false,
+               supports_reasoning_summary_parameter: false,
+               default_reasoning_summary: 'none',
+               support_verbosity: false,
+               supports_parallel_tool_calls: true,
+               reasoning_summary_format: 'none',
+               minimal_client_version: '0.144.0',
+               default_verbosity: null,
+               apply_patch_tool_type: null,
+               web_search_tool_type: 'text',
+               truncation_policy: { mode: 'tokens', limit: 10000 },
+               supports_image_detail_original: false,
+               context_window: 128000,
+               max_context_window: 128000,
+               auto_compact_token_limit: null,
+               comp_hash: null,
+               effective_context_window_percent: 95,
+               experimental_supported_tools: [],
+               input_modalities: ['text'],
+               used_fallback_model_metadata: false,
+               supports_search_tool: false,
+               supports_experimental_context: false,
+               use_responses_lite: false,
+               guardian: null,
+               node_repl_auto_review_required: false,
+               node_repl_disabled: false,
+               auto_review_model_override: null,
+               model_specialty: null,
+               tool_mode: 'code_mode_only',
+               multi_agent_version: null,
+               multi_agent_reasoning_effort: null,
+             },
+           ]
+          return json({
+            object: 'list',
+            models,
+            data: models.map(({ slug, display_name, description }) => ({
+              id: slug,
+              slug,
+              object: 'model',
+              owned_by: 'deepfree',
+              name: display_name,
+              description,
+            })),
+          })
+        }
     if (request.method === 'GET' && pathname === '/health') {
       return json({ ok: true, authenticated: !!(await loadAuthState(env)) })
     }
