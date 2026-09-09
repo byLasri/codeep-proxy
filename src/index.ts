@@ -424,16 +424,26 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
   const input = await request.json() as ResponsesRequest
   const prompt = responseInputText(input)
   if (!prompt) return json({ error: { message: 'A user input is required' } }, 400)
-  const responseId = `resp_${crypto.randomUUID()}`
   const threadId = request.headers.get('thread-id')
   const sessionHeader = request.headers.get('session-id')
-  const existing = await loadSession(env, [threadId, sessionHeader, input.previous_response_id])
+  const previousResponseId = input.previous_response_id
+
+  // Primary lookup: thread-id is the canonical conversation key
+  // Fallback to session-id header and previous_response_id for continuity
+  const existing = await loadSession(env, [threadId, sessionHeader, previousResponseId])
   const sessionId = existing?.deepSeekSessionId || await createSession(env)
   const fullPrompt = existing || !input.instructions
     ? prompt
     : `System: ${input.instructions}\n\n${prompt}`
-  const sessionIdentifiers = [responseId, threadId, sessionHeader].filter((value): value is string => Boolean(value))
-  if (input.previous_response_id) sessionIdentifiers.push(input.previous_response_id)
+
+  // Generate responseId AFTER checking for existing session
+  const responseId = `resp_${crypto.randomUUID()}`
+
+  // Save session under ALL identifiers so any of them can retrieve it next turn
+  // Most importantly: save under thread-id (primary) AND previous_response_id (what Codex will send back)
+  const sessionIdentifiers = [threadId, sessionHeader].filter((value): value is string => Boolean(value))
+  if (previousResponseId) sessionIdentifiers.push(previousResponseId)
+  sessionIdentifiers.push(responseId)
   await saveSession(env, sessionIdentifiers, {
     deepSeekSessionId: sessionId,
     instructionsApplied: Boolean(existing?.instructionsApplied || input.instructions),
