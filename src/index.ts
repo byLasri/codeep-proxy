@@ -219,7 +219,6 @@ async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string):
   const { model_type, thinking_enabled } = resolveDeepSeekRequestMode(input.model, input.reasoning?.effort)
   const origin = env.DEEPSEEK_ORIGIN || 'https://chat.deepseek.com'
   
-  // Build request options for logging
   const requestOptions = {
     method: 'POST',
     headers: new Headers({ ...Object.fromEntries(await headers(env)), 'x-ds-pow-response': pow }),
@@ -236,7 +235,6 @@ async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string):
     }),
   }
 
-  // Capture outgoing request to DeepSeek (proxy_to_deepseek)
   await captureToR2(env, 'proxy_to_deepseek', {
     url: `${origin}/api/v0/chat/completion`,
     method: requestOptions.method,
@@ -245,10 +243,8 @@ async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string):
     parsedBody: parseJsonLike(requestOptions.body),
   })
 
-  // Make the actual request
   const response = await fetch(`${origin}/api/v0/chat/completion`, requestOptions)
 
-  // Capture incoming response from DeepSeek (deepseek_to_proxy)
   if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
     try {
       const responseClone = response.clone()
@@ -487,7 +483,6 @@ async function translateStream(response: Response, format: 'chat' | 'responses',
           const event = JSON.parse(line.slice(5).trim()) as DeepSeekDelta
           parseDelta?.(event)
         } catch {
-          // Ignore DeepSeek metadata events that do not contain text.
         }
       }
     },
@@ -515,8 +510,9 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const sessionId = await createSession(env)
   const deepSeekResponse = await requestDeepSeek(input, env, sessionId)
 
-  // FIX: Buffer stream if client requested non-streaming response
-  if (input.stream === false) {
+  // CRITICAL FIX: Check !input.stream instead of input.stream === false
+  // Because when stream field is absent, it defaults to non-streaming
+  if (!input.stream) {
     const reader = deepSeekResponse.body?.getReader()
     if (!reader) return json({ error: { message: 'DeepSeek returned no response stream' } }, 502)
     
@@ -573,7 +569,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     return json(responseBody)
   }
 
-  // Existing streaming path
+  // Streaming path
   const response = await translateStream(deepSeekResponse, 'chat')
   if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
     try {
@@ -646,7 +642,6 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
       try { parseDelta(JSON.parse(pending.slice(5).trim()) as DeepSeekDelta) } catch {}
     }
     const result = json({ id: responseId, object: 'response', status: 'completed', output_text: text, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] })
-    // Capture outgoing response to client (proxy_to_codex) for non-streaming case
     if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
       try {
         const resultClone = result.clone()
@@ -665,7 +660,6 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
     return result
   }
   const response = await translateStream(deepSeekResponse, 'responses', responseId)
-  // Capture outgoing response to client (proxy_to_codex) for streaming case
   if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
     try {
       const resultClone = response.clone()
@@ -686,11 +680,9 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    // Capture request to R2 if enabled
     const captureLog = env.CAPTURE_LOG === 'true'
     if (captureLog && env.DEBUG_BUCKET) {
       try {
-        // Clone request to read body without consuming original
         const requestForLog = request.clone()
         const rawBody = await requestForLog.text().catch((e) => `[Error reading body: ${e}]`)
         await captureToR2(env, 'codex_to_proxy', {
@@ -701,7 +693,6 @@ export default {
           parsedBody: parseJsonLike(rawBody),
         })
       } catch (e) {
-        // Fail silently to not disrupt normal operation
         console.warn('Failed to capture log to R2:', e)
       }
     }
@@ -745,152 +736,151 @@ export default {
       }
     }
     if (request.method === 'GET' && (pathname === '/v1/models' || pathname.startsWith('/v1/models/'))) {
-            const models = [
-                 {
-                   slug: 'deepseek-v4-pro',
-                   prefer_websockets: false,
-                   display_name: 'Deepseek V4 Pro',
-                   description: 'Custom Deepseek V4 Pro proxy model with low and max thinking modes.',
-                   default_reasoning_level: 'low',
-                   supported_reasoning_levels: [
-                     { effort: 'low', description: 'No Thinking (thinking_enabled: false)' },
-                     { effort: 'max', description: 'Max reasoning (thinking_enabled: true)' }
-                   ],
-                   shell_type: 'unified_exec',
-                   visibility: 'list',
-                   supported_in_api: true,
-                   priority: 1,
-                   additional_speed_tiers: [],
-                   service_tiers: [],
-                   default_service_tier: null,
-                   availability_nux: null,
-                   upgrade: null,
-                   model_messages: {
-                     instructions_template: 'You are a coding assistant. Follow the user request carefully and provide concise, accurate results.',
-                   },
-                   include_skills_usage_instructions: false,
-                   include_plugin_usage_instructions: false,
-                   include_apps_usage_instructions: false,
-                   supports_reasoning_summary_parameter: false,
-                   default_reasoning_summary: 'none',
-                   support_verbosity: false,
-                   supports_parallel_tool_calls: true,
-                   reasoning_summary_format: 'none',
-                   minimal_client_version: '0.144.0',
-                   default_verbosity: null,
-                   apply_patch_tool_type: null,
-                   web_search_tool_type: 'text',
-                   truncation_policy: { mode: 'tokens', limit: 10000 },
-                   supports_image_detail_original: false,
-                   context_window: 128000,
-                   max_context_window: 128000,
-                   auto_compact_token_limit: null,
-                   comp_hash: null,
-                   effective_context_window_percent: 95,
-                   experimental_supported_tools: [],
-                   input_modalities: ['text'],
-                   used_fallback_model_metadata: false,
-                   supports_search_tool: false,
-                   supports_experimental_context: false,
-                   use_responses_lite: false,
-                   guardian: null,
-                   node_repl_auto_review_required: false,
-                   node_repl_disabled: false,
-                   auto_review_model_override: null,
-                   model_specialty: null,
-                   tool_mode: 'code_mode_only',
-                   multi_agent_version: null,
-                   multi_agent_reasoning_effort: null,
-                 },
-                 {
-                   slug: 'deepseek-v4-flash',
-                   prefer_websockets: false,
-                   display_name: 'Deepseek V4 Flash',
-                   description: 'Custom Deepseek V4 Flash proxy model with low and max thinking modes.',
-                   default_reasoning_level: 'low',
-                   supported_reasoning_levels: [
-                     { effort: 'low', description: 'No Thinking (thinking_enabled: false)' },
-                     { effort: 'max', description: 'Max reasoning (thinking_enabled: true)' }
-                   ],
-                   shell_type: 'unified_exec',
-                   visibility: 'list',
-                   supported_in_api: true,
-                   priority: 1,
-                   additional_speed_tiers: [],
-                   service_tiers: [],
-                   default_service_tier: null,
-                   availability_nux: null,
-                   upgrade: null,
-                   model_messages: {
-                     instructions_template: 'You are a coding assistant. Follow the user request carefully and provide concise, accurate results.',
-                   },
-                   include_skills_usage_instructions: false,
-                   include_plugin_usage_instructions: false,
-                   include_apps_usage_instructions: false,
-                   supports_reasoning_summary_parameter: false,
-                   default_reasoning_summary: 'none',
-                   support_verbosity: false,
-                   supports_parallel_tool_calls: true,
-                   reasoning_summary_format: 'none',
-                   minimal_client_version: '0.144.0',
-                   default_verbosity: null,
-                   apply_patch_tool_type: null,
-                   web_search_tool_type: 'text',
-                   truncation_policy: { mode: 'tokens', limit: 10000 },
-                   supports_image_detail_original: false,
-                   context_window: 128000,
-                   max_context_window: 128000,
-                   auto_compact_token_limit: null,
-                   comp_hash: null,
-                   effective_context_window_percent: 95,
-                   experimental_supported_tools: [],
-                   input_modalities: ['text'],
-                   used_fallback_model_metadata: false,
-                   supports_search_tool: false,
-                   supports_experimental_context: false,
-                   use_responses_lite: false,
-                   guardian: null,
-                   node_repl_auto_review_required: false,
-                   node_repl_disabled: false,
-                   auto_review_model_override: null,
-                   model_specialty: null,
-                   tool_mode: 'code_mode_only',
-                   multi_agent_version: null,
-                   multi_agent_reasoning_effort: null,
-                 },
-               ]
-            // Handle GET /v1/models/:model_id
-            if (pathname.startsWith('/v1/models/')) {
-                const modelSlug = pathname.replace('/v1/models/', '');
-                const foundModel = models.find(m => m.slug === modelSlug);
-                if (foundModel) {
-                    return json({
-                        id: foundModel.slug,
-                        slug: foundModel.slug,
-                        object: 'model',
-                        owned_by: 'deepfree',
-                        name: foundModel.display_name,
-                        description: foundModel.description,
-                    });
-                } else {
-                    return json({ error: { message: 'Model not found' } }, 404);
-                }
-            }
+      const models = [
+        {
+          slug: 'deepseek-v4-pro',
+          prefer_websockets: false,
+          display_name: 'Deepseek V4 Pro',
+          description: 'Custom Deepseek V4 Pro proxy model with low and max thinking modes.',
+          default_reasoning_level: 'low',
+          supported_reasoning_levels: [
+            { effort: 'low', description: 'No Thinking (thinking_enabled: false)' },
+            { effort: 'max', description: 'Max reasoning (thinking_enabled: true)' }
+          ],
+          shell_type: 'unified_exec',
+          visibility: 'list',
+          supported_in_api: true,
+          priority: 1,
+          additional_speed_tiers: [],
+          service_tiers: [],
+          default_service_tier: null,
+          availability_nux: null,
+          upgrade: null,
+          model_messages: {
+            instructions_template: 'You are a coding assistant. Follow the user request carefully and provide concise, accurate results.',
+          },
+          include_skills_usage_instructions: false,
+          include_plugin_usage_instructions: false,
+          include_apps_usage_instructions: false,
+          supports_reasoning_summary_parameter: false,
+          default_reasoning_summary: 'none',
+          support_verbosity: false,
+          supports_parallel_tool_calls: true,
+          reasoning_summary_format: 'none',
+          minimal_client_version: '0.144.0',
+          default_verbosity: null,
+          apply_patch_tool_type: null,
+          web_search_tool_type: 'text',
+          truncation_policy: { mode: 'tokens', limit: 10000 },
+          supports_image_detail_original: false,
+          context_window: 128000,
+          max_context_window: 128000,
+          auto_compact_token_limit: null,
+          comp_hash: null,
+          effective_context_window_percent: 95,
+          experimental_supported_tools: [],
+          input_modalities: ['text'],
+          used_fallback_model_metadata: false,
+          supports_search_tool: false,
+          supports_experimental_context: false,
+          use_responses_lite: false,
+          guardian: null,
+          node_repl_auto_review_required: false,
+          node_repl_disabled: false,
+          auto_review_model_override: null,
+          model_specialty: null,
+          tool_mode: 'code_mode_only',
+          multi_agent_version: null,
+          multi_agent_reasoning_effort: null,
+        },
+        {
+          slug: 'deepseek-v4-flash',
+          prefer_websockets: false,
+          display_name: 'Deepseek V4 Flash',
+          description: 'Custom Deepseek V4 Flash proxy model with low and max thinking modes.',
+          default_reasoning_level: 'low',
+          supported_reasoning_levels: [
+            { effort: 'low', description: 'No Thinking (thinking_enabled: false)' },
+            { effort: 'max', description: 'Max reasoning (thinking_enabled: true)' }
+          ],
+          shell_type: 'unified_exec',
+          visibility: 'list',
+          supported_in_api: true,
+          priority: 1,
+          additional_speed_tiers: [],
+          service_tiers: [],
+          default_service_tier: null,
+          availability_nux: null,
+          upgrade: null,
+          model_messages: {
+            instructions_template: 'You are a coding assistant. Follow the user request carefully and provide concise, accurate results.',
+          },
+          include_skills_usage_instructions: false,
+          include_plugin_usage_instructions: false,
+          include_apps_usage_instructions: false,
+          supports_reasoning_summary_parameter: false,
+          default_reasoning_summary: 'none',
+          support_verbosity: false,
+          supports_parallel_tool_calls: true,
+          reasoning_summary_format: 'none',
+          minimal_client_version: '0.144.0',
+          default_verbosity: null,
+          apply_patch_tool_type: null,
+          web_search_tool_type: 'text',
+          truncation_policy: { mode: 'tokens', limit: 10000 },
+          supports_image_detail_original: false,
+          context_window: 128000,
+          max_context_window: 128000,
+          auto_compact_token_limit: null,
+          comp_hash: null,
+          effective_context_window_percent: 95,
+          experimental_supported_tools: [],
+          input_modalities: ['text'],
+          used_fallback_model_metadata: false,
+          supports_search_tool: false,
+          supports_experimental_context: false,
+          use_responses_lite: false,
+          guardian: null,
+          node_repl_auto_review_required: false,
+          node_repl_disabled: false,
+          auto_review_model_override: null,
+          model_specialty: null,
+          tool_mode: 'code_mode_only',
+          multi_agent_version: null,
+          multi_agent_reasoning_effort: null,
+        },
+      ]
 
-            // Handle GET /v1/models
-            return json({
-                object: 'list',
-                models,
-                data: models.map(({ slug, display_name, description }) => ({
-                    id: slug,
-                    slug,
-                    object: 'model',
-                    owned_by: 'deepfree',
-                    name: display_name,
-                    description,
-                })),
-            });
+      if (pathname.startsWith('/v1/models/')) {
+        const modelSlug = pathname.replace('/v1/models/', '')
+        const foundModel = models.find(m => m.slug === modelSlug)
+        if (foundModel) {
+          return json({
+            id: foundModel.slug,
+            slug: foundModel.slug,
+            object: 'model',
+            owned_by: 'deepfree',
+            name: foundModel.display_name,
+            description: foundModel.description,
+          })
+        } else {
+          return json({ error: { message: 'Model not found' } }, 404)
         }
+      }
+
+      return json({
+        object: 'list',
+        models,
+        data: models.map(({ slug, display_name, description }) => ({
+          id: slug,
+          slug,
+          object: 'model',
+          owned_by: 'deepfree',
+          name: display_name,
+          description,
+        })),
+      })
+    }
     if (request.method === 'GET' && pathname === '/health') {
       return json({ ok: true, authenticated: !!(await loadAuthState(env)) })
     }
