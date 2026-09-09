@@ -1,37 +1,74 @@
 ```gitignore
 # Compiled and build artifacts
-*.tsbuildinfo
-dist/
-build/
-*.js
-*.js.map
-*.d.ts
+*.pyc
+__pycache__/
+*.o
+*.obj
+*.class
+*.exe
+*.dll
+*.so
+*.a
+*.out
 
 # Dependencies
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+venv/
+.venv/
+.env
+.env.local
+*.env.*
 
-# Logs and temp files
+# Build outputs
+dist/
+build/
+target/
 *.log
 *.tmp
 *.swp
 
-# Environment
-.env
-.env.local
-.env.*
-
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Coverage and test reports
+# System files
+.DS_Store
+Thumbs.db
+
+# Coverage
 coverage/
-.nyc_output/
-istanbul/
-test-report.xml
+htmlcov/
+.coverage
+
+# Python specific
+.mypy_cache/
+.pytest_cache/
+
+# Java/Gradle
+.gradle/
+*.class
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```

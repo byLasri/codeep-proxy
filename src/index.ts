@@ -447,6 +447,7 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
   sessionIdentifiers.push(responseId)
   await saveSession(env, sessionIdentifiers, {
     deepSeekSessionId: sessionId,
+    lastMessageId: null,
     instructionsApplied: Boolean(existing?.instructionsApplied || input.instructions),
   })
   const deepSeekResponse = await requestDeepSeek({
