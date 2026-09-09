@@ -45,7 +45,7 @@ interface ResponsesRequest {
 
 interface SessionState {
   deepSeekSessionId: string
-  lastMessageId: string | null
+  lastMessageId: number | null
   instructionsApplied: boolean
 }
 
@@ -211,7 +211,7 @@ function resolveDeepSeekRequestMode(model?: string, reasoningEffort?: string): {
   };
 }
 
-async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string, parentMessageId: string | null): Promise<Response> {
+async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string, parentMessageId: number | null): Promise<Response> {
   if (!input.messages?.length) return json({ error: { message: 'messages is required' } }, 400)
 
   const challenge = await createChallenge(env)
@@ -220,16 +220,13 @@ async function requestDeepSeek(input: ChatRequest, env: Env, sessionId: string, 
   const { model_type, thinking_enabled } = resolveDeepSeekRequestMode(input.model, input.reasoning?.effort)
   const origin = env.DEEPSEEK_ORIGIN || 'https://chat.deepseek.com'
   
-  // CRITICAL: Construct parent_message_id correctly
-  // Format: "session_id:message_id" or "session_id:null" for first message
-  const parentMsgId = `${sessionId}:${parentMessageId || 'null'}`
-  
+  // FIXED: parent_message_id is a NUMBER or null, not a string
   const requestOptions = {
     method: 'POST',
     headers: new Headers({ ...Object.fromEntries(await headers(env)), 'x-ds-pow-response': pow }),
     body: JSON.stringify({
       chat_session_id: sessionId,
-      parent_message_id: parentMsgId,
+      parent_message_id: parentMessageId, // Pass as-is: null or number
       model_type,
       prompt,
       ref_file_ids: [],
@@ -512,16 +509,16 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   if (!isCustomProxyModel(input.model)) {
     return json({ error: { message: `Model '${input.model ?? 'unknown'}' is not handled by this proxy; use the native Codex endpoint.` } }, 400)
   }
-  
-  // CRITICAL: Load existing session state to maintain conversation context
+
+  // Load existing session state to maintain conversation context
   const threadId = request.headers.get('thread-id')
   const sessionHeader = request.headers.get('session-id')
   const existingState = await loadSession(env, [threadId, sessionHeader])
-  
+
   // Reuse existing session or create new one
   const sessionId = existingState?.deepSeekSessionId || await createSession(env)
   const parentMessageId = existingState?.lastMessageId || null
-  
+
   const deepSeekResponse = await requestDeepSeek(input, env, sessionId, parentMessageId)
 
   if (!input.stream) {
@@ -530,7 +527,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     
     const decoder = new TextDecoder()
     let text = ''
-    let newMessageId: string | null = null
+    let newMessageId: number | null = null
     const parseDelta = createDeepSeekDeltaParser((value) => { text += value })
     let pending = ''
     
@@ -544,7 +541,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
           const event = JSON.parse(line.slice(5).trim()) as DeepSeekDelta
           parseDelta(event)
           // Try to extract message_id from response
-          if (event.p === 'response/id' && typeof event.v === 'string') {
+          if (event.p === 'response/id' && typeof event.v === 'number') {
             newMessageId = event.v
           }
         } catch {}
@@ -574,9 +571,9 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       }]
     }
 
-    // CRITICAL: Save updated session state with new message ID
+    // Save updated session state with new message ID
     const sessionIdentifiers = [threadId, sessionHeader].filter((v): v is string => Boolean(v))
-    if (newMessageId) {
+    if (newMessageId !== null) {
       await saveSession(env, sessionIdentifiers, {
         deepSeekSessionId: sessionId,
         lastMessageId: newMessageId,
@@ -601,14 +598,13 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   const response = await translateStream(deepSeekResponse, 'chat')
   
-  // CRITICAL: Save session state after streaming response
-  const sessionIdentifiers = [threadId, sessionHeader].filter((v): v is string => Boolean(v))
-  const newMessageId = `msg_${crypto.randomUUID()}` // Generate for tracking
-  await saveSession(env, sessionIdentifiers, {
-    deepSeekSessionId: sessionId,
-    lastMessageId: newMessageId,
-    instructionsApplied: existingState?.instructionsApplied || false,
-  })
+  // Save session state after streaming response (we don't have the last message ID from streaming)
+    const sessionIdentifiers = [threadId, sessionHeader].filter((v): v is string => Boolean(v))
+    await saveSession(env, sessionIdentifiers, {
+      deepSeekSessionId: sessionId,
+      lastMessageId: null,
+      instructionsApplied: existingState?.instructionsApplied || false,
+    })
   
   if (env.CAPTURE_LOG === 'true' && env.DEBUG_BUCKET) {
     try {
@@ -660,6 +656,7 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
     if (!reader) return json({ error: { message: 'DeepSeek returned no response stream' } }, 502)
     const decoder = new TextDecoder()
     let text = ''
+    let newMessageId: number | null = null
     const parseDelta = createDeepSeekDeltaParser((value) => { text += value })
     let pending = ''
     const parseLines = (chunk: string) => {
@@ -668,8 +665,13 @@ async function handleResponses(request: Request, env: Env): Promise<Response> {
       pending = lines.pop() ?? ''
       for (const line of lines) {
         if (!line.startsWith('data:')) continue
-        try {
-          parseDelta(JSON.parse(line.slice(5).trim()) as DeepSeekDelta)
+        try { 
+          const event = JSON.parse(line.slice(5).trim()) as DeepSeekDelta
+          parseDelta(event)
+          // Try to extract message_id from response
+          if (event.p === 'response/id' && typeof event.v === 'number') {
+            newMessageId = event.v
+          }
         } catch {}
       }
     }
