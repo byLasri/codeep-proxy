@@ -1,0 +1,50 @@
+// DeepSeek Web Protocol Module
+// Public API exports
+
+// Types
+export type {
+  DeepSeekModelType,
+  DeepSeekCompletionRequest,
+  DeepSeekSession,
+  DeepSeekConversationState,
+  DeepSeekPowChallenge,
+  DeepSeekPowSolution,
+  DeepSeekReadyEvent,
+  DeepSeekSSEEvent,
+  DeepSeekCompletionResult,
+  DeepSeekCompletionInput,
+  DeepSeekCredentials,
+} from "./types.js";
+
+// Constants
+export { DEEPSEEK, DEFAULT_TIMEZONE_OFFSET } from "./constants.js";
+
+// Errors
+export { DeepSeekProtocolError, type DeepSeekErrorKind, toDeepSeekError } from "./errors.js";
+
+// Headers
+export {
+  buildClientHeaders,
+  getDeepSeekTimezoneOffset,
+  buildAuthenticationHeaders,
+  buildCompletionHeaders,
+  buildHeaders,
+  type HeaderBuildOptions,
+} from "./headers.js";
+
+// PoW
+export { solvePow, encodePowResponse } from "./pow.js";
+export { createPowChallenge } from "./pow-challenge.js";
+
+// Session
+export { createSession } from "./session.js";
+
+// Completion
+export { buildCompletionRequest } from "./completion.js";
+
+// SSE
+export { parseCompletionStream } from "./sse.js";
+
+// Client
+export { DeepSeekWebClient, createConversationState } from "./client.js";
+export type { DeepSeekWebClientConfig, CredentialsProvider } from "./client.js";
