@@ -1,1168 +1,841 @@
-# DeepSeek Web Endpoint Contract — Bible v1
+# DeepSeek Web Endpoint Contract
 
-## Purpose
-
-This document defines the technical contract that `codeep-proxy` must maintain with the DeepSeek web application backend.
-
-It is based on:
-
-1. Direct inspection of the DeepSeek browser HAR captures.
-2. The V4-Flash/default capture.
-3. The V4-Pro capture.
-4. The current `codeep-proxy` implementation.
-5. The existing `current_diagnose.md` investigation.
-
-The objective is to establish one stable protocol specification before further implementation work.
-
-This document intentionally distinguishes:
-
-- **Observed** — directly demonstrated by captured browser traffic.
-- **Established** — sufficiently demonstrated to implement against.
-- **Unknown** — not yet proven and must not be guessed.
-- **Proxy-defined** — behavior belonging to `codeep-proxy`, not DeepSeek.
-
----
-
-# 1. High-level architecture
-
-The DeepSeek web application is not talking to a conventional OpenAI-compatible `/chat/completions` API.
-
-The actual architecture is approximately:
+## Version
 
 ```text
-Client / Browser
-       |
-       v
-codeep-proxy
-       |
-       |  DeepSeek Web Protocol
-       v
-chat.deepseek.com
-       |
-       +--> authentication/session
-       |
-       +--> chat session
-       |
-       +--> PoW challenge
-       |
-       +--> completion SSE
-       |
-       +--> message tree
-       |
-       +--> model/mode selection
-       |
-       +--> optional search
-```
-
-The central DeepSeek completion endpoint is:
-
-```text
-POST /api/v0/chat/completion
-```
-
-It is an SSE endpoint rather than a normal JSON completion endpoint.
-
----
-
-# 2. The DeepSeek protocol has five important state domains
-
-The complete contract should be understood as five separate state machines.
-
-```text
-1. Authentication state
-2. Chat-session state
-3. Message-chain state
-4. Model/mode state
-5. Request/response transport state
-```
-
-They must not be conflated.
-
----
-
-# 3. Authentication contract
-
-The browser communicates with:
-
-```text
-https://chat.deepseek.com
-```
-
-The captured browser traffic uses normal DeepSeek web authentication and subsequently sends authorization/session information with API requests.
-
-The browser also sends client-identification headers including:
-
-```text
-x-client-bundle-id
-x-client-platform
-x-client-version
-x-client-locale
-x-client-timezone-offset
-```
-
-The current browser capture identifies the web client approximately as:
-
-```text
-bundle:   com.deepseek.chat
-platform: web
-version:  2.4.0
-locale:   en_US
-```
-
-These are part of the observed web-client contract.
-
-The proxy currently reproduces most of these headers.
-
----
-
-# 4. Authentication is not the same thing as chat continuity
-
-This distinction is fundamental.
-
-```text
-Authentication
-    |
-    +--> proves/identifies the DeepSeek account/session
-
-Chat session
-    |
-    +--> identifies one conversation
-
-Message ID
-    |
-    +--> identifies the current point in that conversation
-```
-
-Therefore:
-
-```text
-same authentication != same conversation
-```
-
-and:
-
-```text
-same chat_session_id != sufficient continuation state
-```
-
-The conversation additionally requires the current message-chain position.
-
----
-
-# 5. Chat-session creation
-
-The browser creates a conversation through:
-
-```http
-POST /api/v0/chat_session/create
-```
-
-with an empty JSON body:
-
-```json
-{}
-```
-
-The response contains a chat-session object.
-
-Important fields observed include:
-
-```text
-id
-seq_id
-agent
-model_type
-current_message_id
-ttl_seconds
-```
-
-The important value for subsequent completion calls is:
-
-```text
-chat_session.id
-```
-
-The captured session metadata showed:
-
-```text
-current_message_id = null
-```
-
-at creation time.
-
-The captured TTL was:
-
-```text
-259200 seconds
-```
-
-which is three days.
-
-Therefore the proxy must treat DeepSeek sessions as expiring server-side objects rather than permanent conversation IDs.
-
----
-
-# 6. Chat session is the conversation container
-
-The DeepSeek completion request contains:
-
-```json
-{
-  "chat_session_id": "<uuid>"
-}
-```
-
-This value remains constant across multiple turns of one browser conversation.
-
-Example conceptual sequence:
-
-```text
-turn 1:
-chat_session_id = A
-
-turn 2:
-chat_session_id = A
-
-turn 3:
-chat_session_id = A
-
-turn 4:
-chat_session_id = A
-```
-
-A new conversation receives another session ID.
-
-Therefore:
-
-```text
-chat_session_id = conversation container
+contract_version = "2.0"
+protocol_target = "DeepSeek Web Chat"
+runtime_reference = "Cloudflare Workers + TypeScript + Wrangler"
 ```
 
 ---
 
-# 7. Message-chain state
+# 1. Reference implementation template
 
-DeepSeek additionally uses:
+The following is the complete structural template of an implementation conforming to this contract.
 
-```json
-"parent_message_id": ...
-```
-
-This is separate from `chat_session_id`.
-
-First message:
-
-```json
-"parent_message_id": null
-```
-
-Subsequent message:
-
-```json
-"parent_message_id": <previous response_message_id>
-```
-
-Therefore the minimum continuation state is:
-
-```text
-DeepSeekConversationState
-{
-    chat_session_id,
-    parent_message_id
-}
-```
-
-where:
-
-```text
-parent_message_id
-=
-latest successful assistant response message ID
-```
-
----
-
-# 8. The message tree model
-
-DeepSeek should be thought of as maintaining a message tree.
-
-Conceptually:
-
-```text
-session A
-   |
-   +-- message 1 (user)
-          |
-          +-- message 2 (assistant)
-                 |
-                 +-- message 3 (user)
-                        |
-                        +-- message 4 (assistant)
-                               |
-                               +-- message 5 (user)
-                                      |
-                                      +-- message 6 (assistant)
-```
-
-The next user message attaches to:
-
-```text
-parent_message_id = 6
-```
-
-This is why merely preserving the session UUID is insufficient.
-
----
-
-# 9. Completion endpoint
-
-The primary endpoint is:
-
-```http
-POST /api/v0/chat/completion
-```
-
-The response is:
-
-```http
-Content-Type: text/event-stream
-```
-
-not ordinary JSON.
-
-The request body contains the following established fields:
-
-```json
-{
-  "chat_session_id": "...",
-  "parent_message_id": null,
-  "model_type": null,
-  "prompt": "...",
-  "ref_file_ids": [],
-  "thinking_enabled": false,
-  "search_enabled": false,
-  "action": null,
-  "preempt": false
-}
-```
-
-This is the core DeepSeek Web Chat completion contract.
-
----
-
-# 10. Request field contract
-
-## `chat_session_id`
-
-Type:
-
-```text
-string
-```
-
-Purpose:
-
-```text
-identifies the DeepSeek conversation
-```
-
-Required for normal completion.
-
----
-
-## `parent_message_id`
-
-Type:
-
-```text
-number | null
-```
-
-First request:
-
-```text
-null
-```
-
-Later requests:
-
-```text
-previous response_message_id
-```
-
-Important:
-
-```text
-DO NOT serialize this as a string.
-```
-
-Correct:
-
-```json
-"parent_message_id": 4
-```
-
-Incorrect:
-
-```json
-"parent_message_id": "4"
-```
-
-The current proxy has already corrected this type.
-
----
-
-## `model_type`
-
-Observed values include:
-
-```text
-null / default
-expert
-```
-
-The browser's default/V4-Flash path sends:
-
-```json
-"model_type": null
-```
-
-and the server identifies it as:
-
-```text
-default
-```
-
-The V4-Pro capture establishes the corresponding expert path.
-
-Therefore the proxy abstraction is:
-
-```text
-DeepSeek default
-    -> model_type = null/default
-
-DeepSeek Pro
-    -> model_type = expert
-```
-
-The exact UI model names are a client-level abstraction and should not be confused with the backend value.
-
----
-
-# 11. V4-Flash contract
-
-For the V4-Flash/default path:
-
-```text
-model_type = null
-```
-
-The browser then controls reasoning behavior through:
-
-```text
-thinking_enabled
-```
-
-Therefore:
-
-```text
-V4-Flash + no thinking
-    model_type = null
-    thinking_enabled = false
-```
-
-and:
-
-```text
-V4-Flash + thinking
-    model_type = null
-    thinking_enabled = true
-```
-
-The server reports the model as:
-
-```text
-default
-```
-
-in the response metadata.
-
----
-
-# 12. V4-Pro contract
-
-The V4-Pro browser capture establishes that Pro is represented at the DeepSeek protocol layer by the expert model path.
-
-Conceptually:
-
-```text
-V4-Pro
-    |
-    v
-model_type = expert
-```
-
-Reasoning remains an independent dimension:
-
-```text
-V4-Pro + non-thinking
-    model_type = expert
-    thinking_enabled = false
-```
-
-versus:
-
-```text
-V4-Pro + thinking
-    model_type = expert
-    thinking_enabled = true
-```
-
-This is important.
-
-The protocol does not need four independent backend model identifiers for:
-
-```text
-Flash no-think
-Flash think
-Pro no-think
-Pro think
-```
-
-It has two principal model families plus a reasoning flag:
-
-```text
-model_type
-    +
-thinking_enabled
-```
-
----
-
-# 13. Reasoning contract
-
-The browser protocol uses:
-
-```json
-"thinking_enabled": true
-```
-
-or:
-
-```json
-"thinking_enabled": false
-```
-
-The external proxy may expose:
-
-```text
-reasoning.effort
-```
-
-because that is convenient for an OpenAI/Codex-compatible interface.
-
-But this is a proxy translation.
-
-For example:
-
-```text
-proxy:
-reasoning.effort = low
-       |
-       v
-DeepSeek:
-thinking_enabled = false
-```
-
-and:
-
-```text
-proxy:
-reasoning.effort = max
-       |
-       v
-DeepSeek:
-thinking_enabled = true
-```
-
-The exact mapping between all possible OpenAI reasoning levels and DeepSeek UI modes must not be invented until experimentally verified.
-
-The DeepSeek contract itself only establishes the boolean thinking flag from these captures.
-
----
-
-# 14. Search contract
-
-Search uses the same completion endpoint:
-
-```text
-POST /api/v0/chat/completion
-```
-
-There is no separate basic completion endpoint required for web search.
-
-The relevant request field is:
-
-```json
-"search_enabled": true
-```
-
-versus:
-
-```json
-"search_enabled": false
-```
-
-The browser can therefore be represented as:
-
-```text
-normal:
-search_enabled = false
-
-search:
-search_enabled = true
-```
-
-The server response can expose search-related state including:
-
-```text
-search_enabled
-search_triggered
-conversation_mode
-```
-
-The observed search flow can enter:
-
-```text
-DEEP_SEARCH
-```
-
----
-
-# 15. Search and thinking are independent dimensions
-
-The protocol model should therefore be:
-
-```text
-                    thinking
-                       |
-                 +-----+-----+
-                 |           |
-              false        true
-                 |
-                 |
-model ---------- + ----------------
-                 |
-          search_enabled
-                 |
-            +----+----+
-            |         |
-          false      true
-```
-
-In implementation terms:
-
-```json
-{
-  "model_type": null,
-  "thinking_enabled": true,
-  "search_enabled": true
-}
-```
-
-is a valid conceptual combination.
-
-The proxy must not model search as a different model.
-
----
-
-# 16. PoW contract
-
-Before completion, the browser obtains a proof-of-work challenge:
-
-```http
-POST /api/v0/chat/create_pow_challenge
-```
-
-Request:
-
-```json
-{
-  "target_path": "/api/v0/chat/completion"
-}
-```
-
-The challenge includes fields such as:
-
-```text
-algorithm
-challenge
-salt
-signature
-difficulty
-expire_at
-expire_after
-target_path
-```
-
-Observed algorithm:
-
-```text
-DeepSeekHashV1
-```
-
-The browser solves the challenge and sends the result through:
-
-```text
-x-ds-pow-response
-```
-
-The current `src/pow.ts` implementation already implements the DeepSeekHashV1 solver.
-
-Therefore PoW is an established mandatory part of the completion pipeline.
-
----
-
-# 17. PoW lifecycle
-
-The correct sequence is:
-
-```text
-completion requested
-        |
-        v
-create_pow_challenge
-        |
-        v
-receive challenge
-        |
-        v
-solve challenge
-        |
-        v
-encode result
-        |
-        v
-x-ds-pow-response
-        |
-        v
-POST /chat/completion
-```
-
-The proxy should not reuse an expired challenge.
-
-The safest implementation is:
-
-```text
-one completion request
-    ->
-one fresh PoW challenge
-```
-
-unless future captures prove that reuse is supported.
-
----
-
-# 18. SSE protocol
-
-The DeepSeek completion response is an SSE stream.
-
-The most important event for state management is:
-
-```text
-event: ready
-```
-
-Its payload contains:
-
-```json
-{
-  "request_message_id": N,
-  "response_message_id": N+1,
-  "model_type": "..."
-}
-```
-
-This event is authoritative for obtaining the new response message ID.
-
----
-
-# 19. The `ready` event is a state-transition event
-
-The proxy must treat:
-
-```text
-event: ready
-```
-
-as more than metadata.
-
-It is effectively:
-
-```text
-DeepSeek has accepted the new message
-        |
-        v
-here is the new user message ID
-        +
-here is the new assistant response ID
-```
-
-Therefore:
-
-```text
-response_message_id
-```
-
-becomes the continuation cursor.
-
-The state transition is:
-
-```text
-OLD:
-lastMessageId = N
-
-completion
-
-READY:
-response_message_id = N+2
-
-NEW:
-lastMessageId = N+2
-```
-
----
-
-# 20. Correct continuation algorithm
-
-The authoritative algorithm is:
-
-```text
-load proxy conversation state
-
-if no DeepSeek session:
-    create chat session
-
-parent = state.lastMessageId
-
-create PoW
-
-POST completion:
-    chat_session_id = state.session
-    parent_message_id = parent
-
-receive SSE
-
-on "ready":
-    responseMessageId =
-        data.response_message_id
-
-stream response
-
-after successful completion:
-    persist:
-        chat_session_id = same session
-        lastMessageId = responseMessageId
-```
-
-The proxy must never intentionally replace a successful new message ID with:
-
-```text
-null
-```
-
----
-
-# 21. Current proxy continuity defect
-
-The current `codeep-proxy` has the right state structure:
+It is intentionally written for Cloudflare Workers using standard Web APIs and TypeScript. It does not depend on a specific Node.js version.
 
 ```ts
-interface SessionState {
-  deepSeekSessionId: string
-  lastMessageId: number | null
-  instructionsApplied: boolean
+// ============================================================
+// DeepSeek Web Protocol — Cloudflare Workers Reference Template
+// ============================================================
+
+// ------------------------------------------------------------
+// 1. Environment
+// ------------------------------------------------------------
+
+export interface Env {
+  DEEPSEEK_AUTHORIZATION?: string;
+  DEEPSEEK_COOKIE?: string;
+
+  // Optional protocol/runtime configuration.
+  DEEPSEEK_ORIGIN?: string;
+}
+
+// ------------------------------------------------------------
+// 2. Protocol constants
+// ------------------------------------------------------------
+
+export const DEEPSEEK = {
+  ORIGIN: "https://chat.deepseek.com",
+
+  ENDPOINTS: {
+    CREATE_SESSION: "/api/v0/chat_session/create",
+    CREATE_POW: "/api/v0/chat/create_pow_challenge",
+    COMPLETION: "/api/v0/chat/completion",
+  },
+
+  CLIENT: {
+    BUNDLE_ID: "com.deepseek.chat",
+    PLATFORM: "web",
+    VERSION: "2.4.0",
+    LOCALE: "en_US",
+  },
+
+  POW: {
+    ALGORITHM: "DeepSeekHashV1",
+  },
+} as const;
+
+// ------------------------------------------------------------
+// 3. Core protocol types
+// ------------------------------------------------------------
+
+export type DeepSeekModelType =
+  | null
+  | "expert"
+  | string;
+
+export interface DeepSeekCompletionRequest {
+  chat_session_id: string;
+  parent_message_id: number | null;
+  model_type: DeepSeekModelType;
+  prompt: string;
+  ref_file_ids: string[];
+  thinking_enabled: boolean;
+  search_enabled: boolean;
+  action: unknown | null;
+  preempt: boolean;
+}
+
+export interface DeepSeekSession {
+  id: string;
+  seq_id?: number;
+  agent?: string;
+  model_type?: string | null;
+  current_message_id?: number | null;
+  ttl_seconds?: number;
+  [key: string]: unknown;
+}
+
+// ------------------------------------------------------------
+// 4. Conversation state
+// ------------------------------------------------------------
+
+export interface DeepSeekConversationState {
+  chat_session_id: string;
+  parent_message_id: number | null;
+
+  model_type?: DeepSeekModelType;
+  thinking_enabled?: boolean;
+  search_enabled?: boolean;
+
+  created_at?: number;
+  updated_at?: number;
+}
+
+// ------------------------------------------------------------
+// 5. PoW types
+// ------------------------------------------------------------
+
+export interface DeepSeekPowChallenge {
+  algorithm: string;
+  challenge: string;
+  salt: string;
+  signature: string;
+  difficulty: number;
+  expire_at?: number;
+  expire_after?: number;
+  target_path: string;
+
+  [key: string]: unknown;
+}
+
+export interface DeepSeekPowSolution {
+  [key: string]: unknown;
+}
+
+// ------------------------------------------------------------
+// 6. SSE types
+// ------------------------------------------------------------
+
+export interface DeepSeekReadyEvent {
+  request_message_id: number;
+  response_message_id: number;
+  model_type: string;
+}
+
+export interface DeepSeekSSEEvent {
+  event?: string;
+  data?: unknown;
+}
+
+export interface DeepSeekCompletionResult {
+  request_message_id: number | null;
+  response_message_id: number | null;
+  model_type: string | null;
+
+  output_text: string;
+
+  search_enabled?: boolean;
+  search_triggered?: boolean;
+  conversation_mode?: string;
+
+  events: DeepSeekSSEEvent[];
+}
+
+// ------------------------------------------------------------
+// 7. Protocol errors
+// ------------------------------------------------------------
+
+export type DeepSeekErrorKind =
+  | "authentication"
+  | "session"
+  | "pow"
+  | "completion"
+  | "sse"
+  | "protocol"
+  | "unknown";
+
+export interface DeepSeekError {
+  kind: DeepSeekErrorKind;
+  http_status?: number;
+  code?: string | number | null;
+  message?: string;
+  raw?: unknown;
+}
+
+// ------------------------------------------------------------
+// 8. Header construction
+// ------------------------------------------------------------
+
+export interface DeepSeekClientHeaders {
+  authorization?: string;
+  cookie?: string;
+
+  "x-client-bundle-id": string;
+  "x-client-platform": string;
+  "x-client-version": string;
+  "x-client-locale": string;
+  "x-client-timezone-offset": string;
+
+  "x-hif-leim"?: string;
+  "x-ds-pow-response"?: string;
+
+  "content-type": string;
+  accept: string;
+}
+
+// ------------------------------------------------------------
+// 9. Authentication
+// ------------------------------------------------------------
+
+export function buildAuthenticationHeaders(
+  env: Env,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "x-client-bundle-id": DEEPSEEK.CLIENT.BUNDLE_ID,
+    "x-client-platform": DEEPSEEK.CLIENT.PLATFORM,
+    "x-client-version": DEEPSEEK.CLIENT.VERSION,
+    "x-client-locale": DEEPSEEK.CLIENT.LOCALE,
+
+    // Exact wire representation required by the protocol.
+    "x-client-timezone-offset": "3600",
+
+    "content-type": "application/json",
+    "accept": "*/*",
+  };
+
+  if (env.DEEPSEEK_AUTHORIZATION) {
+    headers["authorization"] = env.DEEPSEEK_AUTHORIZATION;
+  }
+
+  if (env.DEEPSEEK_COOKIE) {
+    headers["cookie"] = env.DEEPSEEK_COOKIE;
+  }
+
+  return headers;
+}
+
+// ------------------------------------------------------------
+// 10. Session creation
+// ------------------------------------------------------------
+
+export async function createChatSession(
+  env: Env,
+): Promise<DeepSeekSession> {
+  const response = await fetch(
+    `${DEEPSEEK.ORIGIN}${DEEPSEEK.ENDPOINTS.CREATE_SESSION}`,
+    {
+      method: "POST",
+      headers: buildAuthenticationHeaders(env),
+      body: JSON.stringify({}),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `DeepSeek session creation failed: HTTP ${response.status}`,
+    );
+  }
+
+  return await response.json() as DeepSeekSession;
+}
+
+// ------------------------------------------------------------
+// 11. PoW challenge
+// ------------------------------------------------------------
+
+export async function createPowChallenge(
+  env: Env,
+): Promise<DeepSeekPowChallenge> {
+  const response = await fetch(
+    `${DEEPSEEK.ORIGIN}${DEEPSEEK.ENDPOINTS.CREATE_POW}`,
+    {
+      method: "POST",
+      headers: buildAuthenticationHeaders(env),
+      body: JSON.stringify({
+        target_path: DEEPSEEK.ENDPOINTS.COMPLETION,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `DeepSeek PoW challenge failed: HTTP ${response.status}`,
+    );
+  }
+
+  return await response.json() as DeepSeekPowChallenge;
+}
+
+// ------------------------------------------------------------
+// 12. PoW solver
+// ------------------------------------------------------------
+
+export async function solvePow(
+  challenge: DeepSeekPowChallenge,
+): Promise<DeepSeekPowSolution> {
+  if (challenge.algorithm !== DEEPSEEK.POW.ALGORITHM) {
+    throw new Error(
+      `Unsupported PoW algorithm: ${challenge.algorithm}`,
+    );
+  }
+
+  // DeepSeekHashV1 implementation goes here.
+  // Exact algorithm is a protocol component.
+  return {};
+}
+
+// ------------------------------------------------------------
+// 13. Completion request builder
+// ------------------------------------------------------------
+
+export function buildCompletionRequest(
+  state: DeepSeekConversationState,
+  prompt: string,
+  options: {
+    model_type?: DeepSeekModelType;
+    thinking_enabled?: boolean;
+    search_enabled?: boolean;
+    ref_file_ids?: string[];
+    action?: unknown | null;
+    preempt?: boolean;
+  } = {},
+): DeepSeekCompletionRequest {
+  return {
+    chat_session_id: state.chat_session_id,
+
+    parent_message_id:
+      state.parent_message_id,
+
+    model_type:
+      options.model_type ?? null,
+
+    prompt,
+
+    ref_file_ids:
+      options.ref_file_ids ?? [],
+
+    thinking_enabled:
+      options.thinking_enabled ?? false,
+
+    search_enabled:
+      options.search_enabled ?? false,
+
+    action:
+      options.action ?? null,
+
+    preempt:
+      options.preempt ?? false,
+  };
+}
+
+// ------------------------------------------------------------
+// 14. Completion request
+// ------------------------------------------------------------
+
+export async function requestCompletion(
+  env: Env,
+  request: DeepSeekCompletionRequest,
+  powHeader: string,
+): Promise<Response> {
+  const headers = buildAuthenticationHeaders(env);
+
+  headers["accept"] = "text/event-stream";
+  headers["x-ds-pow-response"] = powHeader;
+
+  return fetch(
+    `${DEEPSEEK.ORIGIN}${DEEPSEEK.ENDPOINTS.COMPLETION}`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+// ------------------------------------------------------------
+// 15. SSE parsing
+// ------------------------------------------------------------
+
+export async function parseCompletionStream(
+  response: Response,
+): Promise<DeepSeekCompletionResult> {
+  if (!response.body) {
+    throw new Error("DeepSeek completion response has no body");
+  }
+
+  // SSE parser implementation goes here.
+  // It must separately process:
+  //   - event: ready
+  //   - event: update_session
+  //   - data deltas
+  //   - event: close
+
+  return {
+    request_message_id: null,
+    response_message_id: null,
+    model_type: null,
+    output_text: "",
+    events: [],
+  };
+}
+
+// ------------------------------------------------------------
+// 16. Complete one turn
+// ------------------------------------------------------------
+
+export async function completeTurn(
+  env: Env,
+  state: DeepSeekConversationState,
+  prompt: string,
+  options: {
+    model_type?: DeepSeekModelType;
+    thinking_enabled?: boolean;
+    search_enabled?: boolean;
+  } = {},
+): Promise<{
+  result: DeepSeekCompletionResult;
+  nextState: DeepSeekConversationState;
+}> {
+  const request = buildCompletionRequest(
+    state,
+    prompt,
+    options,
+  );
+
+  const challenge =
+    await createPowChallenge(env);
+
+  const solution =
+    await solvePow(challenge);
+
+  const powHeader =
+    btoa(JSON.stringify(solution));
+
+  const response =
+    await requestCompletion(
+      env,
+      request,
+      powHeader,
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `DeepSeek completion failed: HTTP ${response.status}`,
+    );
+  }
+
+  const result =
+    await parseCompletionStream(response);
+
+  if (result.response_message_id === null) {
+    throw new Error(
+      "DeepSeek completion did not provide response_message_id",
+    );
+  }
+
+  const nextState: DeepSeekConversationState = {
+    ...state,
+    parent_message_id:
+      result.response_message_id,
+
+    model_type:
+      options.model_type ?? state.model_type,
+
+    thinking_enabled:
+      options.thinking_enabled ??
+      state.thinking_enabled,
+
+    search_enabled:
+      options.search_enabled ??
+      state.search_enabled,
+
+    updated_at: Date.now(),
+  };
+
+  return {
+    result,
+    nextState,
+  };
+}
+
+// ------------------------------------------------------------
+// 17. Worker entry point
+// ------------------------------------------------------------
+
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+  ): Promise<Response> {
+    try {
+      // Application-specific routing goes here.
+      return new Response(
+        "DeepSeek protocol implementation",
+        { status: 200 },
+      );
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error),
+        }),
+        {
+          status: 500,
+          headers: {
+            "content-type":
+              "application/json",
+          },
+        },
+      );
+    }
+  },
+};
+```
+
+The template above defines the complete protocol surface without coupling it to a particular application architecture.
+
+---
+
+# 2. Protocol definition
+
+## 2.1 Origin
+
+```json
+{
+  "name": "DeepSeek Web API origin",
+  "value": "https://chat.deepseek.com",
+  "status": "ESTABLISHED"
 }
 ```
 
-but the state lifecycle is currently wrong.
-
-The streaming path saves:
-
-```text
-lastMessageId = null
-```
-
-after the response.
-
-Therefore the next request cannot correctly use:
-
-```text
-parent_message_id = previous response_message_id
-```
-
-This is one of the principal reasons the proxy does not maintain browser-equivalent continuity. 
+The protocol endpoints documented below are relative to this origin.
 
 ---
 
-# 22. Second continuity defect: proxy conversation identity
+# 3. Endpoint specification
 
-The current proxy attempts to identify a conversation using:
+## 3.1 Chat-session creation
 
-```text
-thread-id
-session-id
-```
-
-from the incoming request.
-
-If neither is supplied, there is no stable external key.
-
-Then the proxy can do:
-
-```text
-request 1
-    -> create DeepSeek session A
-
-request 2
-    -> create DeepSeek session B
-```
-
-even if the client considers both requests part of one conversation.
-
-Therefore the proxy needs a clearly defined external conversation identity mechanism.
-
-This is a **proxy contract problem**, not a DeepSeek API problem.
-
----
-
-# 23. Required proxy state model
-
-The proxy should maintain:
-
-```ts
-interface DeepSeekConversationState {
-    deepSeekSessionId: string
-    lastMessageId: number | null
-    modelType?: 'default' | 'expert'
-    thinkingEnabled?: boolean
-    searchEnabled?: boolean
-    createdAt?: number
-    lastUsedAt?: number
+```json
+{
+  "method": "POST",
+  "path": "/api/v0/chat_session/create",
+  "request_content_type": "application/json",
+  "request_body": {},
+  "response_type": "JSON",
+  "purpose": "Create a new DeepSeek chat session",
+  "status": "ESTABLISHED"
 }
 ```
 
-The minimum mandatory fields are:
+The returned session contains an identifier:
 
-```text
-deepSeekSessionId
-lastMessageId
+```json
+{
+  "field": "id",
+  "type": "string",
+  "semantic_role": "chat_session_id",
+  "status": "ESTABLISHED"
+}
 ```
 
-Everything else is optional cached metadata.
+Observed session metadata includes:
+
+```json
+{
+  "id": "string",
+  "seq_id": "number",
+  "agent": "string",
+  "model_type": "string|null",
+  "current_message_id": "number|null",
+  "ttl_seconds": "number"
+}
+```
+
+Fields beyond `id` should be treated according to their observed presence rather than assumed to be universally required.
 
 ---
 
-# 24. Proxy identity model
+# 4. Chat session
 
-The proxy must define one canonical external conversation key.
-
-For example:
-
-```text
-proxyConversationId
+```json
+{
+  "name": "chat_session_id",
+  "type": "string",
+  "source": "chat_session/create.id",
+  "scope": "conversation",
+  "status": "ESTABLISHED"
+}
 ```
 
-Then:
+A chat session is the server-side container for a conversation.
 
-```text
-proxyConversationId
-        |
-        v
-KV
-        |
-        +--> deepSeekSessionId
-        +--> lastMessageId
-```
-
-Incoming transport-specific identifiers such as:
-
-```text
-thread-id
-session-id
-previous_response_id
-```
-
-can be aliases.
-
-They should not each independently define different conversation semantics.
+The same session identifier is reused across sequential turns of the same browser conversation.
 
 ---
 
-# 25. OpenAI/Codex compatibility layer
+# 5. Session lifetime
 
-The proxy has two worlds:
+Observed:
 
-```text
-External:
-OpenAI/Codex-style API
-
-Internal:
-DeepSeek Web API
+```json
+{
+  "field": "ttl_seconds",
+  "observed_value": 259200,
+  "seconds": 259200,
+  "equivalent": "3 days",
+  "status": "OBSERVED"
+}
 ```
 
-Therefore the mapping must be explicit.
+The existence of a finite TTL establishes that session identifiers are not permanent.
+
+Exact expiration behavior remains a property of the server contract beyond the observed metadata.
+
+---
+
+# 6. Completion endpoint
+
+```json
+{
+  "method": "POST",
+  "path": "/api/v0/chat/completion",
+  "request_content_type": "application/json",
+  "response_content_type": "text/event-stream",
+  "purpose": "Generate a DeepSeek chat response",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 7. Completion request schema
+
+```json
+{
+  "chat_session_id": {
+    "type": "string",
+    "required": true
+  },
+  "parent_message_id": {
+    "type": "number|null",
+    "required": true
+  },
+  "model_type": {
+    "type": "string|null",
+    "required": true,
+    "observed_values": [
+      null,
+      "expert"
+    ]
+  },
+  "prompt": {
+    "type": "string",
+    "required": true
+  },
+  "ref_file_ids": {
+    "type": "array",
+    "required": true,
+    "normal_value": []
+  },
+  "thinking_enabled": {
+    "type": "boolean",
+    "required": true
+  },
+  "search_enabled": {
+    "type": "boolean",
+    "required": true
+  },
+  "action": {
+    "type": "null|unknown",
+    "required": true,
+    "normal_value": null
+  },
+  "preempt": {
+    "type": "boolean",
+    "required": true,
+    "normal_value": false
+  }
+}
+```
+
+---
+
+# 8. parent_message_id
+
+```json
+{
+  "name": "parent_message_id",
+  "type": "number|null",
+  "first_turn": null,
+  "subsequent_turn": "previous response_message_id",
+  "status": "ESTABLISHED"
+}
+```
+
+The field identifies the message from which the new user message continues.
+
+For the first message:
+
+```json
+{
+  "parent_message_id": null
+}
+```
+
+For the next turn:
+
+```json
+{
+  "parent_message_id": 42
+}
+```
+
+where `42` is the previous assistant `response_message_id`.
+
+---
+
+# 9. Message-chain state
+
+The protocol's minimum conversational state is:
+
+```json
+{
+  "chat_session_id": "string",
+  "parent_message_id": "number|null"
+}
+```
+
+Equivalent semantic definition:
+
+```json
+{
+  "chat_session_id": {
+    "role": "conversation container"
+  },
+  "parent_message_id": {
+    "role": "current conversation position"
+  }
+}
+```
+
+A session identifier by itself is therefore not the complete continuation state.
+
+---
+
+# 10. Message identifiers
+
+The completion protocol exposes:
+
+```json
+{
+  "request_message_id": "number",
+  "response_message_id": "number"
+}
+```
+
+Their roles are:
+
+```json
+{
+  "request_message_id": "new user/request message identifier",
+  "response_message_id": "new assistant response identifier"
+}
+```
+
+The authoritative source for the new assistant response identifier is the `ready` event.
+
+---
+
+# 11. SSE response contract
+
+The completion response is an SSE stream.
+
+Relevant event classes include:
+
+```json
+{
+  "event_types": [
+    "ready",
+    "update_session",
+    "data",
+    "close"
+  ]
+}
+```
+
+The exact event ordering belongs to the response protocol.
+
+---
+
+# 12. ready event
+
+```json
+{
+  "event": "ready",
+  "data": {
+    "request_message_id": "number",
+    "response_message_id": "number",
+    "model_type": "string"
+  },
+  "status": "ESTABLISHED"
+}
+```
 
 Example:
 
 ```text
-OpenAI/Codex model
-        |
-        v
-proxy model mapping
-        |
-        +--> DeepSeek model_type
-        |
-        +--> thinking_enabled
-        |
-        +--> search_enabled
+event: ready
+data: {
+  "request_message_id": 1,
+  "response_message_id": 2,
+  "model_type": "default"
+}
 ```
 
-Similarly:
-
-```text
-OpenAI previous_response_id
-        |
-        v
-proxy KV state
-        |
-        +--> DeepSeek parent_message_id
-```
-
-The proxy must never assume that the identifiers are interchangeable.
+The `response_message_id` becomes the parent identifier for the next conversational request.
 
 ---
 
-# 26. Prompt contract
-
-The DeepSeek completion request uses:
+# 13. State transition caused by ready
 
 ```json
-"prompt": "..."
+{
+  "before": {
+    "parent_message_id": "previous response ID or null"
+  },
+  "ready": {
+    "response_message_id": "new response ID"
+  },
+  "after": {
+    "parent_message_id": "ready.response_message_id"
+  }
+}
 ```
 
-The browser sends the actual new user prompt rather than replaying the entire previous conversation.
-
-Conversation history is held server-side through:
-
-```text
-chat_session_id
-+
-parent_message_id
-```
-
-Therefore the proxy does not need to resend the entire historical conversation to DeepSeek for ordinary continuation.
-
-This is a major simplification.
+This is a protocol state transition, not merely response metadata.
 
 ---
 
-# 27. `ref_file_ids`
+# 14. SSE delta protocol
 
-The browser request includes:
-
-```json
-"ref_file_ids": []
-```
-
-For plain text conversations this is:
-
-```text
-empty array
-```
-
-The proxy currently sends exactly that.
-
-Therefore:
-
-```text
-ref_file_ids
-```
-
-is part of the completion contract, even when unused.
-
-File/attachment semantics remain a separate contract and should not be invented from the text-only captures.
-
----
-
-# 28. `action`
-
-Observed request shape:
-
-```json
-"action": null
-```
-
-The proxy currently reproduces this.
-
-The meaning and supported non-null action values have not yet been established.
-
-Therefore:
-
-```text
-action = null
-```
-
-is established.
-
-Non-null `action` semantics are:
-
-```text
-UNKNOWN
-```
-
-and must be investigated separately before implementation.
-
----
-
-# 29. `preempt`
-
-Observed request shape:
-
-```json
-"preempt": false
-```
-
-The proxy currently reproduces this.
-
-The exact semantics of `preempt=true` have not been established.
-
-Therefore:
-
-```text
-preempt=false
-```
-
-is established.
-
-Do not invent behavior for `true`.
-
----
-
-# 30. SSE response structure
-
-The response stream contains a mixture of:
-
-```text
-ready
-update_session
-data deltas
-close
-```
-
-The content itself is represented through DeepSeek's delta protocol.
-
-A typical delta contains:
+Observed content deltas use fields equivalent to:
 
 ```json
 {
@@ -1172,525 +845,538 @@ A typical delta contains:
 }
 ```
 
-where:
-
-```text
-p = path
-o = operation
-v = value
-```
-
-Operations observed include:
-
-```text
-SET
-APPEND
-BATCH
-```
-
-The current proxy's delta parser is already designed around this structure.
-
----
-
-# 31. Do not use response text parsing to determine message identity
-
-Message identity and content streaming are separate concerns.
-
-Wrong design:
-
-```text
-parse response text
-    |
-    +--> guess message ID
-```
-
-Correct design:
-
-```text
-SSE event: ready
-    |
-    +--> response_message_id
-```
-
-and independently:
-
-```text
-SSE data deltas
-    |
-    +--> assistant text
-```
-
-This separation should be preserved permanently.
-
----
-
-# 32. Response completion lifecycle
-
-A correct proxy should treat the completion as:
-
-```text
-START
-  |
-  v
-PoW obtained
-  |
-  v
-DeepSeek request accepted
-  |
-  v
-READY
-  |
-  +--> capture response_message_id
-  |
-  v
-CONTENT STREAM
-  |
-  v
-CLOSE / successful completion
-  |
-  v
-COMMIT conversation state
-```
-
-The state commit must occur only after the proxy has obtained a valid:
-
-```text
-response_message_id
-```
-
-and the request is considered successfully established.
-
----
-
-# 33. State commit must be atomic from the proxy's perspective
-
-The proxy must avoid:
-
-```text
-request starts
-    |
-    v
-overwrite lastMessageId
-    |
-    v
-DeepSeek request fails
-```
-
-because that can corrupt conversation state.
-
-Safer:
-
-```text
-old state
-   |
-   v
-request
-   |
-   v
-ready -> newMessageId
-   |
-   v
-successful completion
-   |
-   v
-commit new state
-```
-
-If the completion fails before a valid new message ID exists:
-
-```text
-preserve old lastMessageId
-```
-
-unless DeepSeek explicitly indicates that the message was committed.
-
----
-
-# 34. Retries are dangerous
-
-Because DeepSeek has a message-chain model, blindly retrying a completion can create:
-
-```text
-duplicate user messages
-```
-
-or branch the conversation.
-
-Therefore:
-
-```text
-retry completion
-```
-
-must not automatically mean:
-
-```text
-send identical prompt again
-```
-
-The proxy should distinguish:
-
-```text
-transport failure before request accepted
-```
-
-from:
-
-```text
-request accepted but stream failed
-```
-
-The `ready` event is particularly important here because it establishes that DeepSeek assigned message IDs.
-
----
-
-# 35. Concurrency contract
-
-Conversation state is mutable:
-
-```text
-lastMessageId
-```
-
-Therefore two simultaneous requests for the same proxy conversation are unsafe.
-
-Example:
-
-```text
-request A:
-parent = 10
-
-request B:
-parent = 10
-
-A -> response 12
-B -> response 14
-```
-
-The result can branch unexpectedly.
-
-Therefore the proxy should eventually enforce:
-
-```text
-one active completion per conversation
-```
-
-or implement explicit serialization/locking.
-
-This is a proxy-level requirement derived from the DeepSeek message-tree design.
-
----
-
-# 36. Model switching inside a session
-
-The captured protocol indicates that model/mode information is part of each completion request.
-
-The proxy should therefore not assume:
-
-```text
-one DeepSeek session = one permanently fixed proxy model
-```
-
-unless future captures prove otherwise.
-
-Instead:
-
-```text
-session
-    |
-    +-- turn 1: default
-    +-- turn 2: default + thinking
-    +-- turn 3: default + search
-```
-
-is demonstrably possible in the Flash/default capture.
-
-The V4-Pro capture establishes the expert path.
-
-Whether switching:
-
-```text
-default <-> expert
-```
-
-inside the same existing session is fully supported must be treated as a separately verified question unless the capture contains such a transition.
-
-Do not assume it.
-
----
-
-# 37. Browser client headers
-
-The browser consistently identifies itself through headers in the `x-client-*` family.
-
-The established values from the captures include:
-
-```text
-x-client-bundle-id: com.deepseek.chat
-x-client-platform: web
-x-client-version: 2.4.0
-x-client-locale: en_US
-```
-
-The proxy already reproduces these.
-
----
-
-# 38. Timezone header
-
-The browser sends a timezone offset such as:
-
-```text
-x-client-timezone-offset: 3600
-```
-
-The current proxy uses:
-
-```ts
-new Date().getTimezoneOffset()
-```
-
-which has a different sign convention.
-
-Therefore the proxy should not use the raw JavaScript `getTimezoneOffset()` result as a browser-equivalent value.
-
-This should be corrected according to the exact DeepSeek/browser convention.
-
----
-
-# 39. `x-hif-leim`
-
-The browser sends:
-
-```text
-x-hif-leim
-```
-
-on relevant DeepSeek requests.
-
-The current proxy does not reproduce it.
-
-The exact semantics of this header are not established by the captures alone.
-
-Therefore the correct status is:
-
-```text
-Observed: YES
-Meaning: UNKNOWN
-Proxy currently sends: NO
-```
-
-We should not invent a value.
-
-The next protocol experiment should determine whether:
-
-```text
-missing
-```
-
-versus:
-
-```text
-browser-equivalent
-```
-
-changes endpoint behavior.
-
----
-
-# 40. Cookies and Authorization
-
-The browser uses authenticated state.
-
-The proxy currently supports:
-
-```text
-Authorization
-Cookie
-```
-
-through configured authentication state.
-
-This is sufficient for the current architecture.
-
-The proxy should centralize credentials rather than embedding them in individual request functions.
-
-The current `credentials()` abstraction is directionally correct.
-
----
-
-# 41. Login endpoint is not part of the normal proxy contract
-
-The V4-Pro HAR contains a browser login sequence.
-
-However, the proxy's intended architecture does not need to reproduce interactive DeepSeek login.
-
-The proxy should instead receive/store already authenticated state.
-
-Therefore:
-
-```text
-DeepSeek login UI
-```
-
-and:
-
-```text
-DeepSeek chat API contract
-```
-
-should remain separate specifications.
-
-The login HAR is useful for understanding authentication, but should not become part of the completion implementation unless there is a specific requirement to automate login.
-
----
-
-# 42. Authentication security requirement
-
-HAR captures containing:
-
-```text
-email
-password
-authorization tokens
-cookies
-device/session identifiers
-```
-
-must never be treated as ordinary test fixtures.
-
-They are secrets.
-
-Therefore:
-
-```text
-HAR with credentials
-```
-
-must not be used as a permanent production artifact.
-
-The repository should eventually contain:
-
-```text
-sanitized HAR
-```
-
-with:
-
-```text
-password -> REDACTED
-authorization -> REDACTED
-cookies -> REDACTED
-session secrets -> REDACTED
-```
-
-while preserving protocol structure.
-
----
-
-# 43. Current `codeep-proxy` status
-
-The current implementation already has the basic DeepSeek pipeline:
-
-```text
-create session
-      |
-      v
-create PoW
-      |
-      v
-solve PoW
-      |
-      v
-completion
-      |
-      v
-SSE parser
-      |
-      v
-OpenAI-compatible output
-```
-
-This architecture should be preserved.
-
-The problem is not that the project needs to be rewritten.
-
-The problem is that the protocol state machine needs to become exact.
-
----
-
-# 44. Current implementation versus contract
-
-| Contract | Current proxy |
-|---|---|
-| DeepSeek origin | Correct |
-| Session creation | Implemented |
-| Session ID | Implemented |
-| PoW challenge | Implemented |
-| DeepSeekHashV1 | Implemented |
-| PoW response header | Implemented |
-| Completion endpoint | Correct |
-| `chat_session_id` | Correct |
-| `parent_message_id: number|null` | Correct type |
-| Default model mapping | Implemented |
-| Expert model mapping | Implemented |
-| Thinking flag | Implemented |
-| Search flag | Missing |
-| `ref_file_ids` | Correct empty array |
-| `action:null` | Correct |
-| `preempt:false` | Correct |
-| SSE streaming | Implemented |
-| `ready` message-ID extraction | Incorrect/incomplete |
-| Persistent latest message ID | Broken |
-| Stable proxy conversation identity | Incomplete |
-| `x-hif-leim` | Missing |
-| Browser timezone convention | Incorrect |
-| Concurrency protection | Missing |
-| Retry semantics | Not yet robust |
-| Secret-safe capture | Needs improvement |
-
----
-
-# 45. The canonical DeepSeek request
-
-For the normal default/no-search/no-thinking path:
-
-```http
-POST /api/v0/chat/completion
-Content-Type: application/json
-Authorization: Bearer <authenticated-token>
-x-ds-pow-response: <fresh-pow>
-x-client-bundle-id: com.deepseek.chat
-x-client-platform: web
-x-client-version: 2.4.0
-x-client-locale: en_US
-x-client-timezone-offset: <browser-compatible-offset>
-```
-
-Body:
+Field definitions:
 
 ```json
 {
-  "chat_session_id": "<session>",
-  "parent_message_id": null,
+  "p": {
+    "meaning": "path"
+  },
+  "o": {
+    "meaning": "operation"
+  },
+  "v": {
+    "meaning": "value"
+  }
+}
+```
+
+Observed operations:
+
+```json
+[
+  "SET",
+  "APPEND",
+  "BATCH"
+]
+```
+
+The delta protocol is independent from message-ID assignment.
+
+---
+
+# 15. Model type
+
+The request-level field is:
+
+```json
+{
+  "field": "model_type",
+  "type": "string|null"
+}
+```
+
+Observed request representations:
+
+```json
+[
+  null,
+  "expert"
+]
+```
+
+Observed interpretation:
+
+```json
+{
+  "null": "default / Flash path",
+  "expert": "Pro / expert path"
+}
+```
+
+The UI names and the protocol values must remain separate concepts.
+
+---
+
+# 16. Default model
+
+Observed wire representation:
+
+```json
+{
+  "model_type": null
+}
+```
+
+The server may report:
+
+```json
+{
+  "model_type": "default"
+}
+```
+
+Therefore:
+
+```json
+{
+  "request_model_type": null,
+  "server_reported_model_type": "default"
+}
+```
+
+is a valid observed transformation.
+
+---
+
+# 17. Expert model
+
+Observed wire representation:
+
+```json
+{
+  "model_type": "expert"
+}
+```
+
+This corresponds to the observed Pro path.
+
+---
+
+# 18. Thinking mode
+
+```json
+{
+  "field": "thinking_enabled",
+  "type": "boolean",
+  "values": [
+    false,
+    true
+  ],
+  "status": "ESTABLISHED"
+}
+```
+
+Current semantic representation:
+
+```json
+{
+  "false": "thinking disabled",
+  "true": "thinking enabled"
+}
+```
+
+No native DeepSeek request field corresponding directly to external terms such as:
+
+```text
+low
+medium
+high
+max
+```
+
+is established by the current protocol captures.
+
+---
+
+# 19. Model/reasoning matrix
+
+```json
+[
+  {
+    "model_type": null,
+    "thinking_enabled": false,
+    "description": "default / Flash without thinking"
+  },
+  {
+    "model_type": null,
+    "thinking_enabled": true,
+    "description": "default / Flash with thinking"
+  },
+  {
+    "model_type": "expert",
+    "thinking_enabled": false,
+    "description": "expert / Pro without thinking"
+  },
+  {
+    "model_type": "expert",
+    "thinking_enabled": true,
+    "description": "expert / Pro with thinking"
+  }
+]
+```
+
+---
+
+# 20. Search mode
+
+Search is represented by:
+
+```json
+{
+  "field": "search_enabled",
+  "type": "boolean",
+  "values": [
+    false,
+    true
+  ]
+}
+```
+
+The search request still uses:
+
+```text
+POST /api/v0/chat/completion
+```
+
+There is no separate completion endpoint required for the observed search mode.
+
+---
+
+# 21. Search response state
+
+Observed search-related response information includes:
+
+```json
+{
+  "search_enabled": true,
+  "search_triggered": true,
+  "conversation_mode": "DEEP_SEARCH"
+}
+```
+
+The fields must be treated separately.
+
+```json
+{
+  "search_enabled": "request/search capability state",
+  "search_triggered": "observed server search state",
+  "conversation_mode": "server-reported conversation mode"
+}
+```
+
+Their exact internal relationship should not be inferred beyond observed behavior.
+
+---
+
+# 22. Combined model/search/thinking state
+
+The protocol represents these as independent request fields:
+
+```json
+{
   "model_type": null,
-  "prompt": "<prompt>",
-  "ref_file_ids": [],
-  "thinking_enabled": false,
-  "search_enabled": false,
-  "action": null,
+  "thinking_enabled": true,
+  "search_enabled": true
+}
+```
+
+The protocol contract therefore does not define search as a model.
+
+Likewise, it does not define thinking as a separate model.
+
+---
+
+# 23. PoW endpoint
+
+```json
+{
+  "method": "POST",
+  "path": "/api/v0/chat/create_pow_challenge",
+  "request_body": {
+    "target_path": "/api/v0/chat/completion"
+  },
+  "response": "PoW challenge object",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 24. PoW challenge schema
+
+Observed challenge fields:
+
+```json
+{
+  "algorithm": "string",
+  "challenge": "string",
+  "salt": "string",
+  "signature": "string",
+  "difficulty": "number",
+  "expire_at": "number|unknown",
+  "expire_after": "number|unknown",
+  "target_path": "string"
+}
+```
+
+Observed algorithm:
+
+```json
+{
+  "algorithm": "DeepSeekHashV1"
+}
+```
+
+---
+
+# 25. PoW response
+
+The completion request includes:
+
+```text
+x-ds-pow-response
+```
+
+This header carries the solved PoW result.
+
+The observed architecture is:
+
+```json
+{
+  "challenge": "server-generated",
+  "solution": "client-computed",
+  "transport": "x-ds-pow-response"
+}
+```
+
+---
+
+# 26. PoW binding
+
+The challenge includes:
+
+```json
+{
+  "target_path": "/api/v0/chat/completion"
+}
+```
+
+Therefore the PoW challenge is explicitly associated with the completion path.
+
+---
+
+# 27. Browser client headers
+
+Observed client metadata:
+
+```json
+{
+  "x-client-bundle-id": "com.deepseek.chat",
+  "x-client-platform": "web",
+  "x-client-version": "2.4.0",
+  "x-client-locale": "en_US",
+  "x-client-timezone-offset": "3600"
+}
+```
+
+These represent the observed browser protocol.
+
+They should not automatically be interpreted as immutable server requirements.
+
+---
+
+# 28. x-hif-leim
+
+```json
+{
+  "header": "x-hif-leim",
+  "browser_observed": true,
+  "semantic_definition": "unknown",
+  "wire_role": "undetermined",
+  "status": "PROVISIONAL"
+}
+```
+
+The header belongs to the observed DeepSeek web request contract.
+
+Its semantic purpose is currently not established.
+
+---
+
+# 29. Authentication headers
+
+Authenticated requests carry authentication state.
+
+Conceptually:
+
+```json
+{
+  "Authorization": "authenticated session",
+  "Cookie": "authenticated browser state"
+}
+```
+
+The exact credential mechanism is separate from the conversation protocol.
+
+Credentials must not be embedded into protocol documentation.
+
+---
+
+# 30. Authentication/session boundary
+
+The protocol distinguishes:
+
+```json
+{
+  "authentication": {
+    "role": "authorization and identity"
+  },
+  "chat_session_id": {
+    "role": "conversation container"
+  },
+  "parent_message_id": {
+    "role": "conversation continuation position"
+  }
+}
+```
+
+These three concepts are independent.
+
+---
+
+# 31. ref_file_ids
+
+Normal observed text completion:
+
+```json
+{
+  "ref_file_ids": []
+}
+```
+
+Protocol definition:
+
+```json
+{
+  "field": "ref_file_ids",
+  "type": "array",
+  "normal_value": [],
+  "attachment_protocol": "not defined by current text-only contract"
+}
+```
+
+---
+
+# 32. action
+
+Normal observed request:
+
+```json
+{
+  "action": null
+}
+```
+
+Protocol status:
+
+```json
+{
+  "field": "action",
+  "normal_value": null,
+  "non_null_schema": "UNKNOWN",
+  "status": "PROVISIONAL"
+}
+```
+
+The contract does not define unsupported action values.
+
+---
+
+# 33. preempt
+
+Normal observed request:
+
+```json
+{
   "preempt": false
 }
 ```
 
-For continuation:
+Protocol status:
+
+```json
+{
+  "field": "preempt",
+  "type": "boolean",
+  "observed_normal_value": false,
+  "true_semantics": "UNKNOWN"
+}
+```
+
+---
+
+# 34. Conversation continuation
+
+The canonical continuation state is:
 
 ```json
 {
   "chat_session_id": "<same-session>",
-  "parent_message_id": 42,
-  "model_type": null,
-  "prompt": "<next-prompt>",
+  "parent_message_id": "<previous response_message_id>"
+}
+```
+
+A complete sequential conversation therefore has:
+
+```json
+[
+  {
+    "turn": 1,
+    "parent_message_id": null,
+    "response_message_id": 2
+  },
+  {
+    "turn": 2,
+    "parent_message_id": 2,
+    "response_message_id": 4
+  },
+  {
+    "turn": 3,
+    "parent_message_id": 4,
+    "response_message_id": 6
+  }
+]
+```
+
+This is the canonical message-chain behavior represented by the current browser captures.
+
+---
+
+# 35. Model switching
+
+Model switching within an existing session is part of the contract as a provisional capability.
+
+Current status:
+
+```json
+{
+  "feature": "mid-session model_type switching",
+  "ui_observed": false,
+  "protocol_status": "PROVISIONAL",
+  "headless_request_form": "supported by request schema",
+  "semantic_support": "not yet established"
+}
+```
+
+The request form is:
+
+```json
+{
+  "chat_session_id": "<existing-session>",
+  "parent_message_id": "<latest-response>",
+  "model_type": "expert",
+  "prompt": "<prompt>",
   "ref_file_ids": [],
   "thinking_enabled": false,
   "search_enabled": false,
@@ -1699,14 +1385,99 @@ For continuation:
 }
 ```
 
-For Pro:
+The reverse transition is equally represented:
 
 ```json
 {
-  "chat_session_id": "<session>",
+  "chat_session_id": "<existing-session>",
+  "parent_message_id": "<latest-response>",
+  "model_type": null,
+  "prompt": "<prompt>",
+  "ref_file_ids": [],
+  "thinking_enabled": false,
+  "search_enabled": false,
+  "action": null,
+  "preempt": false
+}
+```
+
+The protocol distinguishes the existence of the field from proof that the server honors the transition.
+
+---
+
+# 36. Session-scoped versus request-scoped state
+
+The protocol currently establishes:
+
+```json
+{
+  "chat_session_id": {
+    "scope": "session"
+  },
+  "parent_message_id": {
+    "scope": "message chain"
+  },
+  "model_type": {
+    "scope": "request",
+    "session_switching": "provisional"
+  },
+  "thinking_enabled": {
+    "scope": "request"
+  },
+  "search_enabled": {
+    "scope": "request"
+  }
+}
+```
+
+Where exact persistence/stickiness is not established, it remains provisional.
+
+---
+
+# 37. Complete normal request
+
+```json
+{
+  "chat_session_id": "<uuid>",
+  "parent_message_id": null,
+  "model_type": null,
+  "prompt": "<text>",
+  "ref_file_ids": [],
+  "thinking_enabled": false,
+  "search_enabled": false,
+  "action": null,
+  "preempt": false
+}
+```
+
+---
+
+# 38. Complete continuation request
+
+```json
+{
+  "chat_session_id": "<same-uuid>",
+  "parent_message_id": 42,
+  "model_type": null,
+  "prompt": "<next-text>",
+  "ref_file_ids": [],
+  "thinking_enabled": false,
+  "search_enabled": false,
+  "action": null,
+  "preempt": false
+}
+```
+
+---
+
+# 39. Complete expert request
+
+```json
+{
+  "chat_session_id": "<uuid>",
   "parent_message_id": 42,
   "model_type": "expert",
-  "prompt": "<prompt>",
+  "prompt": "<text>",
   "ref_file_ids": [],
   "thinking_enabled": true,
   "search_enabled": false,
@@ -1715,14 +1486,16 @@ For Pro:
 }
 ```
 
-For search:
+---
+
+# 40. Complete search request
 
 ```json
 {
-  "chat_session_id": "<session>",
+  "chat_session_id": "<uuid>",
   "parent_message_id": 42,
   "model_type": null,
-  "prompt": "<prompt>",
+  "prompt": "<search-question>",
   "ref_file_ids": [],
   "thinking_enabled": true,
   "search_enabled": true,
@@ -1731,602 +1504,493 @@ For search:
 }
 ```
 
-The exact allowed combinations should be tested rather than assumed beyond what the captures establish.
-
 ---
 
-# 46. The canonical DeepSeek response contract
+# 41. Complete response state
 
-The first state-bearing SSE event:
-
-```text
-event: ready
-```
-
-contains:
+A completed response should yield at minimum:
 
 ```json
 {
-  "request_message_id": <number>,
-  "response_message_id": <number>,
-  "model_type": "<server-model-type>"
+  "request_message_id": 43,
+  "response_message_id": 44,
+  "model_type": "default"
 }
 ```
 
-The proxy must extract:
+The continuation cursor is:
 
-```text
-request_message_id
-response_message_id
-```
-
-The most important value is:
-
-```text
-response_message_id
-```
-
-because it becomes:
-
-```text
-parent_message_id
-```
-
-for the next turn.
-
----
-
-# 47. Canonical state machine
-
-The entire protocol can now be represented as:
-
-```text
-                    ┌─────────────────────┐
-                    │ No proxy conversation│
-                    └──────────┬──────────┘
-                               │
-                               │ create session
-                               v
-                    ┌─────────────────────┐
-                    │ DeepSeek session A  │
-                    │ parent = null       │
-                    └──────────┬──────────┘
-                               │
-                               │ completion
-                               v
-                    ┌─────────────────────┐
-                    │ SSE READY           │
-                    │ response_id = 2     │
-                    └──────────┬──────────┘
-                               │
-                               │ persist 2
-                               v
-                    ┌─────────────────────┐
-                    │ Session A            │
-                    │ parent = 2           │
-                    └──────────┬──────────┘
-                               │
-                               │ completion
-                               v
-                    ┌─────────────────────┐
-                    │ SSE READY           │
-                    │ response_id = 4     │
-                    └──────────┬──────────┘
-                               │
-                               │ persist 4
-                               v
-                    ┌─────────────────────┐
-                    │ Session A            │
-                    │ parent = 4           │
-                    └─────────────────────┘
-```
-
-This is the central state machine of the project.
-
----
-
-# 48. What is now proven
-
-The following should be treated as **established protocol facts**:
-
-```text
-/api/v0/chat_session/create
-/api/v0/chat/create_pow_challenge
-/api/v0/chat/completion
-
-chat_session_id
-parent_message_id
-
-model_type
-thinking_enabled
-search_enabled
-
-ref_file_ids
-action
-preempt
-
-DeepSeekHashV1
-x-ds-pow-response
-
-SSE
-event: ready
-request_message_id
-response_message_id
-
-DeepSeek delta p/o/v structure
+```json
+{
+  "next_parent_message_id": 44
+}
 ```
 
 ---
 
-# 49. What remains explicitly unknown
+# 42. Protocol state machine
 
-The following should remain marked UNKNOWN until directly tested:
+Machine-readable representation:
 
-```text
-exact meaning of x-hif-leim
-
-all valid model_type values
-
-all valid action values
-
-meaning of preempt=true
-
-file-upload/ref_file_ids contract
-
-exact behavior of model switching within an existing session
-
-session behavior after TTL expiration
-
-exact retry semantics after partial SSE failure
-
-whether concurrent messages are accepted safely
-
-all search modes/variants
-
-all thinking-level variants
-
-whether browser-specific headers are mandatory or merely metadata
+```json
+{
+  "states": [
+    "UNAUTHENTICATED",
+    "AUTHENTICATED",
+    "SESSION_CREATED",
+    "COMPLETION_STARTED",
+    "READY",
+    "STREAMING",
+    "COMPLETED",
+    "FAILED"
+  ],
+  "transitions": [
+    {
+      "from": "AUTHENTICATED",
+      "operation": "chat_session/create",
+      "to": "SESSION_CREATED"
+    },
+    {
+      "from": "SESSION_CREATED",
+      "operation": "create_pow_challenge",
+      "to": "SESSION_CREATED"
+    },
+    {
+      "from": "SESSION_CREATED",
+      "operation": "chat/completion",
+      "to": "COMPLETION_STARTED"
+    },
+    {
+      "from": "COMPLETION_STARTED",
+      "event": "ready",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "event": "content delta",
+      "to": "STREAMING"
+    },
+    {
+      "from": "STREAMING",
+      "event": "close",
+      "to": "COMPLETED"
+    }
+  ]
+}
 ```
 
-This is important.
+---
+
+# 43. Continuation invariant
+
+```json
+{
+  "invariant": "NEXT_PARENT_EQUALS_PREVIOUS_RESPONSE",
+  "rule": "next.parent_message_id === previous.ready.response_message_id",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 44. Session invariant
+
+```json
+{
+  "invariant": "SESSION_STABILITY",
+  "rule": "sequential turns in one conversation reuse the same chat_session_id",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 45. Message identity invariant
+
+```json
+{
+  "invariant": "READY_IS_AUTHORITATIVE",
+  "rule": "ready.response_message_id is the authoritative continuation response ID",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 46. Model invariant
+
+```json
+{
+  "invariant": "MODEL_IS_A_REQUEST_DIMENSION",
+  "rule": "model_type is transmitted independently of thinking_enabled and search_enabled",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 47. Search invariant
+
+```json
+{
+  "invariant": "SEARCH_IS_A_REQUEST_DIMENSION",
+  "rule": "search_enabled is transmitted through /api/v0/chat/completion",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 48. Thinking invariant
+
+```json
+{
+  "invariant": "THINKING_IS_A_BOOLEAN",
+  "rule": "thinking_enabled is represented as a boolean request field",
+  "status": "ESTABLISHED"
+}
+```
+
+---
+
+# 49. Unknown protocol surface
+
+The current contract intentionally leaves the following unspecified:
+
+```json
+{
+  "unknown": [
+    "complete x-hif-leim semantics",
+    "complete model_type enumeration",
+    "non-null action schema",
+    "preempt=true semantics",
+    "file attachment protocol",
+    "complete session-expiration behavior",
+    "complete error-code enumeration",
+    "exact PoW reuse rules",
+    "exact semantics of every SSE event",
+    "full semantics of every response field",
+    "complete server-side model-switch rules"
+  ]
+}
+```
 
 Unknown does not mean unsupported.
 
-It means:
+It means the current contract does not establish the behavior.
 
-```text
-do not guess
+---
+
+# 50. Provisional protocol surface
+
+```json
+{
+  "provisional": [
+    {
+      "feature": "x-hif-leim",
+      "known": "browser sends header",
+      "unknown": "semantic/requirement details"
+    },
+    {
+      "feature": "mid-session default/expert switching",
+      "known": "request schema can represent it",
+      "unknown": "server semantic support"
+    },
+    {
+      "feature": "non-null action",
+      "known": "action field exists",
+      "unknown": "supported values"
+    },
+    {
+      "feature": "preempt=true",
+      "known": "boolean field exists",
+      "unknown": "server semantics"
+    }
+  ]
+}
 ```
 
 ---
 
-# 50. Required future investigation method
+# 51. Conformance requirements
 
-For every unknown protocol feature, use the same process:
+An implementation claiming conformance to this contract must preserve the following protocol semantics:
 
-```text
-1. Capture browser behavior.
-2. Identify the exact request.
-3. Identify the exact response.
-4. Compare first request versus continuation.
-5. Change only one variable.
-6. Capture again.
-7. Compare request body.
-8. Compare headers.
-9. Compare SSE ready event.
-10. Compare response metadata.
-11. Record the result in the contract.
-12. Only then implement it.
-```
-
-This prevents the project from accumulating assumptions.
-
----
-
-# 51. Protocol invariants
-
-These are the invariants the proxy must never violate.
-
-### Invariant 1
-
-```text
-Every completion belongs to exactly one DeepSeek chat session.
-```
-
-### Invariant 2
-
-```text
-First turn:
-parent_message_id = null
-```
-
-### Invariant 3
-
-```text
-Continuation:
-parent_message_id =
-previous successful response_message_id
-```
-
-### Invariant 4
-
-```text
-response_message_id comes from SSE ready.
-```
-
-### Invariant 5
-
-```text
-A successful completion must preserve its new response ID.
-```
-
-### Invariant 6
-
-```text
-PoW is generated for the completion request.
-```
-
-### Invariant 7
-
-```text
-model_type and thinking_enabled are separate dimensions.
-```
-
-### Invariant 8
-
-```text
-search_enabled is independent of the basic completion endpoint.
-```
-
-### Invariant 9
-
-```text
-Proxy identifiers and DeepSeek identifiers are not interchangeable.
-```
-
-### Invariant 10
-
-```text
-Unknown DeepSeek fields must not be invented.
+```json
+{
+  "requirements": [
+    "use /api/v0/chat_session/create for session creation",
+    "use /api/v0/chat/completion for completion",
+    "represent parent_message_id as number|null",
+    "use null parent_message_id on the first turn",
+    "use the previous response_message_id on subsequent turns",
+    "obtain the authoritative new response_message_id from ready",
+    "support model_type null/default representation",
+    "support model_type expert representation",
+    "support thinking_enabled boolean",
+    "support search_enabled boolean",
+    "include ref_file_ids",
+    "represent normal action as null",
+    "represent normal preempt as false",
+    "perform the required PoW flow",
+    "send x-ds-pow-response with the solved challenge",
+    "process completion as SSE"
+  ]
+}
 ```
 
 ---
 
-# 52. The implementation target
+# 52. Protocol versus implementation
 
-The target is **not**:
+This document defines:
 
 ```text
-"make DeepSeek respond"
+DeepSeek wire protocol
 ```
 
-That already works.
-
-The target is:
+It does not define:
 
 ```text
-make codeep-proxy behave as a deterministic translation layer
-between an OpenAI/Codex client and the DeepSeek Web Chat protocol.
+application architecture
+database architecture
+proxy architecture
+OpenAI compatibility
+client API design
+storage implementation
+authentication secret management implementation
 ```
 
-That means:
+A conforming implementation may use:
 
 ```text
-External API
-    |
-    v
-Normalize request
-    |
-    v
-Resolve proxy conversation
-    |
-    v
-Resolve DeepSeek session/message state
-    |
-    v
-Generate PoW
-    |
-    v
-Construct exact DeepSeek request
-    |
-    v
-Parse SSE
-    |
-    +--> extract response_message_id
-    |
-    +--> translate response
-    |
-    v
-Commit state
+Cloudflare Workers
+Python
+Java
+Go
+Rust
+Node.js
+browser JavaScript
+```
+
+provided that the wire behavior remains conformant.
+
+The Cloudflare Workers TypeScript section is a reference implementation template, not part of the wire protocol itself.
+
+---
+
+# 53. Cloudflare Workers reference requirements
+
+For a Cloudflare Workers implementation:
+
+```json
+{
+  "runtime": "Cloudflare Workers",
+  "language": "TypeScript",
+  "tooling": "Wrangler",
+  "node_version_requirement": "none",
+  "required_web_platform_features": [
+    "fetch",
+    "Request",
+    "Response",
+    "ReadableStream",
+    "TextDecoder",
+    "TextEncoder"
+  ]
+}
+```
+
+No Node-specific API is required by the protocol.
+
+---
+
+# 54. Security boundary
+
+Authentication credentials are outside the protocol schema.
+
+The implementation must treat:
+
+```text
+Authorization
+Cookie
+passwords
+session tokens
+device identifiers
+```
+
+as sensitive data.
+
+They must not appear in:
+
+```text
+debug logs
+protocol examples
+source-controlled fixtures
+public documentation
+machine-readable examples
+```
+
+unless explicitly redacted.
+
+---
+
+# 55. Canonical protocol object
+
+For implementations requiring one normalized representation:
+
+```json
+{
+  "deepseek_web_protocol": {
+    "origin": "https://chat.deepseek.com",
+
+    "session": {
+      "create": {
+        "method": "POST",
+        "path": "/api/v0/chat_session/create",
+        "body": {}
+      }
+    },
+
+    "pow": {
+      "create": {
+        "method": "POST",
+        "path": "/api/v0/chat/create_pow_challenge"
+      },
+      "algorithm": "DeepSeekHashV1",
+      "header": "x-ds-pow-response"
+    },
+
+    "completion": {
+      "method": "POST",
+      "path": "/api/v0/chat/completion",
+      "response": "SSE"
+    },
+
+    "request": {
+      "chat_session_id": "string",
+      "parent_message_id": "number|null",
+      "model_type": "null|expert",
+      "prompt": "string",
+      "ref_file_ids": "array",
+      "thinking_enabled": "boolean",
+      "search_enabled": "boolean",
+      "action": "null|unknown",
+      "preempt": "boolean"
+    },
+
+    "continuation": {
+      "first_parent_message_id": null,
+      "next_parent_message_id": "previous response_message_id"
+    },
+
+    "ready": {
+      "request_message_id": "number",
+      "response_message_id": "number",
+      "model_type": "string"
+    },
+
+    "models": {
+      "default": null,
+      "expert": "expert"
+    },
+
+    "modes": {
+      "thinking": "thinking_enabled",
+      "search": "search_enabled"
+    },
+
+    "client_headers": {
+      "x-client-bundle-id": "com.deepseek.chat",
+      "x-client-platform": "web",
+      "x-client-version": "2.4.0",
+      "x-client-locale": "en_US",
+      "x-client-timezone-offset": "3600",
+      "x-hif-leim": "observed; semantics provisional"
+    }
+  }
+}
 ```
 
 ---
 
-# 53. Final architecture
+# 56. Canonical interpretation
 
-The correct final architecture should look like:
+The DeepSeek Web protocol currently consists of four principal request dimensions:
 
 ```text
-                 CODEEP PROXY
-                 ────────────
+conversation
+    chat_session_id
+    parent_message_id
 
-        ┌─────────────────────────┐
-        │ OpenAI/Codex Interface  │
-        └────────────┬────────────┘
-                     │
-                     v
-        ┌─────────────────────────┐
-        │ Request Normalizer      │
-        │                         │
-        │ model                   │
-        │ reasoning               │
-        │ search                  │
-        │ messages                │
-        └────────────┬────────────┘
-                     │
-                     v
-        ┌─────────────────────────┐
-        │ Conversation Resolver   │
-        │                         │
-        │ proxyConversationId     │
-        │ DeepSeek session        │
-        │ lastMessageId           │
-        └────────────┬────────────┘
-                     │
-                     v
-        ┌─────────────────────────┐
-        │ DeepSeek Request        │
-        │ Builder                 │
-        │                         │
-        │ session                 │
-        │ parent                  │
-        │ model_type              │
-        │ thinking                │
-        │ search                  │
-        │ prompt                  │
-        └────────────┬────────────┘
-                     │
-                     v
-        ┌─────────────────────────┐
-        │ PoW                     │
-        └────────────┬────────────┘
-                     │
-                     v
-        ┌─────────────────────────┐
-        │ DeepSeek /completion    │
-        └────────────┬────────────┘
-                     │
-                     │ SSE
-                     v
-        ┌─────────────────────────┐
-        │ SSE State Parser        │
-        │                         │
-        │ ready                   │
-        │ response_message_id    │
-        │ deltas                  │
-        │ close                   │
-        └────────────┬────────────┘
-                     │
-                     ├───────────────> Client response
-                     │
-                     v
-        ┌─────────────────────────┐
-        │ State Commit            │
-        │                         │
-        │ lastMessageId = new ID  │
-        └─────────────────────────┘
+model
+    model_type
+
+reasoning
+    thinking_enabled
+
+search
+    search_enabled
 ```
 
----
-
-# 54. Definition of "DeepSeek Web Contract v1 complete"
-
-We should consider the DeepSeek Web Contract fully established only when:
+along with common completion properties:
 
 ```text
-[✓] Authentication transport understood
-[✓] Session creation understood
-[✓] PoW understood
-[✓] Completion request understood
-[✓] Default/Flash understood
-[✓] Expert/Pro understood
-[✓] Thinking flag understood
-[✓] Search flag understood
-[✓] SSE ready event understood
-[✓] Message continuation understood
-[✓] Delta format understood
-
-[ ] x-hif-leim experimentally classified
-[ ] timezone convention corrected
-[ ] all relevant model/mode combinations captured
-[ ] model switching tested
-[ ] search variants fully captured
-[ ] file/ref_file_ids behavior investigated
-[ ] action behavior investigated
-[ ] preempt behavior investigated
-[ ] failure/retry behavior tested
-[ ] session expiry behavior tested
-[ ] concurrency behavior tested
-```
-
-The first group is the **core contract**.
-
-The second group is the **extended contract**.
-
----
-
-# 55. Implementation priority
-
-The next implementation work should happen in this order.
-
-## Phase 1 — continuity
-
-Fix:
-
-```text
-stable proxy conversation identity
-+
-ready.response_message_id
-+
-persistent lastMessageId
-```
-
-This is the most important issue.
-
-## Phase 2 — exact request parity
-
-Fix:
-
-```text
-timezone convention
-x-hif-leim investigation
-```
-
-## Phase 3 — search
-
-Implement:
-
-```text
-search_enabled
-```
-
-while preserving the same session/message chain.
-
-## Phase 4 — mode matrix
-
-Validate:
-
-```text
-Flash no-thinking
-Flash thinking
-Pro no-thinking
-Pro thinking
-Flash search
-Pro search
-thinking + search
-```
-
-rather than assuming combinations.
-
-## Phase 5 — extended protocol
-
-Investigate:
-
-```text
+prompt
+ref_file_ids
 action
 preempt
-ref_file_ids
-attachments
-failure/retry
-expiry
-concurrency
 ```
 
----
-
-# 56. Final contract statement
-
-The DeepSeek Web Chat protocol can now be reduced to this core contract:
+and transport/security requirements:
 
 ```text
-AUTHENTICATED DEEPSEEK SESSION
-            |
-            v
-CREATE CHAT SESSION
-            |
-            v
-chat_session_id
-            |
-            v
-CREATE POW CHALLENGE
-            |
-            v
-SOLVE POW
-            |
-            v
-POST /api/v0/chat/completion
-            |
-            +--> chat_session_id
-            +--> parent_message_id
-            +--> model_type
-            +--> prompt
-            +--> ref_file_ids
-            +--> thinking_enabled
-            +--> search_enabled
-            +--> action
-            +--> preempt
-            |
-            v
+authentication
+client headers
+PoW
 SSE
-            |
-            +--> ready
-            |      |
-            |      +--> request_message_id
-            |      +--> response_message_id
-            |      +--> model_type
-            |
-            +--> response deltas
-            |
-            +--> close
-            |
-            v
-PERSIST response_message_id
-            |
-            v
-NEXT TURN:
-parent_message_id =
-previous response_message_id
 ```
 
-That is the fundamental DeepSeek Web contract.
-
-Everything else in `codeep-proxy` should be built around this state machine.
-
-The single most important implementation rule is:
-
-```text
-DeepSeek conversation continuity =
-chat_session_id
-+
-latest successful response_message_id
-```
-
-Not:
-
-```text
-chat_session_id alone
-```
-
-and not:
-
-```text
-client thread ID alone
-```
-
-The proxy's job is to preserve that relationship reliably while translating the external OpenAI/Codex interface into DeepSeek's native Web Chat protocol.
+The protocol therefore should be implemented as a collection of explicit typed fields and state transitions rather than as a collection of UI-specific model names.
 
 ---
 
-# 57. Status of Bible v1
+# 57. Contract status
 
-**Core protocol: sufficiently established for implementation.**
-
-**Extended protocol: intentionally incomplete where the HAR does not provide enough evidence.**
-
-This distinction is deliberate.
-
-We should never again treat an unobserved DeepSeek field or behavior as known simply because it appears plausible.
-
-Every future addition to this contract should carry one of three labels:
-
-```text
-OBSERVED
-INFERRED
-UNKNOWN
+```json
+{
+  "overall_status": "PARTIALLY_ESTABLISHED",
+  "core_completion_protocol": "ESTABLISHED",
+  "conversation_continuity": "ESTABLISHED",
+  "default_model": "ESTABLISHED",
+  "expert_model": "ESTABLISHED",
+  "thinking": "ESTABLISHED",
+  "search": "ESTABLISHED",
+  "pow": "ESTABLISHED",
+  "sse_ready": "ESTABLISHED",
+  "x_hif_leim": "PROVISIONAL",
+  "mid_session_model_switch": "PROVISIONAL",
+  "non_null_action": "UNKNOWN",
+  "preempt_true": "UNKNOWN",
+  "file_protocol": "UNKNOWN"
+}
 ```
 
-Only `OBSERVED` should be promoted directly into the implementation contract.
+---
 
-`INFERRED` requires a targeted test.
+# 58. Normative rule
 
-`UNKNOWN` requires a new browser capture.
+The final rule governing this specification is:
+
+```text
+A browser-observed value defines what the browser sends.
+
+A validated server behavior defines what the protocol accepts.
+
+An inferred behavior must remain marked as inferred.
+
+An unestablished behavior must remain unknown or provisional.
+
+No implementation assumption becomes a DeepSeek protocol rule merely because an implementation chooses to use it.
+```
+
+This document therefore represents the **DeepSeek Web protocol contract**, with Cloudflare Workers TypeScript serving only as the reference implementation form.
