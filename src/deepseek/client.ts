@@ -114,52 +114,55 @@ export class DeepSeekWebClient {
   }
 
   // Convenience method: create session and complete in one call
-  async startConversation(input: Omit<DeepSeekCompletionInput, "session">): Promise<{
-    session: DeepSeekSession;
-    result: DeepSeekCompletionResult;
-    state: DeepSeekConversationState;
-  }> {
-    const session = await this.createSession();
-    const state: DeepSeekConversationState = {
-      chat_session_id: session.id,
-      parent_message_id: null,
-      created_at: Date.now(),
-    };
+    async startConversation(input: Omit<DeepSeekCompletionInput, "session">): Promise<{
+      session: DeepSeekSession;
+      result: DeepSeekCompletionResult;
+      state: DeepSeekConversationState;
+    }> {
+      const session = await this.createSession();
+      const state: DeepSeekConversationState = {
+        chat_session_id: session.id,
+        parent_message_id: null,
+        model_type: input.model_type,
+        thinking_enabled: input.thinking_enabled,
+        search_enabled: input.search_enabled,
+        created_at: Date.now(),
+      };
 
-    const result = await this.complete({ session: state, ...input });
+      const result = await this.complete({ session: state, ...input });
 
-    const nextState: DeepSeekConversationState = {
-      ...state,
-      parent_message_id: result.response_message_id,
-      updated_at: Date.now(),
-    };
+      const nextState: DeepSeekConversationState = {
+        ...state,
+        parent_message_id: result.response_message_id,
+        updated_at: Date.now(),
+      };
 
-    return { session, result, state: nextState };
-  }
+      return { session, result, state: nextState };
+    }
 
-  // Convenience method for continuing a conversation
-  async continueConversation(
-    state: DeepSeekConversationState,
-    prompt: string,
-    options?: Omit<DeepSeekCompletionInput, "session" | "prompt">
-  ): Promise<{ result: DeepSeekCompletionResult; state: DeepSeekConversationState }> {
-    const result = await this.complete({
-      session: state,
-      prompt,
-      ...options,
-    });
+    // Convenience method for continuing a conversation
+    async continueConversation(
+      state: DeepSeekConversationState,
+      prompt: string,
+      options: Omit<DeepSeekCompletionInput, "session" | "prompt">
+    ): Promise<{ result: DeepSeekCompletionResult; state: DeepSeekConversationState }> {
+      const result = await this.complete({
+        session: state,
+        prompt,
+        ...options,
+      });
 
-    const nextState: DeepSeekConversationState = {
-      ...state,
-      parent_message_id: result.response_message_id,
-      model_type: options?.model_type ?? state.model_type,
-      thinking_enabled: options?.thinking_enabled ?? state.thinking_enabled,
-      search_enabled: options?.search_enabled ?? state.search_enabled,
-      updated_at: Date.now(),
-    };
+      const nextState: DeepSeekConversationState = {
+        ...state,
+        parent_message_id: result.response_message_id,
+        model_type: options.model_type ?? state.model_type,
+        thinking_enabled: options.thinking_enabled ?? state.thinking_enabled,
+        search_enabled: options.search_enabled ?? state.search_enabled,
+        updated_at: Date.now(),
+      };
 
-    return { result, state: nextState };
-  }
+      return { result, state: nextState };
+    }
 }
 
 export function createConversationState(session: DeepSeekSession): DeepSeekConversationState {

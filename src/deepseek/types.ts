@@ -2,8 +2,9 @@
 // Pure protocol types — no application-layer concepts
 
 export type DeepSeekModelType =
-  | null
   | "expert"
+  | "default"
+  | null
   | string;
 
 export interface DeepSeekCompletionRequest {
@@ -117,7 +118,7 @@ export interface DeepSeekCompletionInput {
   session: DeepSeekConversationState;
   prompt: string;
 
-  model_type?: DeepSeekModelType;
+  model_type: DeepSeekModelType;  // required - no fallback
   thinking_enabled?: boolean;
   search_enabled?: boolean;
   ref_file_ids?: string[];
