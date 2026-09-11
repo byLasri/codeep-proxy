@@ -41,6 +41,83 @@ export interface CloseEvent {
 }
 
 /**
+ * Incremental SSE parser that handles arbitrary Uint8Array chunks
+ */
+export class IncrementalSSEParser {
+  private buffer = '';
+  private currentEvent: { event?: string; data?: string } = {};
+  private events: DeepSeekSSEEvent[] = [];
+
+  /**
+   * Parse a chunk of bytes from the response body
+   */
+  parseChunk(chunk: Uint8Array): DeepSeekSSEEvent[] {
+    const decoder = new TextDecoder();
+    this.buffer += decoder.decode(chunk, { stream: true });
+    
+    const events: DeepSeekSSEEvent[] = [];
+    let lineStart = 0;
+    
+    for (let i = 0; i < this.buffer.length; i++) {
+      if (this.buffer[i] === '\n') {
+        const line = this.buffer.slice(lineStart, i);
+        this.processLine(line, events);
+        lineStart = i + 1;
+      }
+    }
+    
+    // Keep any incomplete line in buffer
+    this.buffer = this.buffer.slice(lineStart);
+    
+    return events;
+  }
+
+  private processLine(line: string, events: DeepSeekSSEEvent[]): void {
+    const trimmed = line.trim();
+    
+    if (trimmed === '') {
+      // Empty line marks end of event
+      if (this.currentEvent.data !== undefined) {
+        try {
+          events.push({
+            event: this.currentEvent.event ?? 'message',
+            data: JSON.parse(this.currentEvent.data),
+          });
+        } catch {
+          // Skip malformed JSON
+        }
+      }
+      this.currentEvent = {};
+    } else if (trimmed.startsWith('event: ')) {
+      this.currentEvent.event = trimmed.slice(7).trim();
+    } else if (trimmed.startsWith('data: ')) {
+      this.currentEvent.data = trimmed.slice(6).trim();
+    }
+  }
+
+  /**
+   * Finalize parsing and return any remaining event
+   */
+  finalize(): DeepSeekSSEEvent[] {
+    const events: DeepSeekSSEEvent[] = [];
+    
+    // Handle last event if no trailing newline
+    if (this.currentEvent.data !== undefined) {
+      try {
+        events.push({
+          event: this.currentEvent.event ?? 'message',
+          data: JSON.parse(this.currentEvent.data),
+        });
+      } catch {
+        // Skip malformed JSON
+      }
+    }
+    
+    return events;
+  }
+}
+
+/**
  * Parse a single SSE line into an event
  */
 export function parseSSELine(line: string): { event?: string; data?: string } | null {
@@ -54,7 +131,7 @@ export function parseSSELine(line: string): { event?: string; data?: string } | 
 }
 
 /**
- * Parse complete SSE events from raw text
+ * Parse complete SSE events from raw text (legacy, for testing)
  */
 export function parseSSEEvents(rawText: string): DeepSeekSSEEvent[] {
   const events: DeepSeekSSEEvent[] = [];
@@ -123,6 +200,7 @@ export function extractResponseMessageId(events: DeepSeekSSEEvent[]): number | n
 
 /**
  * Extract content deltas from data events for OpenAI translation
+ * Uses canonical extraction: prefers fragments[].v over response.content to avoid duplication
  */
 export function extractContentDeltas(events: DeepSeekSSEEvent[]): string[] {
   const deltas: string[] = [];
@@ -130,16 +208,17 @@ export function extractContentDeltas(events: DeepSeekSSEEvent[]): string[] {
   for (const evt of events) {
     if (evt.event === 'data') {
       const dataEvt = evt.data as DataEvent;
-      if (dataEvt.v?.response?.fragments) {
-        for (const frag of dataEvt.v.response.fragments) {
+      const response = dataEvt.v?.response;
+      
+      if (response?.fragments) {
+        for (const frag of response.fragments) {
           if (frag.o === 'APPEND' && typeof frag.v === 'string') {
             deltas.push(frag.v);
           }
         }
-      }
-      // Also handle direct content field
-      if (dataEvt.v?.response?.content && typeof dataEvt.v.response.content === 'string') {
-        deltas.push(dataEvt.v.response.content);
+      } else if (response?.content && typeof response.content === 'string') {
+        // Only use direct content if no fragments present (avoid duplication)
+        deltas.push(response.content);
       }
     }
   }

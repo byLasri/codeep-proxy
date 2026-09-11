@@ -1,6 +1,8 @@
 import type { CompletionSessionState } from './deepssek_completions/types.js';
-import type { DeepSeekWebClient, DeepSeekCompletionInput } from './deepseek/index.js';
-import type { DeepSeekSSEEvent } from './deepssek_completions/sse.js';
+import type { DeepSeekCompletionInput } from './deepseek/index.js';
+import { CompletionService, validateCompletionRequest } from './deepssek_completions/index.js';
+import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js';
+import { DeepSeekWebClient } from './deepseek/index.js';
 
 interface Env {
   AUTH_KV: KVNamespace;
@@ -9,11 +11,13 @@ interface Env {
 
 export class CompletionSessionDO {
   private state: DurableObjectState;
+  private env: Env;
   private client: DeepSeekWebClient | null = null;
   private processingLock: Promise<void> | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
+    this.env = env;
 
     // Initialize SQLite storage
     this.state.storage.sql.exec(`
@@ -40,11 +44,9 @@ export class CompletionSessionDO {
     try {
       const body = await request.json();
 
-      // Validate request
-      let openAIRequest;
+      // Validate request using shared validation logic
       try {
-        const { validateCompletionRequest, extractLatestUserPrompt, translateToDeepSeekInput } = await import('./deepssek_completions/request.js');
-        openAIRequest = validateCompletionRequest(body);
+        const openAIRequest = validateCompletionRequest(body);
         
         // Get or create DeepSeek client
         const client = await this.getDeepSeekClient();
@@ -63,69 +65,12 @@ export class CompletionSessionDO {
           await this.saveSessionState(sessionState);
         }
 
-        // Extract latest user prompt from OpenAI messages
-        const prompt = extractLatestUserPrompt(openAIRequest.messages);
+        // Use CompletionService for OpenAI translation
+        const service = new CompletionService(client);
         
-        const deepSeekInput: DeepSeekCompletionInput = translateToDeepSeekInput(
-          sessionState.chat_session_id,
-          sessionState.parent_message_id,
-          prompt
-        );
-
         // Use processing lock to serialize requests for this conversation
         return await this.withProcessingLock(async () => {
-          // Call DeepSeek completion
-          const response = await client.complete(deepSeekInput);
-
-          // Parse SSE and stream to client with state update
-          const { parseSSEEvents, extractResponseMessageId } = await import('./deepssek_completions/sse.js');
-          
-          // Process SSE to extract response_message_id for state update while streaming
-          const reader = response.body?.getReader();
-          if (reader) {
-            const processStream = async () => {
-              const decoder = new TextDecoder();
-              let buffer = '';
-              
-              try {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  
-                  buffer += decoder.decode(value, { stream: true });
-                  const events = parseSSEEvents(buffer);
-                  
-                  for (const evt of events) {
-                    if (evt.event === 'ready') {
-                      const data = evt.data as any;
-                      if (typeof data?.response_message_id === 'number') {
-                        // Update session state with new parent_message_id
-                        await this.saveSessionState({
-                          ...sessionState!,
-                          parent_message_id: data.response_message_id,
-                          updated_at: Date.now(),
-                        });
-                      }
-                    }
-                  }
-                }
-              } catch (err) {
-                console.error('SSE processing error:', err);
-              }
-            };
-            
-            // Start processing but don't wait for it to complete before streaming
-            processStream().catch(console.error);
-          }
-
-          return new Response(response.body, {
-            status: response.status,
-            headers: {
-              'Content-Type': 'text/event-stream',
-              'Cache-Control': 'no-cache',
-              'Connection': 'keep-alive',
-            },
-          });
+          return await service.processCompletion(openAIRequest, sessionState, { AUTH_KV: this.env.AUTH_KV });
         });
       } catch (err) {
         return new Response(JSON.stringify({
@@ -153,11 +98,8 @@ export class CompletionSessionDO {
 
   private async getDeepSeekClient(): Promise<DeepSeekWebClient> {
     if (!this.client) {
-      const { CloudflareKVStateStore } = await import('./adapters/cloudflare-kv-state-store.js');
-      const { DeepSeekWebClient } = await import('./deepseek/index.js');
-
       const stateStore = new CloudflareKVStateStore(
-        (this.state as any).env.AUTH_KV
+        this.env.AUTH_KV
       );
 
       this.client = new DeepSeekWebClient({
