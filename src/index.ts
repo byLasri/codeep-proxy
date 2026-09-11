@@ -195,9 +195,87 @@ export default {
         // Execute completion
         const response = await client.complete(completionInput)
 
-        // Stream SSE response back to client
+        // Transform DeepSeek SSE to OpenAI-compatible SSE
         if (stream && response.body) {
-          return new Response(response.body, {
+          const transformStream = new TransformStream({
+            async transform(chunk, controller) {
+              const text = new TextDecoder().decode(chunk)
+              const lines = text.split('\n').filter(line => line.trim())
+              
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const dataStr = line.slice(6).trim()
+                  try {
+                    const data = JSON.parse(dataStr)
+                    
+                    // Skip ready events - they're internal to DeepSeek protocol
+                    if (data.request_message_id !== undefined && data.response_message_id !== undefined) {
+                      continue
+                    }
+                    
+                    // Handle data events with response fragments
+                    if (data.v?.response?.fragments) {
+                      for (const frag of data.v.response.fragments) {
+                        if (frag.o === 'APPEND' && typeof frag.v === 'string') {
+                          const openaiChunk = {
+                            id: `chatcmpl-${Date.now()}`,
+                            object: 'chat.completion.chunk' as const,
+                            created: Math.floor(Date.now() / 1000),
+                            model,
+                            choices: [{
+                              index: 0,
+                              delta: { role: 'assistant', content: frag.v },
+                              finish_reason: null,
+                            }],
+                          }
+                          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(openaiChunk)}\n\n`))
+                        }
+                      }
+                    }
+                    
+                    // Handle direct content field
+                    if (data.v?.response?.content && typeof data.v.response.content === 'string') {
+                      const openaiChunk = {
+                        id: `chatcmpl-${Date.now()}`,
+                        object: 'chat.completion.chunk' as const,
+                        created: Math.floor(Date.now() / 1000),
+                        model,
+                        choices: [{
+                          index: 0,
+                          delta: { role: 'assistant', content: data.v.response.content },
+                          finish_reason: null,
+                        }],
+                      }
+                      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(openaiChunk)}\n\n`))
+                    }
+                    
+                    // Handle finish event
+                    if (data.p === 'response/status' && data.v === 'FINISHED') {
+                      const finalChunk = {
+                        id: `chatcmpl-${Date.now()}`,
+                        object: 'chat.completion.chunk' as const,
+                        created: Math.floor(Date.now() / 1000),
+                        model,
+                        choices: [{
+                          index: 0,
+                          delta: {},
+                          finish_reason: 'stop',
+                        }],
+                      }
+                      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
+                      controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+                    }
+                  } catch {
+                    // Skip malformed JSON
+                  }
+                }
+              }
+            },
+          })
+          
+          const transformedStream = response.body.pipeThrough(transformStream)
+          
+          return new Response(transformedStream, {
             headers: {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
