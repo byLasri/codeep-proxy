@@ -1,3 +1,4 @@
+import { createCredentialsProvider } from "../deepseek-adapter.js";
 import { createPowChallenge } from "./pow-challenge.js";
 import { solvePow, encodePowResponse } from "./pow.js";
 import { createSession } from "./session.js";
@@ -14,8 +15,9 @@ declare const process: {
 /**
  * Live protocol matrix for the DeepSeek web completion endpoint.
  *
- * This file is intentionally standalone: it does not alter production code,
- * package scripts, or runtime behavior. Run it explicitly with tsx.
+ * Credentials are resolved through the same credential provider used by the
+ * DeepSeek adapter. The test does not duplicate adapter credential logic.
+ * Run it explicitly with tsx.
  *
  * Required environment:
  *   DEEPSEEK_AUTHORIZATION="Bearer ..."    (or omit if cookie-only auth works)
@@ -30,6 +32,12 @@ const ORIGIN = DEEPSEEK.ORIGIN;
 const HIF_ENDPOINT = "https://hif-leim.deepseek.com/query";
 const TIMEOUT_MS = Number(process.env.DEEPSEEK_TEST_TIMEOUT_MS ?? 120_000);
 const PROMPT = "Reply with exactly: endpoint-matrix-ok";
+
+interface Env {
+  DEEPSEEK_AUTHORIZATION?: string;
+  DEEPSEEK_COOKIE?: string;
+  AUTH_KV: KVNamespace;
+}
 
 type Case = {
   model_type: DeepSeekModelType;
@@ -49,10 +57,17 @@ type CaseResult = Case & {
   error: string | null;
 };
 
-const credentials: DeepSeekCredentials = {
-  authorization: process.env.DEEPSEEK_AUTHORIZATION,
-  cookie: process.env.DEEPSEEK_COOKIE,
+const env: Env = {
+  DEEPSEEK_AUTHORIZATION: process.env.DEEPSEEK_AUTHORIZATION,
+  DEEPSEEK_COOKIE: process.env.DEEPSEEK_COOKIE,
+  AUTH_KV: {
+    get: async () => null,
+  } as unknown as KVNamespace,
 };
+
+async function getCredentials(): Promise<DeepSeekCredentials> {
+  return createCredentialsProvider(env)();
+}
 
 function expect(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -138,7 +153,7 @@ function rawReadyModel(result: Awaited<ReturnType<typeof parseCompletionStream>>
   return null;
 }
 
-async function runCase(hifLeim: string, testCase: Case): Promise<CaseResult> {
+async function runCase(credentials: DeepSeekCredentials, hifLeim: string, testCase: Case): Promise<CaseResult> {
   try {
     // A fresh session per matrix cell prevents a prior model/flag combination
     // from contaminating the server-side conversation state.
@@ -287,6 +302,7 @@ function printResults(results: CaseResult[]): void {
 }
 
 async function main(): Promise<void> {
+  const credentials = await getCredentials();
   if (!credentials.authorization && !credentials.cookie) {
     throw new Error(
       "Set DEEPSEEK_AUTHORIZATION and/or DEEPSEEK_COOKIE before running the live endpoint matrix",
@@ -295,6 +311,7 @@ async function main(): Promise<void> {
 
   console.log(`Target: ${ORIGIN}${DEEPSEEK.ENDPOINTS.COMPLETION}`);
   console.log(`Matrix: ${buildMatrix().length} cases`);
+  console.log("Credentials: resolved through src/deepseek-adapter.ts");
   console.log("Fetching current HIF-LEIM value once for the matrix...");
 
   const hifLeim = await fetchHifLeim();
@@ -304,7 +321,7 @@ async function main(): Promise<void> {
     console.log(
       `Running model=${modelLabel(testCase.model_type)} thinking=${testCase.thinking_enabled} search=${testCase.search_enabled}`,
     );
-    results.push(await runCase(hifLeim, testCase));
+    results.push(await runCase(credentials, hifLeim, testCase));
   }
 
   printResults(results);
