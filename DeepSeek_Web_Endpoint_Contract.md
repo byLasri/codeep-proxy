@@ -24,9 +24,9 @@ The evidence order is deterministic:
 4. implementation source comments/templates
 ```
 
-The newest HAR defines the current endpoint behavior. Older HARs remain valid historical evidence for behavior that is no longer exposed by the current UI configuration, including model selection/enforcement.
+The newest HAR defines current endpoint behavior. Older HARs remain valid historical evidence for behavior no longer exposed by the current UI, including the historical expert wire path and its enforcement.
 
-A documented value marked `ESTABLISHED` is directly present in captured traffic or directly represented by the captured server response. Historical behavior is labeled as historical; it is not promoted to current UI availability.
+A value marked `ESTABLISHED` is directly present in captured traffic or directly represented by a captured server response. Product naming sourced from current official DeepSeek documentation is identified separately from raw wire evidence.
 
 ---
 
@@ -180,7 +180,7 @@ The current browser obtains the LEIM value from:
 GET https://hif-leim.deepseek.com/query
 ```
 
-The captured request contains the client headers:
+The captured request contains:
 
 ```http
 accept: */*
@@ -296,7 +296,7 @@ Accept: text/event-stream
 Content-Type: application/json
 ```
 
-The completion request carries both anti-abuse layers when HIF is available:
+The completion request carries the observed anti-abuse headers:
 
 ```text
 x-ds-pow-response: <solved-pow>
@@ -327,17 +327,52 @@ Field definitions:
 
 ```json
 {
-  "chat_session_id": "string; required",
-  "parent_message_id": "number|null; required",
-  "model_type": "string|null; required",
-  "prompt": "string; required",
-  "ref_file_ids": "array; required",
-  "thinking_enabled": "boolean; required",
-  "search_enabled": "boolean; required",
-  "action": "null|unknown; required",
-  "preempt": "boolean; required"
+  "chat_session_id": {
+    "type": "string",
+    "required": true
+  },
+  "parent_message_id": {
+    "type": "number|null",
+    "required": true
+  },
+  "model_type": {
+    "type": "string|null",
+    "required": true,
+    "observed_completion_values": [
+      null,
+      "expert"
+    ],
+    "current_server_and_settings_value": "default",
+    "note": "The current settings/session payload uses 'default'; the checked-in completion HAR evidence directly establishes null and expert as completion request values. Do not promote 'default' to a completion request value solely from settings/session output."
+  },
+  "prompt": {
+    "type": "string",
+    "required": true
+  },
+  "ref_file_ids": {
+    "type": "array",
+    "required": true
+  },
+  "thinking_enabled": {
+    "type": "boolean",
+    "required": true
+  },
+  "search_enabled": {
+    "type": "boolean",
+    "required": true
+  },
+  "action": {
+    "type": "null|unknown",
+    "required": true
+  },
+  "preempt": {
+    "type": "boolean",
+    "required": true
+  }
 }
 ```
+
+The request schema therefore distinguishes the current `default` product/settings value from the raw completion representations directly established by the HARs.
 
 ---
 
@@ -376,7 +411,7 @@ data
 close
 ```
 
-The `ready` event provides the authoritative response identifier:
+The `ready` event is authoritative for both response identity and server-reported model resolution:
 
 ```text
 event: ready
@@ -387,7 +422,35 @@ The next completion uses that `response_message_id` as `parent_message_id`.
 
 ---
 
-# 18. Content delta protocol
+# 18. Ready event and server model confirmation
+
+```json
+{
+  "event": "ready",
+  "data": {
+    "request_message_id": "number",
+    "response_message_id": "number",
+    "model_type": "string"
+  },
+  "status": "ESTABLISHED"
+}
+```
+
+The `model_type` value in `ready.data` is the authoritative server-reported model path for that completion response.
+
+For the historical expert path the checked-in HAR contains:
+
+```text
+model_type = "expert"
+```
+
+For the default path the server/session representation uses `default` while completion requests in the captured protocol use `null`.
+
+A client MUST use `ready.response_message_id` as the continuation cursor and SHOULD use `ready.model_type` to verify the server-resolved model path.
+
+---
+
+# 19. Content delta protocol
 
 Observed deltas contain:
 
@@ -409,28 +472,54 @@ BATCH
 
 ---
 
-# 19. Model representation
+# 20. Model type and product mapping
 
-The completion field is:
+The wire protocol and the current product names are separate layers.
 
-```text
-model_type
-```
-
-Observed values across the checked-in captures include:
+Wire values established directly by the checked-in completion captures:
 
 ```text
 null
 expert
 ```
 
-The default request representation is `null`.
+Current settings/session output also uses:
 
-The expert request representation is `"expert"`.
+```text
+default
+```
+
+The current settings payload identifies `default` as the enabled default web model and `expert` as the Expert model. The current official DeepSeek product documentation identifies the current Flash family as V4.1-Flash and the current Pro family as V4-Pro; these product names are external product mapping, not literal values of the web completion `model_type` field.
+
+```text
+Wire null       -> current default/Instant product path
+Wire expert     -> Expert product path
+Settings default -> enabled default/Instant identifier
+```
+
+The contract does NOT claim that the string `"default"` has been observed as a completion request value unless a future HAR directly captures that request body.
 
 ---
 
-# 20. Current model configuration
+# 21. Model/reasoning/search matrix
+
+The following matrix records what is established by capture rather than extrapolating unobserved combinations:
+
+| Request `model_type` | Product path | `thinking_enabled` | `search_enabled` | Contract status |
+|---|---|---:|---:|---|
+| `null` | Default / Instant | `false` or `true` where directly captured | `false` or `true` where directly captured | ESTABLISHED request dimension |
+| `"expert"` | Expert / Pro | `false` or `true` only where directly captured | Captured expert requests use `false` | ESTABLISHED historical wire path |
+| `"default"` | Current default settings/session identifier | boolean field exists | boolean field exists | ESTABLISHED as settings/session value; NOT established as completion input |
+
+The HARs establish `thinking_enabled` and `search_enabled` as independent boolean completion fields. They do not provide exhaustive proof that every boolean/model combination is accepted by every server version.
+
+In particular, the repository does not contain sufficient negative-response evidence to promote `expert + search_enabled:true` into a universal server rejection rule. The captured expert requests use `search_enabled:false`, so a conforming implementation should preserve that observed combination.
+
+Vision is disabled in the newest model settings and remains outside the current successful DLIQ contract.
+
+---
+
+# 22. Current model configuration
 
 The newest `/api/v0/client/settings?did=<redacted>&scope=model` response reports:
 
@@ -460,11 +549,11 @@ The newest `/api/v0/client/settings?did=<redacted>&scope=model` response reports
 ]
 ```
 
-This is the current UI/model gate. The wire protocol still accepts `model_type` as a request dimension because older captures contain expert requests.
+This is the current UI/model gate. It does not rewrite older HAR evidence.
 
 ---
 
-# 21. Historical model switching
+# 23. Historical model switching
 
 Older functional captures establish that an existing chat session can transmit:
 
@@ -480,7 +569,7 @@ and return a `ready` event reporting:
 {"model_type":"expert"}
 ```
 
-The same protocol can transmit:
+The same protocol transmits:
 
 ```json
 {"model_type":null}
@@ -488,20 +577,20 @@ The same protocol can transmit:
 
 for the default path.
 
-Therefore model selection is a request-level protocol field, not a field that is encoded into `chat_session_id`.
+Therefore model selection is a request-level protocol field, not a field encoded into `chat_session_id`.
 
 The current UI has the expert/vision switches disabled; this does not erase the historical wire behavior recorded in the older HARs.
 
 ---
 
-# 22. HIF and model enforcement
+# 24. HIF and model enforcement
 
-The older captures and the prior investigation establish HIF enforcement at completion time for model-sensitive traffic.
+Older captures establish HIF-sensitive completion enforcement for model-sensitive traffic.
 
 Operational rule:
 
 ```text
-A completion request that requires the HIF client proof MUST carry the corresponding x-hif-leim value.
+A completion request that requires HIF client proof MUST carry the corresponding x-hif-leim value.
 ```
 
 The recorded historical failure surface includes:
@@ -512,19 +601,19 @@ unsupported_client_by_model
 
 Treat that code as a server rejection of the client/model combination, not as a local parser error.
 
-For current v2.3 implementations the deterministic procedure is:
+For current v2.3 implementations:
 
 ```text
 1. Acquire fresh LEIM from hif-leim.deepseek.com/query.
 2. Put data.biz_data.value in x-hif-leim.
 3. Create a fresh PoW challenge for /api/v0/chat/completion.
 4. Solve the challenge.
-5. Send both x-hif-leim and x-ds-pow-response on completion.
+5. Send x-hif-leim and x-ds-pow-response on completion.
 ```
 
 ---
 
-# 23. Client settings
+# 25. Client settings
 
 The newest capture exposes `/api/v0/client/settings` with at least:
 
@@ -554,7 +643,7 @@ The client therefore prefetches one PoW challenge and uses a 60-second completio
 
 ---
 
-# 24. Header matrix
+# 26. Header matrix
 
 | Header | Session create | PoW create | HIF-LEIM GET | Completion |
 |---|---:|---:|---:|---:|
@@ -575,7 +664,7 @@ The table records observed transport composition, not an assertion that every he
 
 ---
 
-# 25. Headless reproduction
+# 27. Headless reproduction
 
 A browser UI is not required to acquire the current LEIM value. The side-channel is a normal HTTP GET and the completion endpoint is a normal HTTP POST.
 
@@ -609,7 +698,7 @@ The completion request still requires normal authenticated web state and a fresh
 
 ---
 
-# 26. Deterministic headless sequence
+# 28. Deterministic headless sequence
 
 ```text
 A. Authenticate normally.
@@ -629,7 +718,7 @@ This is the complete current protocol flow required to reproduce the browser's H
 
 ---
 
-# 27. HIF caching rule
+# 29. HIF caching rule
 
 Cache the opaque LEIM value for no longer than the captured 600-second lifetime.
 
@@ -639,7 +728,7 @@ Concurrent requests should share one in-flight refresh rather than issuing redun
 
 ---
 
-# 28. HIF failure rule
+# 30. HIF/DLIQ failure rules
 
 If the HIF-LEIM GET fails:
 
@@ -648,12 +737,6 @@ DO NOT fabricate a token.
 DO NOT reuse an expired token.
 DO NOT mark the request authenticated by UI state alone.
 ```
-
-The client configuration permits retry intervals up to 600 seconds; the exact backoff sequence is not part of the wire contract.
-
----
-
-# 29. DLIQ rule
 
 `x-hif-dliq` is part of historical traffic, but the newest HAR does not contain a successful DLIQ acquisition.
 
@@ -665,11 +748,9 @@ Current DLIQ reproduction: NOT ESTABLISHED
 Historical DLIQ use in completion: ESTABLISHED
 ```
 
-A v2.3 implementation must not claim a working current DLIQ algorithm without new HAR evidence.
-
 ---
 
-# 30. Security boundary
+# 31. Security boundary
 
 The protocol requires authenticated web state for authenticated DeepSeek API calls.
 
@@ -679,7 +760,7 @@ This document records protocol behavior, not reusable live credentials.
 
 ---
 
-# 31. Conformance requirements
+# 32. Conformance requirements
 
 A v2.3-conformant implementation MUST:
 
@@ -694,12 +775,13 @@ send x-hif-leim on HIF-protected completion
 send the completion body fields exactly as documented
 process completion as SSE
 use ready.response_message_id as the next parent_message_id
+use ready.model_type as the server-reported model-path confirmation
 refresh HIF-LEIM on the 600-second client lifetime
 ```
 
 ---
 
-# 32. Protocol status
+# 33. Protocol status
 
 ```json
 {
@@ -712,9 +794,13 @@ refresh HIF-LEIM on the 600-second client lifetime
   "hif_leim_600s_lifetime": "ESTABLISHED",
   "hif_dliq_current_success": "NOT_ESTABLISHED",
   "historical_expert_wire_path": "ESTABLISHED",
+  "current_default_settings_value": "ESTABLISHED",
   "current_expert_ui_switch": "DISABLED",
   "current_vision_ui_switch": "DISABLED",
   "historical_hif_model_enforcement": "ESTABLISHED",
+  "ready_server_model_confirmation": "ESTABLISHED",
+  "completion_input_default_string_value": "NOT_ESTABLISHED",
+  "expert_search_true_acceptance": "NOT_ESTABLISHED",
   "non_null_action_schema": "UNSPECIFIED",
   "preempt_true_semantics": "UNSPECIFIED",
   "full_file_attachment_protocol": "UNSPECIFIED"
@@ -723,7 +809,7 @@ refresh HIF-LEIM on the 600-second client lifetime
 
 ---
 
-# 33. Normative interpretation
+# 34. Normative interpretation
 
 The browser is only one HTTP client for this protocol.
 
@@ -739,4 +825,13 @@ GET HIF-LEIM
 -> POST completion with x-hif-leim
 ```
 
-This is the canonical v2.3 interpretation of the captured DeepSeek Web endpoint.
+The model contract is equally HTTP-level:
+
+```text
+completion request
+-> requested wire model value
+-> ready event
+-> authoritative server-reported model path
+```
+
+This is the v2.3 interpretation of the captured DeepSeek Web endpoint.
