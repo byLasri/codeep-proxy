@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { createPowChallenge } from "./pow-challenge.js";
 import { solvePow, encodePowResponse } from "./pow.js";
 import { createSession } from "./session.js";
@@ -6,6 +5,11 @@ import { buildCompletionHeaders } from "./headers.js";
 import { parseCompletionStream } from "./sse.js";
 import { DEEPSEEK } from "./constants.js";
 import type { DeepSeekCredentials, DeepSeekModelType } from "./types.js";
+
+declare const process: {
+  env: Record<string, string | undefined>;
+  exitCode: number;
+};
 
 /**
  * Live protocol matrix for the DeepSeek web completion endpoint.
@@ -50,8 +54,8 @@ const credentials: DeepSeekCredentials = {
   cookie: process.env.DEEPSEEK_COOKIE,
 };
 
-function requiredCredentialPresent(): boolean {
-  return Boolean(credentials.authorization || credentials.cookie);
+function expect(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
 }
 
 async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -89,16 +93,16 @@ async function fetchHifLeim(): Promise<string> {
     throw new Error(`HIF-LEIM returned HTTP ${response.status}: ${text.slice(0, 500)}`);
   }
 
-  let payload: any;
+  let payload: { data?: { biz_data?: { value?: unknown } } };
   try {
-    payload = JSON.parse(text);
+    payload = JSON.parse(text) as { data?: { biz_data?: { value?: unknown } } };
   } catch {
     throw new Error(`HIF-LEIM returned non-JSON response: ${text.slice(0, 500)}`);
   }
 
-  const value = payload?.data?.biz_data?.value;
-  assert.equal(typeof value, "string", "HIF-LEIM response must expose data.biz_data.value");
-  assert.ok(value.length > 0, "HIF-LEIM value must be non-empty");
+  const value = payload.data?.biz_data?.value;
+  expect(typeof value === "string", "HIF-LEIM response must expose data.biz_data.value");
+  expect(value.length > 0, "HIF-LEIM value must be non-empty");
   return value;
 }
 
@@ -187,8 +191,8 @@ async function runCase(hifLeim: string, testCase: Case): Promise<CaseResult> {
     const result = await withTimeout(parseCompletionStream(response), "completion SSE parse");
     const serverModelType = rawReadyModel(result);
 
-    assert.ok(serverModelType, "successful completion must contain ready.data.model_type");
-    assert.notEqual(result.response_message_id, null, "successful completion must expose response_message_id");
+    expect(serverModelType, "successful completion must contain ready.data.model_type");
+    expect(result.response_message_id !== null, "successful completion must expose response_message_id");
 
     return {
       ...testCase,
@@ -273,16 +277,17 @@ function printResults(results: CaseResult[]): void {
     throw new Error(`${failed.length} matrix case(s) failed at the client/protocol level`);
   }
 
-  assert.ok(successful.length > 0, "matrix must produce at least one successful completion");
-
-  const validServerModels = successful.every(
-    (result) => typeof result.ready_model_type === "string" && result.ready_model_type.length > 0,
+  expect(successful.length > 0, "matrix must produce at least one successful completion");
+  expect(
+    successful.every(
+      (result) => typeof result.ready_model_type === "string" && result.ready_model_type.length > 0,
+    ),
+    "every successful completion must report a non-empty server model_type",
   );
-  assert.ok(validServerModels, "every successful completion must report a non-empty server model_type");
 }
 
 async function main(): Promise<void> {
-  if (!requiredCredentialPresent()) {
+  if (!credentials.authorization && !credentials.cookie) {
     throw new Error(
       "Set DEEPSEEK_AUTHORIZATION and/or DEEPSEEK_COOKIE before running the live endpoint matrix",
     );
