@@ -1,10 +1,16 @@
 import { OpenAICompletionRequest } from './types.js'
 import { extractLatestUserPrompt, translateToDeepSeekInput } from './request.js'
-import { IncrementalSSEParser, DeepSeekSSEEvent, ReadyEvent, DataEvent } from './sse.js'
+import { 
+  IncrementalSSEParser, 
+  parseDeepSeekEvents,
+  normalizeDeepSeekEvents,
+  TypedDeepSeekEvent,
+} from './sse.js'
 import type { DeepSeekWebClient, DeepSeekSession } from '../deepseek/index.js'
 
 /**
  * Stateless service for handling OpenAI-compatible completions
+ * Uses protocol-compliant SSE parsing and patch application
  */
 export class CompletionService {
   constructor(private readonly deepSeekClient: DeepSeekWebClient) {}
@@ -65,6 +71,7 @@ export class CompletionService {
 
   /**
    * Create streaming SSE response
+   * Uses normalized completion events for proper protocol translation
    */
   private createStreamingResponse(
     deepSeekBody: ReadableStream<Uint8Array>,
@@ -73,47 +80,118 @@ export class CompletionService {
   ): Response {
     const completionId = `chatcmpl-${crypto.randomUUID()}`
     const created = Math.floor(Date.now() / 1000)
+    
+    // State tracking
     let modelTypeFromReady: string | null = null
     let hasSentRole = false
-
+    let isCompleted = false
+    
     const encoder = new TextEncoder()
+    
+    // Create exactly one parser instance per response
+    const parser = new IncrementalSSEParser()
 
     const openaiStream = deepSeekBody.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
         transform: (chunk, controller) => {
-          const parser = new IncrementalSSEParser()
-          const events = parser.parseChunk(chunk)
-
-          for (const evt of events) {
-            // Handle ready event - extract model_type for OpenAI response
-            if (evt.event === 'ready') {
-              const readyData = evt.data as Partial<ReadyEvent>
-              if (typeof readyData.model_type === 'string') {
-                modelTypeFromReady = readyData.model_type
-              }
-              continue // Skip ready events - internal to DeepSeek
+          // Parse chunk into raw SSE frames
+          const frames = parser.parseChunk(chunk)
+          
+          if (frames.length === 0) {
+            return // No complete frames yet
+          }
+          
+          // Convert frames to typed DeepSeek events
+          const typedEvents = parseDeepSeekEvents(frames)
+          
+          // Normalize to completion events
+          const normalizedEvents = normalizeDeepSeekEvents(typedEvents)
+          
+          // Process normalized events
+          for (const evt of normalizedEvents) {
+            // Handle ready event - extract model_type
+            if (evt.type === 'ready') {
+              modelTypeFromReady = evt.modelType
+              continue // Internal metadata, not sent to client
             }
-
-            // Handle data events - extract content deltas
-            if (evt.event === 'data') {
-              const dataEvt = evt.data as DataEvent
-              const response = dataEvt.v?.response
-
-              let contentDelta: string | null = null
-
-              // Canonical extraction: prefer fragments over direct content
-              if (response?.fragments) {
-                for (const frag of response.fragments) {
-                  if (frag.o === 'APPEND' && typeof frag.v === 'string') {
-                    contentDelta = (contentDelta || '') + frag.v
-                  }
+            
+            // Handle content deltas
+            if (evt.type === 'content_delta') {
+              // First chunk: send role
+              if (!hasSentRole) {
+                const roleChunk = {
+                  id: completionId,
+                  object: 'chat.completion.chunk' as const,
+                  created,
+                  model: modelTypeFromReady ?? model,
+                  choices: [{
+                    index: 0,
+                    delta: { role: 'assistant' },
+                    finish_reason: null,
+                  }],
                 }
-              } else if (response?.content && typeof response.content === 'string') {
-                contentDelta = response.content
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(roleChunk)}\n\n`))
+                hasSentRole = true
               }
-
-              if (contentDelta) {
-                // First chunk: send role
+              
+              // Send content delta
+              const contentChunk = {
+                id: completionId,
+                object: 'chat.completion.chunk' as const,
+                created,
+                model: modelTypeFromReady ?? model,
+                choices: [{
+                  index: 0,
+                  delta: { content: evt.text },
+                  finish_reason: null,
+                }],
+              }
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(contentChunk)}\n\n`))
+            }
+            
+            // Handle reasoning deltas (if web-client schema supports it)
+            if (evt.type === 'reasoning_delta') {
+              // For now, reasoning is internal - could be exposed via custom field
+              // Not sending to standard OpenAI clients
+            }
+            
+            // Handle completed event - send final chunk exactly once
+            if (evt.type === 'completed' && !isCompleted) {
+              isCompleted = true
+              const finalChunk = {
+                id: completionId,
+                object: 'chat.completion.chunk' as const,
+                created,
+                model: modelTypeFromReady ?? model,
+                choices: [{
+                  index: 0,
+                  delta: {},
+                  finish_reason: evt.finishReason,
+                }],
+              }
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+            }
+            
+            // Metadata events are internal only
+          }
+        },
+        
+        flush: (controller) => {
+          // Finalize the parser at EOF
+          const finalFrames = parser.finalize()
+          
+          if (finalFrames.length > 0) {
+            const typedEvents = parseDeepSeekEvents(finalFrames)
+            const normalizedEvents = normalizeDeepSeekEvents(typedEvents)
+            
+            for (const evt of normalizedEvents) {
+              if (evt.type === 'ready') {
+                modelTypeFromReady = evt.modelType
+                continue
+              }
+              
+              if (evt.type === 'content_delta') {
                 if (!hasSentRole) {
                   const roleChunk = {
                     id: completionId,
@@ -129,8 +207,7 @@ export class CompletionService {
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify(roleChunk)}\n\n`))
                   hasSentRole = true
                 }
-
-                // Send content delta
+                
                 const contentChunk = {
                   id: completionId,
                   object: 'chat.completion.chunk' as const,
@@ -138,35 +215,35 @@ export class CompletionService {
                   model: modelTypeFromReady ?? model,
                   choices: [{
                     index: 0,
-                    delta: { content: contentDelta },
+                    delta: { content: evt.text },
                     finish_reason: null,
                   }],
                 }
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(contentChunk)}\n\n`))
               }
-            }
-
-            // Handle close event - send final chunk
-            if (evt.event === 'close') {
-              const finalChunk = {
-                id: completionId,
-                object: 'chat.completion.chunk' as const,
-                created,
-                model: modelTypeFromReady ?? model,
-                choices: [{
-                  index: 0,
-                  delta: {},
-                  finish_reason: 'stop',
-                }],
+              
+              if (evt.type === 'completed' && !isCompleted) {
+                isCompleted = true
+                const finalChunk = {
+                  id: completionId,
+                  object: 'chat.completion.chunk' as const,
+                  created,
+                  model: modelTypeFromReady ?? model,
+                  choices: [{
+                    index: 0,
+                    delta: {},
+                    finish_reason: evt.finishReason,
+                  }],
+                }
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'))
               }
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`))
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'))
             }
           }
-        },
-        flush: (controller) => {
-          // Ensure we send final chunk if stream ends without explicit close
-          if (hasSentRole) {
+          
+          // Ensure final chunk if we sent content but no close event
+          if (hasSentRole && !isCompleted) {
+            isCompleted = true
             const finalChunk = {
               id: completionId,
               object: 'chat.completion.chunk' as const,
@@ -196,6 +273,7 @@ export class CompletionService {
 
   /**
    * Create non-streaming JSON response
+   * Consumes entire stream, finalizes parser, applies all patches, reconstructs state
    */
   private async createNonStreamingResponse(
     deepSeekBody: ReadableStream<Uint8Array>,
@@ -206,10 +284,11 @@ export class CompletionService {
     const created = Math.floor(Date.now() / 1000)
     let modelTypeFromReady: string | null = null
 
-    const decoder = new TextDecoder()
+    // Create exactly one parser instance per response
     const parser = new IncrementalSSEParser()
-    let fullContent = ''
-    let hasReceivedData = false
+    
+    // Accumulate typed events for processing after stream ends
+    const allTypedEvents: TypedDeepSeekEvent[] = []
 
     const reader = deepSeekBody.getReader()
     try {
@@ -217,33 +296,43 @@ export class CompletionService {
         const { done, value } = await reader.read()
         if (done) break
 
-        const events = parser.parseChunk(value)
-
-        for (const evt of events) {
-          if (evt.event === 'ready') {
-            const readyData = evt.data as Partial<ReadyEvent>
-            if (typeof readyData.model_type === 'string') {
-              modelTypeFromReady = readyData.model_type
-            }
-          } else if (evt.event === 'data') {
-            hasReceivedData = true
-            const dataEvt = evt.data as DataEvent
-            const response = dataEvt.v?.response
-
-            if (response?.fragments) {
-              for (const frag of response.fragments) {
-                if (frag.o === 'APPEND' && typeof frag.v === 'string') {
-                  fullContent += frag.v
-                }
-              }
-            } else if (response?.content && typeof response.content === 'string') {
-              fullContent += response.content
-            }
-          }
+        // Parse chunk into raw SSE frames
+        const frames = parser.parseChunk(value)
+        
+        if (frames.length > 0) {
+          // Convert to typed events
+          const typedEvents = parseDeepSeekEvents(frames)
+          allTypedEvents.push(...typedEvents)
         }
       }
     } finally {
       reader.releaseLock()
+    }
+
+    // Finalize the parser at EOF
+    const finalFrames = parser.finalize()
+    if (finalFrames.length > 0) {
+      const finalTypedEvents = parseDeepSeekEvents(finalFrames)
+      allTypedEvents.push(...finalTypedEvents)
+    }
+
+    // Normalize all events - this applies patches and generates deltas
+    const normalizedEvents = normalizeDeepSeekEvents(allTypedEvents)
+
+    // Extract model_type from ready event
+    for (const evt of normalizedEvents) {
+      if (evt.type === 'ready') {
+        modelTypeFromReady = evt.modelType
+        break
+      }
+    }
+
+    // Build final content from accumulated deltas
+    let fullContent = ''
+    for (const evt of normalizedEvents) {
+      if (evt.type === 'content_delta') {
+        fullContent += evt.text
+      }
     }
 
     const responseBody = {

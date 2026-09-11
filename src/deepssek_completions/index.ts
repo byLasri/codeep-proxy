@@ -4,7 +4,26 @@
 
 export { CompletionService } from './service.js'
 export { validateCompletionRequest, extractLatestUserPrompt, translateToDeepSeekInput } from './request.js'
-export { parseSSEEvents, extractResponseMessageId, extractContentDeltas } from './sse.js'
+export { 
+  parseDeepSeekEvents, 
+  normalizeDeepSeekEvents, 
+  extractResponseMessageId,
+  extractFinalContent,
+  extractReasoningContent,
+} from './sse.js'
+export type {
+  RawSSEFrame,
+  DeepSeekSSEEvent,
+  ReadyEventData,
+  UpdateSessionEventData,
+  TitleEventData,
+  CloseEventData,
+  DeepSeekPatch,
+  DataEventWithPatches,
+  TypedDeepSeekEvent,
+  ReconstructedResponse,
+  NormalizedCompletionEvent,
+} from './sse.js'
 export type {
   OpenAIMessage,
   OpenAICompletionRequest,
