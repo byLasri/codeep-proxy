@@ -1,6 +1,8 @@
 // Test script for /completions endpoint with OpenAI schema
 import { DeepSeekWebClient } from './src/deepseek/client.js'
 import type { DeepSeekCredentials } from './src/deepseek/types.js'
+import type { ProtocolStateStore } from './src/deepseek/state-store.js'
+import { PROTOCOL_STATE_KEYS } from './src/deepseek/state-store.js'
 
 // Credentials from user
 const DEEPSEEK_AUTH_TOKEN = 'oXY3Ai7vDOWY3qO7NZ2F1JWNeF3Um+AdLJSfB0G3X8xjZntED1rxpa5CpYunNm+x'
@@ -13,6 +15,31 @@ const DEEPSEEK_COOKIES = [
 
 function buildCookieString(cookies: Array<{ name: string; value: string }>): string {
   return cookies.map(c => `${c.name}=${c.value}`).join('; ')
+}
+
+// Mock ProtocolStateStore for testing
+class MockStateStore implements ProtocolStateStore {
+  private storage: Map<string, string> = new Map()
+  
+  constructor(credentials: { authorization: string; cookie: string }) {
+    const credJson = JSON.stringify({
+      authorizationToken: credentials.authorization,
+      cookies: DEEPSEEK_COOKIES
+    })
+    this.storage.set(PROTOCOL_STATE_KEYS.AUTH, credJson)
+  }
+  
+  async get(key: string): Promise<string | undefined> {
+    return this.storage.get(key)
+  }
+  
+  async set(key: string, value: string): Promise<void> {
+    this.storage.set(key, value)
+  }
+  
+  async delete(key: string): Promise<void> {
+    this.storage.delete(key)
+  }
 }
 
 const credentials: DeepSeekCredentials = {
@@ -101,8 +128,11 @@ console.log('TEST 2: Direct DeepSeek Completions API Call')
 console.log('-'.repeat(60))
 
 try {
+  // Create mock state store with credentials
+  const mockStateStore = new MockStateStore(credentials)
+  
   const client = new DeepSeekWebClient({
-    credentials,
+    stateStore: mockStateStore,
     origin: 'https://chat.deepseek.com'
   })
 
@@ -115,11 +145,14 @@ try {
     session: {
       chat_session_id: session.id,
       parent_message_id: null,
-      model_type: 'default',
-      thinking_enabled: false,
-      search_enabled: false
     },
-    ...deepSeekRequest
+    prompt: deepSeekRequest.prompt,
+    model_type: 'default',
+    thinking_enabled: false,
+    search_enabled: false,
+    ref_file_ids: [],
+    action: null,
+    preempt: false
   })
 
   console.log(`Response Status: ${response.status}`)
