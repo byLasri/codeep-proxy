@@ -1,5 +1,7 @@
 import { PROTOCOL_STATE_KEYS } from './deepseek/index.js'
 import { CompletionSessionDO } from './completions-session-do.js'
+import { DeepSeekWebClient } from './deepseek/client.js'
+import type { DeepSeekCompletionInput } from './deepseek/types.js'
 
 interface Env {
   AUTH_KV: KVNamespace
@@ -129,6 +131,90 @@ export default {
       const authJson = await env.AUTH_KV.get(PROTOCOL_STATE_KEYS.AUTH)
       const authenticated = !!authJson
       return json({ ok: true, authenticated })
+    }
+
+    // POST /v1/chat/completions - OpenAI-compatible chat completions
+    if (pathname === '/v1/chat/completions' && request.method === 'POST') {
+      try {
+        const body = await request.json() as { messages?: any[]; model?: string; stream?: boolean }
+        const { messages, model = 'deepseek-chat', stream = true } = body
+
+        if (!messages || !Array.isArray(messages)) {
+          return json({ error: { message: 'messages array is required' } }, 400)
+        }
+
+        // Get credentials from state store
+        const authJson = await env.AUTH_KV.get(PROTOCOL_STATE_KEYS.AUTH)
+        if (!authJson) {
+          return json({ error: { message: 'DeepSeek credentials not configured. Use POST /v1/auth to set them.' } }, 401)
+        }
+
+        // Initialize client with state store
+        const stateStore = {
+          get: async (key: string) => {
+            if (key === PROTOCOL_STATE_KEYS.AUTH) return authJson
+            return null
+          },
+          set: async (_key: string, _value: string) => {
+            throw new Error('State store is read-only in this context')
+          }
+        }
+        
+        const client = new DeepSeekWebClient({ stateStore })
+
+        // Convert OpenAI messages to DeepSeek prompt format
+        const prompt = messages.map((m: any) => {
+          const role = m.role || 'user'
+          const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+          return `${role}: ${content}`
+        }).join('\n')
+
+        // Create session
+        const session = await client.createSession()
+
+        // Build completion input
+        const completionInput: DeepSeekCompletionInput = {
+          session: {
+            chat_session_id: session.id,
+            parent_message_id: session.current_message_id || null,
+            model_type: 'default',
+            thinking_enabled: false,
+            search_enabled: false,
+          },
+          prompt,
+          model_type: 'default',
+          thinking_enabled: false,
+          search_enabled: false,
+          ref_file_ids: [],
+          action: null,
+          preempt: false,
+        }
+
+        // Execute completion
+        const response = await client.complete(completionInput)
+
+        // Stream SSE response back to client
+        if (stream && response.body) {
+          return new Response(response.body, {
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection': 'keep-alive',
+            },
+          })
+        } else {
+          // Non-streaming: collect and return as JSON
+          const text = await response.text()
+          return json({ result: text })
+        }
+      } catch (error) {
+        console.error('Error in /v1/chat/completions:', error)
+        return json({ 
+          error: { 
+            message: error instanceof Error ? error.message : 'Internal server error' 
+          } 
+        }, 500)
+      }
     }
 
     return json({ error: { message: 'Not found' } }, 404)
