@@ -3,6 +3,7 @@
 
 export type DeepSeekErrorKind =
   | "authentication"
+  | "credentials"
   | "session"
   | "pow"
   | "completion"

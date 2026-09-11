@@ -15,6 +15,9 @@ export type {
   DeepSeekCredentials,
 } from "./types.js";
 
+// Client types (includes StoredDeepSeekCredentials)
+export type { StoredDeepSeekCredentials } from "./client.js";
+
 // Constants
 export { DEEPSEEK, DEFAULT_TIMEZONE_OFFSET } from "./constants.js";
 
@@ -31,6 +34,19 @@ export {
   type HeaderBuildOptions,
 } from "./headers.js";
 
+// HIF-LEIM
+export {
+  fetchHifLeim,
+  buildHifLeimHeaders,
+  HifLeimCache,
+  type HifLeimValue,
+  type HifLeimResponse,
+} from "./hif-leim.js";
+
+// State Store (platform-independent abstraction)
+export { PROTOCOL_STATE_KEYS } from "./state-store.js";
+export type { ProtocolStateStore } from "./state-store.js";
+
 // PoW
 export { solvePow, encodePowResponse } from "./pow.js";
 export { createPowChallenge } from "./pow-challenge.js";
@@ -42,5 +58,5 @@ export { createSession } from "./session.js";
 export { buildCompletionRequest } from "./completion.js";
 
 // Client
-export { DeepSeekWebClient, createConversationState } from "./client.js";
-export type { DeepSeekWebClientConfig, CredentialsProvider } from "./client.js";
+export { DeepSeekWebClient, createDefaultCredentialsReader } from "./client.js";
+export type { DeepSeekWebClientConfig } from "./client.js";

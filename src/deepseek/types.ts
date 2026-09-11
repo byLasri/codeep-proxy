@@ -88,11 +88,11 @@ export interface DeepSeekCompletionInput {
   prompt: string;
 
   model_type: DeepSeekModelType;  // required - no fallback
-  thinking_enabled?: boolean;
-  search_enabled?: boolean;
-  ref_file_ids?: string[];
-  action?: unknown | null;
-  preempt?: boolean;
+  thinking_enabled: boolean;
+  search_enabled: boolean;
+  ref_file_ids: string[];
+  action: unknown | null;
+  preempt: boolean;
 }
 
 export interface DeepSeekCredentials {

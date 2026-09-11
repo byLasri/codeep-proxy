@@ -12,11 +12,11 @@ export function buildCompletionRequest(
   prompt: string,
   options: {
     model_type: DeepSeekModelType;  // required - no fallback
-    thinking_enabled?: boolean;
-    search_enabled?: boolean;
-    ref_file_ids?: string[];
-    action?: unknown | null;
-    preempt?: boolean;
+    thinking_enabled: boolean;
+    search_enabled: boolean;
+    ref_file_ids: string[];
+    action: unknown | null;
+    preempt: boolean;
   },
 ): DeepSeekCompletionRequest {
   return {
@@ -24,10 +24,10 @@ export function buildCompletionRequest(
     parent_message_id: state.parent_message_id,
     model_type: options.model_type,
     prompt,
-    ref_file_ids: options.ref_file_ids ?? [],
-    thinking_enabled: options.thinking_enabled ?? false,
-    search_enabled: options.search_enabled ?? false,
-    action: options.action ?? null,
-    preempt: options.preempt ?? false,
+    ref_file_ids: options.ref_file_ids,
+    thinking_enabled: options.thinking_enabled,
+    search_enabled: options.search_enabled,
+    action: options.action,
+    preempt: options.preempt,
   };
 }

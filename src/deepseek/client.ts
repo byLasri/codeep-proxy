@@ -1,10 +1,8 @@
 import { DEEPSEEK } from "./constants.js";
 import type {
   DeepSeekCredentials,
-  DeepSeekConversationState,
   DeepSeekSession,
   DeepSeekCompletionInput,
-  DeepSeekApiResponse,
 } from "./types.js";
 import { DeepSeekProtocolError } from "./errors.js";
 import { createSession } from "./session.js";
@@ -12,30 +10,136 @@ import { createPowChallenge } from "./pow-challenge.js";
 import { solvePow, encodePowResponse } from "./pow.js";
 import { buildCompletionRequest } from "./completion.js";
 import { buildCompletionHeaders } from "./headers.js";
+import { HifLeimCache } from "./hif-leim.js";
+import type { ProtocolStateStore } from "./state-store.js";
+import { PROTOCOL_STATE_KEYS } from "./state-store.js";
 
-export type CredentialsProvider = () => Promise<DeepSeekCredentials>;
+export interface StoredDeepSeekCredentials {
+  authorizationToken?: string;
+  cookies?: Array<{
+    name: string;
+    value: string;
+  }>;
+}
+
+/**
+ * Reads credentials from ProtocolStateStore using the canonical AUTH key.
+ * This is the default credential resolution strategy for the DeepSeek module.
+ */
+export function createDefaultCredentialsReader(
+  stateStore: ProtocolStateStore
+): { getCredentials(): Promise<DeepSeekCredentials> } {
+  return {
+    getCredentials: async (): Promise<DeepSeekCredentials> => {
+      const authJson = await stateStore.get(PROTOCOL_STATE_KEYS.AUTH);
+      
+      if (!authJson) {
+        throw new DeepSeekProtocolError(
+          "Credentials not found in state store",
+          { kind: "credentials", status: 401 }
+        );
+      }
+      
+      let stored: unknown;
+      try {
+        stored = JSON.parse(authJson);
+      } catch (e) {
+        throw new DeepSeekProtocolError(
+          "Invalid credentials format in state store",
+          { kind: "credentials", status: 401 }
+        );
+      }
+      
+      // Validate shape
+      if (typeof stored !== 'object' || stored === null) {
+        throw new DeepSeekProtocolError(
+          "Credentials must be an object",
+          { kind: "credentials", status: 401 }
+        );
+      }
+      
+      const obj = stored as Record<string, unknown>;
+      
+      // Validate authorizationToken if present
+      let authorizationToken: string | undefined;
+      if (obj.authorizationToken !== undefined) {
+        if (typeof obj.authorizationToken !== 'string') {
+          throw new DeepSeekProtocolError(
+            "authorizationToken must be a string",
+            { kind: "credentials", status: 401 }
+          );
+        }
+        authorizationToken = obj.authorizationToken;
+      }
+      
+      // Validate cookies if present
+      let cookies: Array<{ name: string; value: string }> | undefined;
+      if (obj.cookies !== undefined) {
+        if (!Array.isArray(obj.cookies)) {
+          throw new DeepSeekProtocolError(
+            "cookies must be an array",
+            { kind: "credentials", status: 401 }
+          );
+        }
+        
+        cookies = obj.cookies.map((cookie: unknown, index: number) => {
+          if (typeof cookie !== 'object' || cookie === null) {
+            throw new DeepSeekProtocolError(
+              `Cookie at index ${index} must be an object`,
+              { kind: "credentials", status: 401 }
+            );
+          }
+          
+          const c = cookie as Record<string, unknown>;
+          if (typeof c.name !== 'string') {
+            throw new DeepSeekProtocolError(
+              `Cookie at index ${index} missing name`,
+              { kind: "credentials", status: 401 }
+            );
+          }
+          if (typeof c.value !== 'string') {
+            throw new DeepSeekProtocolError(
+              `Cookie at index ${index} missing value`,
+              { kind: "credentials", status: 401 }
+            );
+          }
+          
+          return { name: c.name, value: c.value };
+        });
+      }
+      
+      // Build cookie header
+      const cookieHeader = cookies?.map(c => `${c.name}=${c.value}`).join('; ') || '';
+      
+      return {
+        authorization: authorizationToken,
+        cookie: cookieHeader || undefined,
+      };
+    },
+  };
+}
 
 export interface DeepSeekWebClientConfig {
-  credentials: DeepSeekCredentials | CredentialsProvider;
+  stateStore: ProtocolStateStore;
   origin?: string;
 }
 
 export class DeepSeekWebClient {
-  private readonly credentialsProvider: CredentialsProvider;
+  private readonly stateStore: ProtocolStateStore;
+  private readonly getCredentials: () => Promise<DeepSeekCredentials>;
   private readonly origin: string;
+  private readonly hifLeimCache: HifLeimCache;
 
   constructor(config: DeepSeekWebClientConfig) {
-    this.credentialsProvider = (async () => {
-      if (typeof config.credentials === "function") {
-        return config.credentials();
-      }
-      return config.credentials;
-    }) as CredentialsProvider;
+    this.stateStore = config.stateStore;
     this.origin = config.origin || DEEPSEEK.ORIGIN;
-  }
-
-  private async getCredentials(): Promise<DeepSeekCredentials> {
-    return this.credentialsProvider();
+    
+    // Initialize HIF-LEIM cache with the protocol state store
+    this.hifLeimCache = new HifLeimCache(this.stateStore);
+    
+    // Create default credentials reader that reads from state store
+    const credentialsReader = createDefaultCredentialsReader(this.stateStore);
+    this.getCredentials = () => credentialsReader.getCredentials();
   }
 
   async createSession(): Promise<DeepSeekSession> {
@@ -49,6 +153,9 @@ export class DeepSeekWebClient {
     // Build the DeepSeek completion request
     const request = buildCompletionRequest(session, prompt, options);
 
+    // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
+    const hifLeim = await this.hifLeimCache.getValue();
+
     // Create PoW challenge
     const credentials = await this.getCredentials();
     const challenge = await createPowChallenge(credentials, this.origin);
@@ -59,8 +166,8 @@ export class DeepSeekWebClient {
     // Encode PoW response
     const powHeader = encodePowResponse(solution);
 
-    // Build completion headers
-    const headers = buildCompletionHeaders(credentials, powHeader);
+    // Build completion headers with HIF-LEIM
+    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
 
     // Send completion request
     const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {
@@ -79,86 +186,4 @@ export class DeepSeekWebClient {
     // Return raw Response - caller handles SSE parsing
     return response;
   }
-
-  private async buildBaseHeaders(): Promise<Record<string, string>> {
-    const credentials = await this.getCredentials();
-    const headers: Record<string, string> = {
-      "x-client-bundle-id": DEEPSEEK.CLIENT.BUNDLE_ID,
-      "x-client-platform": DEEPSEEK.CLIENT.PLATFORM,
-      "x-client-version": DEEPSEEK.CLIENT.VERSION,
-      "x-client-locale": DEEPSEEK.CLIENT.LOCALE,
-      "x-client-timezone-offset": "3600",
-      "content-type": "application/json",
-    };
-
-    if (credentials.authorization) {
-      headers["authorization"] = credentials.authorization;
-    }
-
-    if (credentials.cookie) {
-      headers["cookie"] = credentials.cookie;
-    }
-
-    return headers;
-  }
-
-  // Convenience method: create session and complete in one call
-  async startConversation(input: Omit<DeepSeekCompletionInput, "session">): Promise<{
-    session: DeepSeekSession;
-    response: Response;
-    state: DeepSeekConversationState;
-  }> {
-    const session = await this.createSession();
-    const state: DeepSeekConversationState = {
-      chat_session_id: session.id,
-      parent_message_id: null,
-      model_type: input.model_type,
-      thinking_enabled: input.thinking_enabled,
-      search_enabled: input.search_enabled,
-      created_at: Date.now(),
-    };
-
-    const response = await this.complete({ session: state, ...input });
-
-    // Note: caller must parse response to get response_message_id for next state
-    const nextState: DeepSeekConversationState = {
-      ...state,
-      parent_message_id: null, // Will be updated by caller after parsing
-      updated_at: Date.now(),
-    };
-
-    return { session, response, state: nextState };
-  }
-
-  // Convenience method for continuing a conversation
-  async continueConversation(
-    state: DeepSeekConversationState,
-    prompt: string,
-    options: Omit<DeepSeekCompletionInput, "session" | "prompt">
-  ): Promise<{ response: Response; state: DeepSeekConversationState }> {
-    const response = await this.complete({
-      session: state,
-      prompt,
-      ...options,
-    });
-
-    const nextState: DeepSeekConversationState = {
-      ...state,
-      parent_message_id: null, // Will be updated by caller after parsing
-      model_type: options.model_type ?? state.model_type,
-      thinking_enabled: options.thinking_enabled ?? state.thinking_enabled,
-      search_enabled: options.search_enabled ?? state.search_enabled,
-      updated_at: Date.now(),
-    };
-
-    return { response, state: nextState };
-  }
-}
-
-export function createConversationState(session: DeepSeekSession): DeepSeekConversationState {
-  return {
-    chat_session_id: session.id,
-    parent_message_id: null,
-    created_at: Date.now(),
-  };
 }

@@ -1,15 +1,9 @@
-import { DeepSeekWebClient } from './deepseek/client.js'
-import type { DeepSeekCredentials } from './deepseek/types.js'
-
-const AUTH_KEY = 'deepseek-auth'
+import { PROTOCOL_STATE_KEYS } from './deepseek/index.js'
+import { CompletionSessionDO } from './completions-session-do.js'
 
 interface Env {
-  DEEPSEEK_ORIGIN?: string
-  DEEPSEEK_AUTHORIZATION?: string
-  DEEPSEEK_COOKIE?: string
   AUTH_KV: KVNamespace
-  CAPTURE_LOG?: string
-  DEBUG_BUCKET?: R2Bucket
+  COMPLETION_SESSIONS: DurableObjectNamespace
 }
 
 interface AuthCookie {
@@ -22,25 +16,6 @@ interface AuthState {
   cookies?: AuthCookie[]
 }
 
-async function loadAuthState(env: Env): Promise<AuthState | null> {
-  return await env.AUTH_KV.get(AUTH_KEY, 'json') as AuthState | null
-}
-
-function buildCookieString(cookies: AuthCookie[]): string {
-  return cookies.map(c => `${c.name}=${c.value}`).join('; ')
-}
-
-function authStateToCredentials(state: AuthState): DeepSeekCredentials {
-  const credentials: DeepSeekCredentials = {}
-  if (state.authorizationToken) {
-    credentials.authorization = state.authorizationToken
-  }
-  if (state.cookies && state.cookies.length > 0) {
-    credentials.cookie = buildCookieString(state.cookies)
-  }
-  return credentials
-}
-
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 
@@ -48,91 +23,116 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const pathname = new URL(request.url).pathname
 
-    if (pathname === '/v1/auth') {
-      if (request.method === 'POST') {
-        const body = await request.json().catch(() => null) as AuthState | null
-        if (!body || !Array.isArray(body.cookies)) return json({ error: { message: 'Invalid auth state' } }, 400)
-        await env.AUTH_KV.put(AUTH_KEY, JSON.stringify(body))
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+    // Route /v1/completions to Durable Object
+    if (pathname === '/v1/completions' && request.method === 'POST') {
+      const url = new URL(request.url)
+      const conversationId = url.searchParams.get('conversation_id')
+      
+      if (!conversationId) {
+        // Try to get from request body
+        try {
+          const body = await request.clone().json()
+          if (body && typeof body === 'object' && 'conversation_id' in body && typeof body.conversation_id === 'string') {
+            // Use the conversation_id from body - will be validated by DO
+          } else {
+            return json({ error: { message: 'conversation_id is required' } }, 400)
+          }
+        } catch {
+          return json({ error: { message: 'conversation_id is required' } }, 400)
+        }
       }
-      if (request.method === 'GET') {
-        const state = await loadAuthState(env)
-        const payload: any = { exists: !!state }
-        if (state) {
-          payload.state = {
-            authorizationToken: state.authorizationToken ? '[present]' : null,
-            cookies_count: state.cookies?.length || 0,
+      
+      // Get or create Durable Object for this conversation
+      const id = env.COMPLETION_SESSIONS.idFromName(conversationId || 'default')
+      const stub = env.COMPLETION_SESSIONS.get(id)
+      return stub.fetch(request)
+    }
+
+    // POST /v1/auth - Store credentials
+    if (pathname === '/v1/auth' && request.method === 'POST') {
+      const body = await request.json().catch(() => null)
+      
+      // Validate body is a non-null object (not array)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return json({ error: { message: 'Invalid auth state: body must be a non-null object' } }, 400)
+      }
+      
+      // Validate authorizationToken if present
+      if ('authorizationToken' in body && body.authorizationToken !== undefined) {
+        if (typeof body.authorizationToken !== 'string') {
+          return json({ error: { message: 'Invalid auth state: authorizationToken must be a string' } }, 400)
+        }
+      }
+      
+      // Validate cookies if present
+      if ('cookies' in body && body.cookies !== undefined) {
+        if (!Array.isArray(body.cookies)) {
+          return json({ error: { message: 'Invalid auth state: cookies must be an array' } }, 400)
+        }
+        
+        for (let i = 0; i < body.cookies.length; i++) {
+          const cookie = body.cookies[i]
+          if (!cookie || typeof cookie !== 'object' || Array.isArray(cookie)) {
+            return json({ error: { message: `Invalid auth state: cookie at index ${i} must be an object` } }, 400)
+          }
+          if (typeof cookie.name !== 'string') {
+            return json({ error: { message: `Invalid auth state: cookie at index ${i} has invalid name` } }, 400)
+          }
+          if (typeof cookie.value !== 'string') {
+            return json({ error: { message: `Invalid auth state: cookie at index ${i} has invalid value` } }, 400)
           }
         }
-        return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
       }
-      if (request.method === 'DELETE') {
-        await env.AUTH_KV.delete(AUTH_KEY)
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+      
+      const validatedBody: AuthState = {
+        authorizationToken: (body as AuthState).authorizationToken,
+        cookies: (body as AuthState).cookies,
       }
+      
+      // Store credentials in the canonical format
+      await env.AUTH_KV.put(PROTOCOL_STATE_KEYS.AUTH, JSON.stringify(validatedBody))
+      
+      return json({ ok: true })
     }
 
+    // GET /v1/auth - Return sanitized status
+    if (pathname === '/v1/auth' && request.method === 'GET') {
+      const authJson = await env.AUTH_KV.get(PROTOCOL_STATE_KEYS.AUTH)
+      let state: AuthState | null = null
+      
+      if (authJson) {
+        try {
+          state = JSON.parse(authJson) as AuthState
+        } catch {
+          // Invalid JSON treated as no credentials
+        }
+      }
+      
+      const payload: any = { exists: !!state }
+      if (state) {
+        payload.state = {
+          authorizationToken: state.authorizationToken ? '[present]' : null,
+          cookies_count: state.cookies?.length || 0,
+        }
+      }
+      return json(payload)
+    }
+
+    // DELETE /v1/auth - Clear credentials
+    if (pathname === '/v1/auth' && request.method === 'DELETE') {
+      await env.AUTH_KV.delete(PROTOCOL_STATE_KEYS.AUTH)
+      return json({ ok: true })
+    }
+
+    // GET /health - Health check
     if (request.method === 'GET' && pathname === '/health') {
-      return json({ ok: true, authenticated: !!(await loadAuthState(env)) })
-    }
-
-    if (pathname === '/completions' && request.method === 'POST') {
-      try {
-        const authState = await loadAuthState(env)
-        if (!authState) {
-          return json({ error: { message: 'Not authenticated. Please set credentials via /v1/auth first.' } }, 401)
-        }
-
-        const body = await request.json().catch(() => null) as {
-          prompt: string
-          model_type?: string
-          thinking_enabled?: boolean
-          search_enabled?: boolean
-        } | null
-
-        if (!body?.prompt) {
-          return json({ error: { message: 'Missing required field: prompt' } }, 400)
-        }
-
-        const credentials = authStateToCredentials(authState)
-        const origin = env.DEEPSEEK_ORIGIN || 'https://chat.deepseek.com'
-
-        const client = new DeepSeekWebClient({
-          credentials,
-          origin,
-        })
-
-        const session = await client.createSession()
-
-        const response = await client.complete({
-          session: {
-            chat_session_id: session.id,
-            parent_message_id: null,
-            model_type: body.model_type ?? 'default',
-            thinking_enabled: body.thinking_enabled ?? false,
-            search_enabled: body.search_enabled ?? false,
-          },
-          prompt: body.prompt,
-          model_type: body.model_type ?? 'default',
-          thinking_enabled: body.thinking_enabled ?? false,
-          search_enabled: body.search_enabled ?? false,
-        })
-
-        // Return SSE stream directly
-        return new Response(response.body, {
-          status: response.status,
-          headers: {
-            'content-type': 'text/event-stream',
-            'cache-control': 'no-cache',
-            'connection': 'keep-alive',
-          },
-        })
-      } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-        return json({ error: { message: errorMessage } }, 500)
-      }
+      const authJson = await env.AUTH_KV.get(PROTOCOL_STATE_KEYS.AUTH)
+      const authenticated = !!authJson
+      return json({ ok: true, authenticated })
     }
 
     return json({ error: { message: 'Not found' } }, 404)
   },
 }
+
+export { CompletionSessionDO }
