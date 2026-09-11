@@ -29,11 +29,11 @@ class MockStateStore implements ProtocolStateStore {
     this.storage.set(PROTOCOL_STATE_KEYS.AUTH, credJson)
   }
   
-  async get(key: string): Promise<string | undefined> {
-    return this.storage.get(key)
+  async get(key: string): Promise<string | null> {
+    return this.storage.get(key) ?? null
   }
   
-  async set(key: string, value: string): Promise<void> {
+  async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     this.storage.set(key, value)
   }
   
