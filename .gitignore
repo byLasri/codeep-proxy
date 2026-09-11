@@ -1,6 +1,7 @@
 ```
 # Cloudflare Workers/Wrangler
 .wrangler/
+wrangler-local-state/
 .opencode/
 
 # Database files
