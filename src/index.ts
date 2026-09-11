@@ -1,9 +1,10 @@
 import { PROTOCOL_STATE_KEYS } from './deepseek/index.js'
-import { CompletionSessionDO } from './completions-session-do.js'
+import { CompletionService, validateCompletionRequest } from './deepssek_completions/index.js'
+import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
+import { DeepSeekWebClient } from './deepseek/index.js'
 
 interface Env {
   AUTH_KV: KVNamespace
-  COMPLETION_SESSIONS: DurableObjectNamespace
 }
 
 interface AuthCookie {
@@ -19,57 +20,59 @@ interface AuthState {
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 
+function createDeepSeekClient(env: Env): DeepSeekWebClient {
+  const stateStore = new CloudflareKVStateStore(env.AUTH_KV)
+  return new DeepSeekWebClient({ stateStore })
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const pathname = new URL(request.url).pathname
 
-    // Route /v1/chat/completions to Durable Object for conversation management
+    // POST /v1/chat/completions - Stateless completion handler
     if (pathname === '/v1/chat/completions' && request.method === 'POST') {
-      // Get session ID from headers (OpenCode uses X-Session-Id or x-session-affinity)
-      const sessionId = request.headers.get('X-Session-Id') ?? request.headers.get('x-session-affinity')
-      
-      if (!sessionId) {
-        return json({ error: { message: 'OpenCode session ID is missing (expected X-Session-Id or x-session-affinity)' } }, 400)
+      try {
+        const body = await request.json()
+        const openAIRequest = validateCompletionRequest(body)
+
+        const client = createDeepSeekClient(env)
+        const service = new CompletionService(client)
+
+        return await service.processCompletion(openAIRequest)
+      } catch (err) {
+        return new Response(JSON.stringify({
+          error: {
+            message: err instanceof Error ? err.message : 'Invalid request',
+          },
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
       }
-      
-      // Get or create Durable Object for this session
-      const id = env.COMPLETION_SESSIONS.idFromName(sessionId)
-      const stub = env.COMPLETION_SESSIONS.get(id)
-      
-      // Normalize path to internal DO API (/completions) while preserving method, headers, and body
-      const url = new URL(request.url)
-      const internalUrl = `${url.origin}/completions${url.search}`
-      const normalizedRequest = new Request(internalUrl, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      })
-      
-      return stub.fetch(normalizedRequest)
     }
 
     // POST /v1/auth - Store credentials
     if (pathname === '/v1/auth' && request.method === 'POST') {
       const body = await request.json().catch(() => null)
-      
+
       // Validate body is a non-null object (not array)
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         return json({ error: { message: 'Invalid auth state: body must be a non-null object' } }, 400)
       }
-      
+
       // Validate authorizationToken if present
       if ('authorizationToken' in body && body.authorizationToken !== undefined) {
         if (typeof body.authorizationToken !== 'string') {
           return json({ error: { message: 'Invalid auth state: authorizationToken must be a string' } }, 400)
         }
       }
-      
+
       // Validate cookies if present
       if ('cookies' in body && body.cookies !== undefined) {
         if (!Array.isArray(body.cookies)) {
           return json({ error: { message: 'Invalid auth state: cookies must be an array' } }, 400)
         }
-        
+
         for (let i = 0; i < body.cookies.length; i++) {
           const cookie = body.cookies[i]
           if (!cookie || typeof cookie !== 'object' || Array.isArray(cookie)) {
@@ -83,15 +86,15 @@ export default {
           }
         }
       }
-      
+
       const validatedBody: AuthState = {
         authorizationToken: (body as AuthState).authorizationToken,
         cookies: (body as AuthState).cookies,
       }
-      
+
       // Store credentials in the canonical format
       await env.AUTH_KV.put(PROTOCOL_STATE_KEYS.AUTH, JSON.stringify(validatedBody))
-      
+
       return json({ ok: true })
     }
 
@@ -99,7 +102,7 @@ export default {
     if (pathname === '/v1/auth' && request.method === 'GET') {
       const authJson = await env.AUTH_KV.get(PROTOCOL_STATE_KEYS.AUTH)
       let state: AuthState | null = null
-      
+
       if (authJson) {
         try {
           state = JSON.parse(authJson) as AuthState
@@ -107,7 +110,7 @@ export default {
           // Invalid JSON treated as no credentials
         }
       }
-      
+
       const payload: any = { exists: !!state }
       if (state) {
         payload.state = {
@@ -134,5 +137,3 @@ export default {
     return json({ error: { message: 'Not found' } }, 404)
   },
 }
-
-export { CompletionSessionDO }
