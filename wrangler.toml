@@ -8,12 +8,3 @@ port = 3568
 [[kv_namespaces]]
 binding = "AUTH_KV"
 id = "local-auth"
-
-[durable_objects]
-bindings = [
-  { name = "COMPLETION_SESSIONS", class_name = "CompletionSessionDO" }
-]
-
-[[migrations]]
-tag = "v1"
-new_classes = ["CompletionSessionDO"]
