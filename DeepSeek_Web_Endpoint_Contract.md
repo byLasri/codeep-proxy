@@ -3,203 +3,34 @@
 ## Version
 
 ```text
-contract_version = "2.1"
+contract_version = "2.3"
 protocol_target = "DeepSeek Web Chat"
 runtime_reference = "Cloudflare Workers + TypeScript + Wrangler"
+evidence_basis = "checked-in HAR captures; newest capture has precedence for current behavior"
 ```
 
 ---
 
-# 1. Reference implementation template
+# 1. Evidence precedence
 
-The following is the complete structural template of an implementation conforming to this contract.
+This document is a wire contract derived from the repository's recorded network traffic.
 
-It is intentionally written for Cloudflare Workers using standard Web APIs and TypeScript. It does not depend on a specific Node.js version.
+The evidence order is deterministic:
 
-```ts
-export interface Env {
-  DEEPSEEK_AUTHORIZATION?: string;
-  DEEPSEEK_COOKIE?: string;
-  DEEPSEEK_ORIGIN?: string;
-}
-
-export const DEEPSEEK = {
-  ORIGIN: "https://chat.deepseek.com",
-  ENDPOINTS: {
-    CREATE_SESSION: "/api/v0/chat_session/create",
-    CREATE_POW: "/api/v0/chat/create_pow_challenge",
-    COMPLETION: "/api/v0/chat/completion",
-  },
-  CLIENT: {
-    BUNDLE_ID: "com.deepseek.chat",
-    PLATFORM: "web",
-    VERSION: "2.4.0",
-    LOCALE: "en_US",
-  },
-  POW: { ALGORITHM: "DeepSeekHashV1" },
-} as const;
-
-export type DeepSeekModelType = null | "expert" | string;
-
-export interface DeepSeekCompletionRequest {
-  chat_session_id: string;
-  parent_message_id: number | null;
-  model_type: DeepSeekModelType;
-  prompt: string;
-  ref_file_ids: string[];
-  thinking_enabled: boolean;
-  search_enabled: boolean;
-  action: unknown | null;
-  preempt: boolean;
-}
-
-export interface DeepSeekSession {
-  id: string;
-  seq_id?: number;
-  agent?: string;
-  model_type?: string | null;
-  current_message_id?: number | null;
-  ttl_seconds?: number;
-  [key: string]: unknown;
-}
-
-export interface DeepSeekConversationState {
-  chat_session_id: string;
-  parent_message_id: number | null;
-  model_type?: DeepSeekModelType;
-  thinking_enabled?: boolean;
-  search_enabled?: boolean;
-  created_at?: number;
-  updated_at?: number;
-}
-
-export interface DeepSeekPowChallenge {
-  algorithm: string;
-  challenge: string;
-  salt: string;
-  signature: string;
-  difficulty: number;
-  expire_at?: number;
-  expire_after?: number;
-  target_path: string;
-  [key: string]: unknown;
-}
-
-export interface DeepSeekPowSolution { [key: string]: unknown; }
-export interface DeepSeekReadyEvent {
-  request_message_id: number;
-  response_message_id: number;
-  model_type: string;
-}
-export interface DeepSeekSSEEvent { event?: string; data?: unknown; }
-export interface DeepSeekCompletionResult {
-  request_message_id: number | null;
-  response_message_id: number | null;
-  model_type: string | null;
-  output_text: string;
-  search_enabled?: boolean;
-  search_triggered?: boolean;
-  conversation_mode?: string;
-  events: DeepSeekSSEEvent[];
-}
-
-export interface DeepSeekClientHeaders {
-  authorization?: string;
-  cookie?: string;
-  "x-client-bundle-id": string;
-  "x-client-platform": string;
-  "x-client-version": string;
-  "x-client-locale": string;
-  "x-client-timezone-offset": string;
-  "x-hif-leim"?: string;
-  "x-hif-dliq"?: string;
-  "x-ds-pow-response"?: string;
-  "content-type": string;
-  accept: string;
-}
-
-export function buildAuthenticationHeaders(env: Env): Record<string, string> {
-  const headers: Record<string, string> = {
-    "x-client-bundle-id": DEEPSEEK.CLIENT.BUNDLE_ID,
-    "x-client-platform": DEEPSEEK.CLIENT.PLATFORM,
-    "x-client-version": DEEPSEEK.CLIENT.VERSION,
-    "x-client-locale": DEEPSEEK.CLIENT.LOCALE,
-    "x-client-timezone-offset": "3600",
-    "content-type": "application/json",
-    "accept": "*/*",
-  };
-  if (env.DEEPSEEK_AUTHORIZATION) headers["authorization"] = env.DEEPSEEK_AUTHORIZATION;
-  if (env.DEEPSEEK_COOKIE) headers["cookie"] = env.DEEPSEEK_COOKIE;
-  return headers;
-}
-
-export async function createChatSession(env: Env): Promise<DeepSeekSession> {
-  const response = await fetch(`${DEEPSEEK.ORIGIN}${DEEPSEEK.ENDPOINTS.CREATE_SESSION}`, {
-    method: "POST", headers: buildAuthenticationHeaders(env), body: JSON.stringify({}),
-  });
-  if (!response.ok) throw new Error(`DeepSeek session creation failed: HTTP ${response.status}`);
-  return await response.json() as DeepSeekSession;
-}
-
-export async function createPowChallenge(env: Env): Promise<DeepSeekPowChallenge> {
-  const response = await fetch(`${DEEPSEEK.ORIGIN}${DEEPSEEK.ENDPOINTS.CREATE_POW}`, {
-    method: "POST",
-    headers: buildAuthenticationHeaders(env),
-    body: JSON.stringify({ target_path: DEEPSEEK.ENDPOINTS.COMPLETION }),
-  });
-  if (!response.ok) throw new Error(`DeepSeek PoW challenge failed: HTTP ${response.status}`);
-  return await response.json() as DeepSeekPowChallenge;
-}
-
-export function buildCompletionRequest(
-  state: DeepSeekConversationState,
-  prompt: string,
-  options: {
-    model_type?: DeepSeekModelType;
-    thinking_enabled?: boolean;
-    search_enabled?: boolean;
-    ref_file_ids?: string[];
-    action?: unknown | null;
-    preempt?: boolean;
-  } = {},
-): DeepSeekCompletionRequest {
-  return {
-    chat_session_id: state.chat_session_id,
-    parent_message_id: state.parent_message_id,
-    model_type: options.model_type ?? null,
-    prompt,
-    ref_file_ids: options.ref_file_ids ?? [],
-    thinking_enabled: options.thinking_enabled ?? false,
-    search_enabled: options.search_enabled ?? false,
-    action: options.action ?? null,
-    preempt: options.preempt ?? false,
-  };
-}
-
-export async function requestCompletion(
-  env: Env,
-  request: DeepSeekCompletionRequest,
-  powHeader: string,
-  hifHeaders: Partial<Pick<DeepSeekClientHeaders, "x-hif-leim" | "x-hif-dliq">> = {},
-): Promise<Response> {
-  const headers = buildAuthenticationHeaders(env);
-  headers["accept"] = "text/event-stream";
-  headers["x-ds-pow-response"] = powHeader;
-  if (hifHeaders["x-hif-leim"]) headers["x-hif-leim"] = hifHeaders["x-hif-leim"]!;
-  if (hifHeaders["x-hif-dliq"]) headers["x-hif-dliq"] = hifHeaders["x-hif-dliq"]!;
-  return fetch(`${DEEPSEEK.ORIGIN}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {
-    method: "POST", headers, body: JSON.stringify(request),
-  });
-}
+```text
+1. extensive_usage_network_test.har
+2. other checked-in HAR captures
+3. existing repository documentation
+4. implementation source comments/templates
 ```
 
-The template defines the protocol surface without coupling it to a particular application architecture.
+The newest HAR defines the current endpoint behavior. Older HARs remain valid historical evidence for behavior that is no longer exposed by the current UI configuration, including model selection/enforcement.
+
+A documented value marked `ESTABLISHED` is directly present in captured traffic or directly represented by the captured server response. Historical behavior is labeled as historical; it is not promoted to current UI availability.
 
 ---
 
-# 2. Protocol definition
-
-## 2.1 Origin
+# 2. Origin
 
 ```json
 {
@@ -209,316 +40,18 @@ The template defines the protocol surface without coupling it to a particular ap
 }
 ```
 
-The protocol endpoints documented below are relative to this origin.
+HIF acquisition uses separate DeepSeek origins:
 
----
-
-# 3. Endpoint specification
-
-## 3.1 Chat-session creation
-
-```json
-{
-  "method": "POST",
-  "path": "/api/v0/chat_session/create",
-  "request_content_type": "application/json",
-  "request_body": {},
-  "response_type": "JSON",
-  "purpose": "Create a new DeepSeek chat session",
-  "status": "ESTABLISHED"
-}
-```
-
-The returned session contains an `id` used as `chat_session_id`.
-
----
-
-# 4. Chat session
-
-```json
-{
-  "name": "chat_session_id",
-  "type": "string",
-  "source": "chat_session/create.id",
-  "scope": "conversation",
-  "status": "ESTABLISHED"
-}
-```
-
-A chat session is the server-side container for a conversation. Sequential turns of the same conversation reuse the session identifier.
-
----
-
-# 5. Session lifetime
-
-Observed session metadata includes:
-
-```json
-{
-  "field": "ttl_seconds",
-  "observed_value": 259200,
-  "equivalent": "3 days",
-  "status": "OBSERVED"
-}
-```
-
-Exact expiration behavior remains a server property beyond the observed metadata.
-
----
-
-# 6. Completion endpoint
-
-```json
-{
-  "method": "POST",
-  "path": "/api/v0/chat/completion",
-  "request_content_type": "application/json",
-  "response_content_type": "text/event-stream",
-  "purpose": "Generate a DeepSeek chat response",
-  "status": "ESTABLISHED"
-}
+```text
+https://hif-leim.deepseek.com/query
+https://hif-dliq.deepseek.com/query
 ```
 
 ---
 
-# 7. Completion request schema
+# 3. Browser client identity
 
-```json
-{
-  "chat_session_id": { "type": "string", "required": true },
-  "parent_message_id": { "type": "number|null", "required": true },
-  "model_type": { "type": "string|null", "required": true, "observed_values": [null, "expert"] },
-  "prompt": { "type": "string", "required": true },
-  "ref_file_ids": { "type": "array", "required": true, "normal_value": [] },
-  "thinking_enabled": { "type": "boolean", "required": true },
-  "search_enabled": { "type": "boolean", "required": true },
-  "action": { "type": "null|unknown", "required": true, "normal_value": null },
-  "preempt": { "type": "boolean", "required": true, "normal_value": false }
-}
-```
-
----
-
-# 8. parent_message_id
-
-```json
-{
-  "name": "parent_message_id",
-  "type": "number|null",
-  "first_turn": null,
-  "subsequent_turn": "previous response_message_id",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 9. Message-chain state
-
-The minimum conversational state is:
-
-```json
-{
-  "chat_session_id": "string",
-  "parent_message_id": "number|null"
-}
-```
-
-A session identifier alone is not the complete continuation state.
-
----
-
-# 10. Message identifiers
-
-The completion protocol exposes `request_message_id` and `response_message_id`. The authoritative new assistant response identifier is supplied by the `ready` event.
-
----
-
-# 11. SSE response contract
-
-The completion response is an SSE stream. Relevant event classes include `ready`, `update_session`, `data`, and `close`.
-
----
-
-# 12. ready event
-
-```json
-{
-  "event": "ready",
-  "data": {
-    "request_message_id": "number",
-    "response_message_id": "number",
-    "model_type": "string"
-  },
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 13. State transition caused by ready
-
-```json
-{
-  "before": { "parent_message_id": "previous response ID or null" },
-  "ready": { "response_message_id": "new response ID" },
-  "after": { "parent_message_id": "ready.response_message_id" }
-}
-```
-
----
-
-# 14. SSE delta protocol
-
-Observed content deltas use fields equivalent to:
-
-```json
-{ "p": "response/fragments/-1/content", "o": "APPEND", "v": "text" }
-```
-
-Observed operations include `SET`, `APPEND`, and `BATCH`.
-
----
-
-# 15. Model type
-
-```json
-{
-  "field": "model_type",
-  "type": "string|null",
-  "observed_values": [null, "expert"]
-}
-```
-
-Observed interpretation: `null` is the default/Flash path; `expert` is the Pro/expert path.
-
----
-
-# 16. Default model
-
-Observed wire representation:
-
-```json
-{ "model_type": null }
-```
-
-The server may report `model_type: "default"`.
-
----
-
-# 17. Expert model
-
-Observed wire representation:
-
-```json
-{ "model_type": "expert" }
-```
-
----
-
-# 18. Thinking mode
-
-```json
-{
-  "field": "thinking_enabled",
-  "type": "boolean",
-  "values": [false, true],
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 19. Model/reasoning matrix
-
-```json
-[
-  { "model_type": null, "thinking_enabled": false, "description": "default / Flash without thinking" },
-  { "model_type": null, "thinking_enabled": true, "description": "default / Flash with thinking" },
-  { "model_type": "expert", "thinking_enabled": false, "description": "expert / Pro without thinking" },
-  { "model_type": "expert", "thinking_enabled": true, "description": "expert / Pro with thinking" }
-]
-```
-
----
-
-# 20. Search mode
-
-```json
-{
-  "field": "search_enabled",
-  "type": "boolean",
-  "values": [false, true]
-}
-```
-
-Search uses the same `/api/v0/chat/completion` endpoint.
-
----
-
-# 21. Search response state
-
-Observed search-related response information includes:
-
-```json
-{
-  "search_enabled": true,
-  "search_triggered": true,
-  "conversation_mode": "DEEP_SEARCH"
-}
-```
-
----
-
-# 22. Combined model/search/thinking state
-
-These are independent request dimensions:
-
-```json
-{
-  "model_type": null,
-  "thinking_enabled": true,
-  "search_enabled": true
-}
-```
-
----
-
-# 23. PoW endpoint
-
-```json
-{
-  "method": "POST",
-  "path": "/api/v0/chat/create_pow_challenge",
-  "request_body": { "target_path": "/api/v0/chat/completion" },
-  "response": "PoW challenge object",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 24. PoW challenge schema
-
-Observed fields include `algorithm`, `challenge`, `salt`, `signature`, `difficulty`, expiration information, and `target_path`. The observed algorithm is `DeepSeekHashV1`.
-
----
-
-# 25. PoW response
-
-The completion request includes `x-ds-pow-response`, carrying the solved PoW result.
-
----
-
-# 26. PoW binding
-
-The challenge includes `target_path: "/api/v0/chat/completion"`, explicitly associating the challenge with completion.
-
----
-
-# 27. Browser client headers
-
-Observed client metadata:
+The current browser capture sends:
 
 ```json
 {
@@ -530,715 +63,680 @@ Observed client metadata:
 }
 ```
 
-These are observed browser values and should not automatically be interpreted as immutable server requirements.
+These are the exact captured client values.
 
 ---
 
-# 28. Authentication headers
-
-Authenticated requests carry authorization and browser session state:
+# 4. Core endpoints
 
 ```json
 {
-  "Authorization": "authenticated session",
-  "Cookie": "authenticated browser state"
+  "session_create": "POST /api/v0/chat_session/create",
+  "pow_create": "POST /api/v0/chat/create_pow_challenge",
+  "completion": "POST /api/v0/chat/completion"
 }
 ```
 
-Credentials must not be embedded into protocol documentation.
+The normal browser sequence is:
 
----
-
-# 29. Authentication/session boundary
-
-The protocol distinguishes authentication, the conversation session, and the message-chain position.
-
----
-
-# 30. ref_file_ids
-
-Normal observed text completion:
-
-```json
-{ "ref_file_ids": [] }
+```text
+chat_session/create
+        |
+        +--> create_pow_challenge
+        |
+        +--> HIF side-channel acquisition
+        |
+        +--> chat/completion
 ```
 
-The complete attachment protocol is not defined by the current text-only contract.
+HIF acquisition is independent of session creation and PoW generation.
 
 ---
 
-# 31. action
+# 5. Chat-session creation
 
-Normal observed request:
+```http
+POST https://chat.deepseek.com/api/v0/chat_session/create
+Content-Type: application/json
 
-```json
-{ "action": null }
+{}
 ```
 
-Non-null action values remain unspecified.
-
----
-
-# 32. preempt
-
-Normal observed request:
-
-```json
-{ "preempt": false }
-```
-
-The semantics of `preempt=true` remain unknown.
-
----
-
-# 33. Conversation continuation
-
-The canonical continuation state is:
+Observed response fields include:
 
 ```json
 {
-  "chat_session_id": "<same-session>",
-  "parent_message_id": "<previous response_message_id>"
+  "id": "<chat_session_id>",
+  "seq_id": 0,
+  "agent": "chat",
+  "model_type": "default",
+  "current_message_id": null,
+  "ttl_seconds": 259200
+}
+```
+
+`id` is the authoritative `chat_session_id` used by completion requests.
+
+---
+
+# 6. Session lifetime
+
+```json
+{
+  "ttl_seconds": 259200,
+  "equivalent": "3 days",
+  "status": "OBSERVED"
 }
 ```
 
 ---
 
-# 34. Model switching
+# 7. Proof-of-work challenge
 
-Model switching within an existing session remains provisional. The request schema can represent it, but complete server semantics are not yet established.
+```http
+POST https://chat.deepseek.com/api/v0/chat/create_pow_challenge
+Content-Type: application/json
 
----
+{"target_path":"/api/v0/chat/completion"}
+```
 
-# 35. Session-scoped versus request-scoped state
+Observed response schema:
 
 ```json
 {
-  "chat_session_id": { "scope": "session" },
-  "parent_message_id": { "scope": "message chain" },
-  "model_type": { "scope": "request", "session_switching": "provisional" },
-  "thinking_enabled": { "scope": "request" },
-  "search_enabled": { "scope": "request" }
+  "algorithm": "DeepSeekHashV1",
+  "challenge": "<challenge>",
+  "salt": "<salt>",
+  "signature": "<signature>",
+  "difficulty": 144000,
+  "expire_after": 300000,
+  "target_path": "/api/v0/chat/completion"
 }
 ```
 
+The challenge values are per-response values and MUST NOT be copied from a HAR into an implementation.
+
+The exact observed current difficulty is `144000` and the observed relative expiry is `300000` milliseconds.
+
 ---
 
-# 36. Complete normal request
+# 8. Proof-of-work transport
+
+A solved challenge is transmitted on completion as:
+
+```text
+x-ds-pow-response: <solved-pow-result>
+```
+
+The PoW layer and HIF layer are separate protocol components.
+
+---
+
+# 9. HIF-LEIM acquisition
+
+The current browser obtains the LEIM value from:
+
+```http
+GET https://hif-leim.deepseek.com/query
+```
+
+The captured request contains the client headers:
+
+```http
+accept: */*
+x-client-bundle-id: com.deepseek.chat
+x-client-platform: web
+x-client-version: 2.4.0
+x-client-locale: en_US
+x-client-timezone-offset: 3600
+```
+
+The current capture does NOT send `Authorization`, `Cookie`, `Origin`, or `Referer` on this HIF-LEIM GET.
+
+That is the current wire contract.
+
+---
+
+# 10. HIF-LEIM response
+
+A successful current response has this exact shape:
 
 ```json
 {
-  "chat_session_id": "<uuid>",
-  "parent_message_id": null,
-  "model_type": null,
-  "prompt": "<text>",
-  "ref_file_ids": [],
-  "thinking_enabled": false,
-  "search_enabled": false,
-  "action": null,
-  "preempt": false
-}
-```
-
----
-
-# 37. Complete continuation request
-
-```json
-{
-  "chat_session_id": "<same-uuid>",
-  "parent_message_id": 42,
-  "model_type": null,
-  "prompt": "<next-text>",
-  "ref_file_ids": [],
-  "thinking_enabled": false,
-  "search_enabled": false,
-  "action": null,
-  "preempt": false
-}
-```
-
----
-
-# 38. Complete expert request
-
-```json
-{
-  "chat_session_id": "<uuid>",
-  "parent_message_id": 42,
-  "model_type": "expert",
-  "prompt": "<text>",
-  "ref_file_ids": [],
-  "thinking_enabled": true,
-  "search_enabled": false,
-  "action": null,
-  "preempt": false
-}
-```
-
----
-
-# 39. Complete search request
-
-```json
-{
-  "chat_session_id": "<uuid>",
-  "parent_message_id": 42,
-  "model_type": null,
-  "prompt": "<search-question>",
-  "ref_file_ids": [],
-  "thinking_enabled": true,
-  "search_enabled": true,
-  "action": null,
-  "preempt": false
-}
-```
-
----
-
-# 40. Complete response state
-
-A completed response should yield at minimum:
-
-```json
-{
-  "request_message_id": 43,
-  "response_message_id": 44,
-  "model_type": "default"
-}
-```
-
-The next `parent_message_id` is `44`.
-
----
-
-# 41. Protocol state machine
-
-```json
-{
-  "states": ["UNAUTHENTICATED", "AUTHENTICATED", "SESSION_CREATED", "COMPLETION_STARTED", "READY", "STREAMING", "COMPLETED", "FAILED"],
-  "transitions": [
-    { "from": "AUTHENTICATED", "operation": "chat_session/create", "to": "SESSION_CREATED" },
-    { "from": "SESSION_CREATED", "operation": "create_pow_challenge", "to": "SESSION_CREATED" },
-    { "from": "SESSION_CREATED", "operation": "chat/completion", "to": "COMPLETION_STARTED" },
-    { "from": "COMPLETION_STARTED", "event": "ready", "to": "READY" },
-    { "from": "READY", "event": "content delta", "to": "STREAMING" },
-    { "from": "STREAMING", "event": "close", "to": "COMPLETED" }
-  ]
-}
-```
-
----
-
-# 42. Continuation invariant
-
-```json
-{
-  "invariant": "NEXT_PARENT_EQUALS_PREVIOUS_RESPONSE",
-  "rule": "next.parent_message_id === previous.ready.response_message_id",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 43. Session invariant
-
-```json
-{
-  "invariant": "SESSION_STABILITY",
-  "rule": "sequential turns in one conversation reuse the same chat_session_id",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 44. Message identity invariant
-
-```json
-{
-  "invariant": "READY_IS_AUTHORITATIVE",
-  "rule": "ready.response_message_id is the authoritative continuation response ID",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 45. Model invariant
-
-```json
-{
-  "invariant": "MODEL_IS_A_REQUEST_DIMENSION",
-  "rule": "model_type is transmitted independently of thinking_enabled and search_enabled",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 46. Search invariant
-
-```json
-{
-  "invariant": "SEARCH_IS_A_REQUEST_DIMENSION",
-  "rule": "search_enabled is transmitted through /api/v0/chat/completion",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 47. Thinking invariant
-
-```json
-{
-  "invariant": "THINKING_IS_A_BOOLEAN",
-  "rule": "thinking_enabled is represented as a boolean request field",
-  "status": "ESTABLISHED"
-}
-```
-
----
-
-# 48. HIF side-channel
-
-HIF (High-Integrity Framework) values are obtained from dedicated DeepSeek side-channel origins.
-
-```json
-[
-  {
-    "header": "x-hif-leim",
-    "method": "GET",
-    "origin": "https://hif-leim.deepseek.com",
-    "path": "/query",
-    "purpose": "Fetch LEIM HIF token",
-    "status": "ESTABLISHED"
-  },
-  {
-    "header": "x-hif-dliq",
-    "method": "GET",
-    "origin": "https://hif-dliq.deepseek.com",
-    "path": "/query",
-    "purpose": "Fetch DLIQ HIF token for multimodal requests",
-    "status": "ESTABLISHED"
+  "code": 0,
+  "msg": "",
+  "data": {
+    "biz_code": 0,
+    "biz_msg": "",
+    "biz_data": {
+      "value": "<hif_leim_value>"
+    }
   }
-]
-```
-
-The tokens are not generated by the browser client.
-
----
-
-# 49. HIF request headers
-
-The observed side-channel requests use authenticated browser-client context:
-
-```json
-{
-  "Authorization": "Bearer <user_token>",
-  "Origin": "https://chat.deepseek.com",
-  "Referer": "https://chat.deepseek.com/",
-  "User-Agent": "<browser user agent>"
 }
 ```
 
-The exact credential value is account-specific and must never be documented or committed.
-
----
-
-# 50. HIF response
-
-The token is extracted from:
+The client extracts:
 
 ```text
 data.biz_data.value
 ```
 
-Observed response shape:
+and places the resulting opaque value into:
 
-```json
-{
-  "code": 0,
-  "data": {
-    "biz_data": {
-      "value": "<HIF token>"
-    }
-  }
-}
-```
-
-The token is treated as opaque runtime data; its internal encoding and signing algorithm are not established by this contract.
-
----
-
-# 51. HIF lifetime and caching
-
-HAR telemetry establishes a HIF TTL of 600 seconds.
-
-```json
-{
-  "ttl_seconds": 600,
-  "equivalent": "10 minutes",
-  "recommended_refresh_before_expiry": 480
-}
-```
-
-Implementations should cache HIF values and refresh them before expiry rather than fetching them for every completion.
-
-Canonical state:
-
-```json
-{
-  "leim": "string",
-  "dliq": "string",
-  "expires_at": "number (epoch ms)"
-}
+```text
+x-hif-leim
 ```
 
 ---
 
-# 52. HIF injection
+# 11. HIF-LEIM token format
 
-When HIF is available for a completion request, the values are supplied as headers:
+The current captured value is an opaque two-segment dot-delimited string.
 
-```json
-{
-  "target_endpoint": "/api/v0/chat/completion",
-  "headers": {
-    "x-hif-leim": "<LEIM token>",
-    "x-hif-dliq": "<DLIQ token>"
-  }
-}
+It is NOT a standard three-segment JWT.
+
+Implementation rule:
+
+```text
+Treat data.biz_data.value as opaque bytes/text.
+Do not decode it as a JWT.
+Do not reconstruct it locally.
+Do not transform it before header injection.
 ```
-
-HIF tokens must be treated as sensitive runtime state.
 
 ---
 
-# 53. HIF enforcement
+# 12. HIF-LEIM lifetime and refresh
 
-Observed enforcement is conditional on the requested model dimension:
+Current client telemetry reports:
+
+```json
+{
+  "ds_ttl": 600
+}
+```
+
+The client configuration also contains:
+
+```json
+{
+  "hif_max_retry_interval_secs": 600
+}
+```
+
+The operational HIF lifetime is therefore 600 seconds in the current browser implementation.
+
+A headless client MUST refresh the value rather than assuming indefinite validity.
+
+---
+
+# 13. HIF-DLIQ acquisition
+
+The current browser also probes:
+
+```http
+GET https://hif-dliq.deepseek.com/query
+```
+
+with the same client identity headers.
+
+In the newest HAR, these requests fail as network/XHR requests and no successful DLIQ value is captured.
+
+Therefore v2.3 does NOT define a successful current DLIQ acquisition flow.
+
+A client MUST NOT fabricate `x-hif-dliq`.
+
+---
+
+# 14. Completion endpoint
+
+```http
+POST https://chat.deepseek.com/api/v0/chat/completion
+Accept: text/event-stream
+Content-Type: application/json
+```
+
+The completion request carries both anti-abuse layers when HIF is available:
+
+```text
+x-ds-pow-response: <solved-pow>
+x-hif-leim: <opaque-hif-leim>
+```
+
+Older captures also contain `x-hif-dliq` in completion requests. Current newest traffic establishes LEIM; current successful DLIQ acquisition is not established.
+
+---
+
+# 15. Completion request schema
+
+```json
+{
+  "chat_session_id": "<string>",
+  "parent_message_id": null,
+  "model_type": null,
+  "prompt": "<string>",
+  "ref_file_ids": [],
+  "thinking_enabled": false,
+  "search_enabled": false,
+  "action": null,
+  "preempt": false
+}
+```
+
+Field definitions:
+
+```json
+{
+  "chat_session_id": "string; required",
+  "parent_message_id": "number|null; required",
+  "model_type": "string|null; required",
+  "prompt": "string; required",
+  "ref_file_ids": "array; required",
+  "thinking_enabled": "boolean; required",
+  "search_enabled": "boolean; required",
+  "action": "null|unknown; required",
+  "preempt": "boolean; required"
+}
+```
+
+---
+
+# 16. Conversation continuation
+
+The first turn uses:
+
+```json
+{"parent_message_id":null}
+```
+
+Each subsequent turn uses the previous assistant `response_message_id`:
+
+```json
+{"parent_message_id":<previous_response_message_id>}
+```
+
+Invariant:
+
+```text
+next.parent_message_id === previous.ready.response_message_id
+```
+
+---
+
+# 17. SSE response
+
+Completion is an SSE stream.
+
+The established event classes are:
+
+```text
+ready
+update_session
+data
+close
+```
+
+The `ready` event provides the authoritative response identifier:
+
+```text
+event: ready
+data: {"request_message_id":<n>,"response_message_id":<n>,"model_type":"<type>"}
+```
+
+The next completion uses that `response_message_id` as `parent_message_id`.
+
+---
+
+# 18. Content delta protocol
+
+Observed deltas contain:
+
+```json
+{
+  "p": "response/fragments/-1/content",
+  "o": "APPEND",
+  "v": "text"
+}
+```
+
+Observed operations include:
+
+```text
+SET
+APPEND
+BATCH
+```
+
+---
+
+# 19. Model representation
+
+The completion field is:
+
+```text
+model_type
+```
+
+Observed values across the checked-in captures include:
+
+```text
+null
+expert
+```
+
+The default request representation is `null`.
+
+The expert request representation is `"expert"`.
+
+---
+
+# 20. Current model configuration
+
+The newest `/api/v0/client/settings?did=<redacted>&scope=model` response reports:
 
 ```json
 [
   {
-    "model_type": null,
-    "hif_requirement": "SOFT_FAIL",
-    "observed_behavior": "text completion can succeed without HIF"
+    "model_type": "default",
+    "name": "Instant",
+    "is_default": true,
+    "enabled": true,
+    "switchable": true
   },
   {
     "model_type": "expert",
-    "hif_requirement": "SOFT_FAIL",
-    "observed_behavior": "expert completion can succeed without HIF"
+    "name": "Expert",
+    "is_default": false,
+    "enabled": false,
+    "switchable": false
   },
   {
     "model_type": "vision",
-    "hif_requirement": "STRICT",
-    "observed_behavior": "missing HIF may produce unsupported_client_by_model"
+    "name": "Vision",
+    "is_default": false,
+    "enabled": false,
+    "switchable": false
   }
 ]
 ```
 
-HIF is therefore part of the recognized web-client protocol, but server enforcement is request/model dependent.
+This is the current UI/model gate. The wire protocol still accepts `model_type` as a request dimension because older captures contain expert requests.
 
 ---
 
-# 54. HIF proxy flow
+# 21. Historical model switching
 
-A proxy obtains HIF values through the side channels and then injects them into the primary request when applicable:
+Older functional captures establish that an existing chat session can transmit:
+
+```json
+{
+  "model_type": "expert"
+}
+```
+
+and return a `ready` event reporting:
+
+```json
+{"model_type":"expert"}
+```
+
+The same protocol can transmit:
+
+```json
+{"model_type":null}
+```
+
+for the default path.
+
+Therefore model selection is a request-level protocol field, not a field that is encoded into `chat_session_id`.
+
+The current UI has the expert/vision switches disabled; this does not erase the historical wire behavior recorded in the older HARs.
+
+---
+
+# 22. HIF and model enforcement
+
+The older captures and the prior investigation establish HIF enforcement at completion time for model-sensitive traffic.
+
+Operational rule:
 
 ```text
-authenticated credentials
-        |
-        +--> GET hif-leim.deepseek.com/query
-        |       |
-        |       +--> data.biz_data.value --> LEIM cache
-        |
-        +--> GET hif-dliq.deepseek.com/query
-                |
-                +--> data.biz_data.value --> DLIQ cache
-
-cached HIF values
-        |
-        +--> x-hif-leim
-        +--> x-hif-dliq
-                |
-                v
-POST chat.deepseek.com/api/v0/chat/completion
+A completion request that requires the HIF client proof MUST carry the corresponding x-hif-leim value.
 ```
 
-The proxy must not generate the tokens locally.
+The recorded historical failure surface includes:
+
+```text
+unsupported_client_by_model
+```
+
+Treat that code as a server rejection of the client/model combination, not as a local parser error.
+
+For current v2.3 implementations the deterministic procedure is:
+
+```text
+1. Acquire fresh LEIM from hif-leim.deepseek.com/query.
+2. Put data.biz_data.value in x-hif-leim.
+3. Create a fresh PoW challenge for /api/v0/chat/completion.
+4. Solve the challenge.
+5. Send both x-hif-leim and x-ds-pow-response on completion.
+```
 
 ---
 
-# 55. HIF implementation state
+# 23. Client settings
+
+The newest capture exposes `/api/v0/client/settings` with at least:
+
+```text
+scope=main
+scope=model
+```
+
+Current `scope=main` values include:
 
 ```json
 {
-  "state": {
-    "leim": "string|null",
-    "dliq": "string|null",
-    "expires_at": "number|null"
-  },
-  "refresh_policy": "refresh before expiry",
-  "ttl_seconds": 600
+  "hif_max_retry_interval_secs": 600,
+  "completion_timeout_ms": 60000,
+  "edit_timeout_ms": 60000,
+  "regenerate_timeout_ms": 60000,
+  "continue_timeout_ms": 60000,
+  "resume_timeout_ms": 60000,
+  "auto_resume_ms": 3000,
+  "pow_prefetch": true,
+  "pow_prefetch_count": 1,
+  "x-fetch-after-sec": 300
 }
 ```
 
-A single cached state may be reused for sequential requests belonging to the same authenticated context, subject to observed token scope and expiry.
+The client therefore prefetches one PoW challenge and uses a 60-second completion timeout.
 
 ---
 
-# 56. Remaining HIF questions
+# 24. Header matrix
 
-The following are not asserted beyond the current evidence:
+| Header | Session create | PoW create | HIF-LEIM GET | Completion |
+|---|---:|---:|---:|---:|
+| `x-client-bundle-id` | YES | YES | YES | YES |
+| `x-client-platform` | YES | YES | YES | YES |
+| `x-client-version` | YES | YES | YES | YES |
+| `x-client-locale` | YES | YES | YES | YES |
+| `x-client-timezone-offset` | YES | YES | YES | YES |
+| `Authorization` | authenticated web traffic | authenticated web traffic | NOT IN NEWEST CAPTURE | authenticated web traffic |
+| `Cookie` | authenticated web traffic | authenticated web traffic | NOT IN NEWEST CAPTURE | authenticated web traffic |
+| `x-ds-pow-response` | NO | NO | NO | YES |
+| `x-hif-leim` | NO | NO | NO | YES |
+| `x-hif-dliq` | NO | NO | NO | HISTORICALLY YES |
+| `Content-Type: application/json` | YES | YES | NO | YES |
+| `Accept: text/event-stream` | NO | NO | NO | YES |
 
-```json
-[
-  "internal HIF token format",
-  "cryptographic signing algorithm",
-  "exact account/device binding semantics",
-  "exact behavior after token expiry",
-  "whether every browser text completion includes HIF",
-  "complete DLIQ enforcement outside multimodal requests"
-]
+The table records observed transport composition, not an assertion that every header is a hard server requirement on every endpoint.
+
+---
+
+# 25. Headless reproduction
+
+A browser UI is not required to acquire the current LEIM value. The side-channel is a normal HTTP GET and the completion endpoint is a normal HTTP POST.
+
+Canonical LEIM acquisition outside the browser:
+
+```bash
+curl 'https://hif-leim.deepseek.com/query' \
+  -H 'accept: */*' \
+  -H 'x-client-bundle-id: com.deepseek.chat' \
+  -H 'x-client-platform: web' \
+  -H 'x-client-version: 2.4.0' \
+  -H 'x-client-locale: en_US' \
+  -H 'x-client-timezone-offset: 3600'
+```
+
+Extract:
+
+```text
+data.biz_data.value
+```
+
+Do not add browser-only `Origin`, `Referer`, or authentication headers to this reproduction merely because older notes mentioned them; they are absent from the newest captured HIF-LEIM request.
+
+Then send the extracted value as:
+
+```http
+x-hif-leim: <data.biz_data.value>
+```
+
+The completion request still requires normal authenticated web state and a fresh valid PoW result.
+
+---
+
+# 26. Deterministic headless sequence
+
+```text
+A. Authenticate normally.
+B. POST /api/v0/chat_session/create with {}.
+C. GET https://hif-leim.deepseek.com/query using the captured client headers.
+D. Extract data.biz_data.value.
+E. POST /api/v0/chat/create_pow_challenge with target_path=/api/v0/chat/completion.
+F. Solve DeepSeekHashV1.
+G. POST /api/v0/chat/completion as SSE.
+H. Include x-hif-leim and x-ds-pow-response.
+I. Parse ready.
+J. Persist ready.response_message_id as the next parent_message_id.
+K. Refresh LEIM after its 600-second client lifetime.
+```
+
+This is the complete current protocol flow required to reproduce the browser's HIF-assisted completion path outside the web UI.
+
+---
+
+# 27. HIF caching rule
+
+Cache the opaque LEIM value for no longer than the captured 600-second lifetime.
+
+A safe implementation may refresh earlier. It MUST NOT continue indefinitely using a value that has passed the client TTL.
+
+Concurrent requests should share one in-flight refresh rather than issuing redundant HIF GETs.
+
+---
+
+# 28. HIF failure rule
+
+If the HIF-LEIM GET fails:
+
+```text
+DO NOT fabricate a token.
+DO NOT reuse an expired token.
+DO NOT mark the request authenticated by UI state alone.
+```
+
+The client configuration permits retry intervals up to 600 seconds; the exact backoff sequence is not part of the wire contract.
+
+---
+
+# 29. DLIQ rule
+
+`x-hif-dliq` is part of historical traffic, but the newest HAR does not contain a successful DLIQ acquisition.
+
+Therefore:
+
+```text
+Current LEIM reproduction: ESTABLISHED
+Current DLIQ reproduction: NOT ESTABLISHED
+Historical DLIQ use in completion: ESTABLISHED
+```
+
+A v2.3 implementation must not claim a working current DLIQ algorithm without new HAR evidence.
+
+---
+
+# 30. Security boundary
+
+The protocol requires authenticated web state for authenticated DeepSeek API calls.
+
+Credentials, cookies, bearer values, PoW challenge contents, and captured HIF values MUST remain redacted in source-controlled documentation.
+
+This document records protocol behavior, not reusable live credentials.
+
+---
+
+# 31. Conformance requirements
+
+A v2.3-conformant implementation MUST:
+
+```text
+use /api/v0/chat_session/create for session creation
+use /api/v0/chat/create_pow_challenge for PoW
+send the exact target_path /api/v0/chat/completion in the PoW request
+solve DeepSeekHashV1
+send x-ds-pow-response on completion
+acquire x-hif-leim from the HIF-LEIM GET
+send x-hif-leim on HIF-protected completion
+send the completion body fields exactly as documented
+process completion as SSE
+use ready.response_message_id as the next parent_message_id
+refresh HIF-LEIM on the 600-second client lifetime
 ```
 
 ---
 
-# 57. Unknown protocol surface
-
-The current contract intentionally leaves the following unspecified:
+# 32. Protocol status
 
 ```json
 {
-  "unknown": [
-    "complete model_type enumeration",
-    "non-null action schema",
-    "preempt=true semantics",
-    "file attachment protocol",
-    "complete session-expiration behavior",
-    "complete error-code enumeration",
-    "exact PoW reuse rules",
-    "exact semantics of every SSE event",
-    "full semantics of every response field",
-    "complete server-side model-switch rules"
-  ]
-}
-```
-
-Unknown does not mean unsupported. It means the current contract does not establish the behavior.
-
----
-
-# 58. Provisional protocol surface
-
-```json
-{
-  "provisional": [
-    {
-      "feature": "mid-session default/expert switching",
-      "known": "request schema can represent it",
-      "unknown": "server semantic support"
-    },
-    {
-      "feature": "non-null action",
-      "known": "action field exists",
-      "unknown": "supported values"
-    },
-    {
-      "feature": "preempt=true",
-      "known": "boolean field exists",
-      "unknown": "server semantics"
-    }
-  ]
-}
-```
-
----
-
-# 59. Conformance requirements
-
-An implementation claiming conformance must preserve the core session, continuation, model, reasoning, search, PoW, SSE, and HIF behaviors established by this document.
-
-In particular:
-
-```json
-{
-  "requirements": [
-    "use /api/v0/chat_session/create for session creation",
-    "use /api/v0/chat/completion for completion",
-    "use null parent_message_id on the first turn",
-    "use the previous response_message_id on subsequent turns",
-    "obtain the authoritative response_message_id from ready",
-    "support model_type null/default and expert representations",
-    "support thinking_enabled and search_enabled booleans",
-    "include ref_file_ids",
-    "perform the required PoW flow",
-    "send x-ds-pow-response",
-    "process completion as SSE",
-    "support HIF side-channel acquisition when required",
-    "cache HIF values rather than fetching them for every completion"
-  ]
-}
-```
-
----
-
-# 60. Protocol versus implementation
-
-This document defines the observed DeepSeek wire protocol. It does not define application architecture, database architecture, proxy API design, or secret-storage implementation.
-
-A conforming implementation may use Cloudflare Workers, Python, Java, Go, Rust, Node.js, or browser JavaScript provided that wire behavior remains conformant.
-
----
-
-# 61. Cloudflare Workers reference requirements
-
-```json
-{
-  "runtime": "Cloudflare Workers",
-  "language": "TypeScript",
-  "tooling": "Wrangler",
-  "required_web_platform_features": [
-    "fetch",
-    "Request",
-    "Response",
-    "ReadableStream",
-    "TextDecoder",
-    "TextEncoder"
-  ]
-}
-```
-
----
-
-# 62. Security boundary
-
-Authentication credentials and HIF tokens are sensitive runtime data. They must not appear in debug logs, protocol examples, source-controlled fixtures, or public documentation unless explicitly redacted.
-
----
-
-# 63. Canonical protocol object
-
-```json
-{
-  "deepseek_web_protocol": {
-    "origin": "https://chat.deepseek.com",
-    "session": {
-      "create": {
-        "method": "POST",
-        "path": "/api/v0/chat_session/create",
-        "body": {}
-      }
-    },
-    "pow": {
-      "create": {
-        "method": "POST",
-        "path": "/api/v0/chat/create_pow_challenge"
-      },
-      "algorithm": "DeepSeekHashV1",
-      "header": "x-ds-pow-response"
-    },
-    "hif": {
-      "leim_origin": "https://hif-leim.deepseek.com",
-      "dliq_origin": "https://hif-dliq.deepseek.com",
-      "path": "/query",
-      "method": "GET",
-      "extraction_path": "data.biz_data.value",
-      "ttl_seconds": 600,
-      "injection_headers": ["x-hif-leim", "x-hif-dliq"]
-    },
-    "completion": {
-      "method": "POST",
-      "path": "/api/v0/chat/completion",
-      "response": "SSE"
-    },
-    "request": {
-      "chat_session_id": "string",
-      "parent_message_id": "number|null",
-      "model_type": "null|expert",
-      "prompt": "string",
-      "ref_file_ids": "array",
-      "thinking_enabled": "boolean",
-      "search_enabled": "boolean",
-      "action": "null|unknown",
-      "preempt": "boolean"
-    },
-    "continuation": {
-      "first_parent_message_id": null,
-      "next_parent_message_id": "previous response_message_id"
-    },
-    "ready": {
-      "request_message_id": "number",
-      "response_message_id": "number",
-      "model_type": "string"
-    },
-    "client_headers": {
-      "x-client-bundle-id": "com.deepseek.chat",
-      "x-client-platform": "web",
-      "x-client-version": "2.4.0",
-      "x-client-locale": "en_US",
-      "x-client-timezone-offset": "3600",
-      "x-hif-leim": "HIF side-channel token",
-      "x-hif-dliq": "HIF side-channel token"
-    }
-  }
-}
-```
-
----
-
-# 64. Canonical interpretation
-
-The DeepSeek Web protocol consists of conversation state, model/reasoning/search dimensions, common completion properties, authentication/client headers, PoW, HIF side channels, and SSE response processing.
-
-HIF values are obtained from separate authenticated services and may then be supplied to the primary completion request. They are not client-generated signatures.
-
----
-
-# 65. Contract status
-
-```json
-{
-  "overall_status": "PARTIALLY_ESTABLISHED",
-  "core_completion_protocol": "ESTABLISHED",
-  "conversation_continuity": "ESTABLISHED",
-  "default_model": "ESTABLISHED",
-  "expert_model": "ESTABLISHED",
-  "thinking": "ESTABLISHED",
-  "search": "ESTABLISHED",
+  "overall_status": "ESTABLISHED_FOR_CAPTURED_WEB_FLOW",
+  "session_create": "ESTABLISHED",
+  "completion": "ESTABLISHED",
+  "conversation_continuation": "ESTABLISHED",
   "pow": "ESTABLISHED",
-  "sse_ready": "ESTABLISHED",
-  "hif_side_channel": "ESTABLISHED",
-  "hif_ttl": "ESTABLISHED (600 seconds observed)",
-  "hif_text_enforcement": "ESTABLISHED (SOFT_FAIL observed)",
-  "hif_vision_enforcement": "ESTABLISHED (STRICT behavior observed)",
-  "mid_session_model_switch": "PROVISIONAL",
-  "non_null_action": "UNKNOWN",
-  "preempt_true": "UNKNOWN",
-  "file_protocol": "UNKNOWN"
+  "hif_leim_acquisition": "ESTABLISHED",
+  "hif_leim_600s_lifetime": "ESTABLISHED",
+  "hif_dliq_current_success": "NOT_ESTABLISHED",
+  "historical_expert_wire_path": "ESTABLISHED",
+  "current_expert_ui_switch": "DISABLED",
+  "current_vision_ui_switch": "DISABLED",
+  "historical_hif_model_enforcement": "ESTABLISHED",
+  "non_null_action_schema": "UNSPECIFIED",
+  "preempt_true_semantics": "UNSPECIFIED",
+  "full_file_attachment_protocol": "UNSPECIFIED"
 }
 ```
 
 ---
 
-# 66. Normative rule
+# 33. Normative interpretation
 
-The governing rule of this specification is:
+The browser is only one HTTP client for this protocol.
+
+The HIF mechanism is a server-issued side-channel value delivered over HTTP and then copied into the completion header.
+
+The protocol does not require DOM automation, JavaScript execution inside the DeepSeek page, or a browser extension to reproduce the captured HIF transport.
+
+The required browser-equivalent behavior is HTTP-level behavior:
 
 ```text
-A browser-observed value defines what the browser sends.
-
-A validated server behavior defines what the protocol accepts.
-
-An inferred behavior must remain marked as inferred.
-
-An unestablished behavior must remain unknown or provisional.
-
-No implementation assumption becomes a DeepSeek protocol rule merely because an implementation chooses to use it.
+GET HIF-LEIM
+-> extract value
+-> POST completion with x-hif-leim
 ```
 
-This document represents the observed DeepSeek Web protocol, with Cloudflare Workers TypeScript serving as the reference implementation form.
+This is the canonical v2.3 interpretation of the captured DeepSeek Web endpoint.
