@@ -149,14 +149,16 @@ export default {
           return json({ error: { message: 'DeepSeek credentials not configured. Use POST /v1/auth to set them.' } }, 401)
         }
 
-        // Initialize client with state store
+        // Initialize client with state store that uses AUTH_KV for both reading credentials and writing HIF-LEIM cache
         const stateStore = {
           get: async (key: string) => {
-            if (key === PROTOCOL_STATE_KEYS.AUTH) return authJson
-            return null
+            return await env.AUTH_KV.get(key)
           },
-          set: async (_key: string, _value: string) => {
-            throw new Error('State store is read-only in this context')
+          set: async (key: string, value: string, ttlSeconds?: number) => {
+            await env.AUTH_KV.put(key, value, { expirationTtl: ttlSeconds })
+          },
+          delete: async (key: string) => {
+            await env.AUTH_KV.delete(key)
           }
         }
         
