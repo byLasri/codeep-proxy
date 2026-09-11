@@ -20,6 +20,12 @@ export const DEEPSEEK = {
   POW: {
     ALGORITHM: "DeepSeekHashV1",
   },
+
+  HIF: {
+    LEIM_ORIGIN: "https://hif-leim.deepseek.com",
+    LEIM_ENDPOINT: "/query",
+    TTL_SECONDS: 600,
+  },
 } as const;
 
 export const DEFAULT_TIMEZONE_OFFSET = "3600";

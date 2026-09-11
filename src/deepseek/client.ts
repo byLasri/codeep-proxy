@@ -12,17 +12,22 @@ import { createPowChallenge } from "./pow-challenge.js";
 import { solvePow, encodePowResponse } from "./pow.js";
 import { buildCompletionRequest } from "./completion.js";
 import { buildCompletionHeaders } from "./headers.js";
+import { HifLeimCache } from "./hif-leim.js";
+import { StateManager } from "./state-manager.js";
 
 export type CredentialsProvider = () => Promise<DeepSeekCredentials>;
 
 export interface DeepSeekWebClientConfig {
   credentials: DeepSeekCredentials | CredentialsProvider;
   origin?: string;
+  kv?: KVNamespace;
 }
 
 export class DeepSeekWebClient {
   private readonly credentialsProvider: CredentialsProvider;
   private readonly origin: string;
+  private readonly stateManager: StateManager | null;
+  private readonly hifLeimCache: HifLeimCache | null;
 
   constructor(config: DeepSeekWebClientConfig) {
     this.credentialsProvider = (async () => {
@@ -32,9 +37,28 @@ export class DeepSeekWebClient {
       return config.credentials;
     }) as CredentialsProvider;
     this.origin = config.origin || DEEPSEEK.ORIGIN;
+    
+    // Initialize KV-based state management if KV namespace provided
+    if (config.kv) {
+      this.stateManager = new StateManager(config.kv);
+      this.hifLeimCache = new HifLeimCache(this.stateManager);
+    } else {
+      this.stateManager = null;
+      this.hifLeimCache = null;
+    }
   }
 
   private async getCredentials(): Promise<DeepSeekCredentials> {
+    // If using KV, fetch credentials from there
+    if (this.stateManager) {
+      const stored = await this.stateManager.getCredentials();
+      if (stored.token && stored.cookies) {
+        return {
+          authorization: stored.token,
+          cookie: stored.cookies.map(c => `${c.name}=${c.value}`).join('; '),
+        };
+      }
+    }
     return this.credentialsProvider();
   }
 
@@ -49,6 +73,18 @@ export class DeepSeekWebClient {
     // Build the DeepSeek completion request
     const request = buildCompletionRequest(session, prompt, options);
 
+    // Fetch HIF-LEIM value (cached with automatic refresh)
+    let hifLeim: string;
+    if (this.hifLeimCache) {
+      hifLeim = await this.hifLeimCache.getValue();
+    } else {
+      // Fallback to old in-memory/cache API based approach
+      const { HifLeimCache: LegacyHifLeimCache } = await import("./hif-leim.js");
+      // Create a temporary instance with a null state manager for backward compatibility
+      // This should only be used during migration - prefer using KV
+      throw new Error("KV namespace required for HIF-LEIM caching. Please provide 'kv' in client config.");
+    }
+
     // Create PoW challenge
     const credentials = await this.getCredentials();
     const challenge = await createPowChallenge(credentials, this.origin);
@@ -59,8 +95,8 @@ export class DeepSeekWebClient {
     // Encode PoW response
     const powHeader = encodePowResponse(solution);
 
-    // Build completion headers
-    const headers = buildCompletionHeaders(credentials, powHeader);
+    // Build completion headers with HIF-LEIM
+    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
 
     // Send completion request
     const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {

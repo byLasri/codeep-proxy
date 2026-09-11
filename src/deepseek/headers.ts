@@ -47,6 +47,7 @@ export function buildCompletionHeaders(
   headers.set("accept", "text/event-stream");
   headers.set("x-ds-pow-response", powResponse);
 
+  // HIF-LEIM is now required for all completion requests per the wire contract
   if (hifLeim) {
     headers.set("x-hif-leim", hifLeim);
   }

@@ -31,6 +31,17 @@ export {
   type HeaderBuildOptions,
 } from "./headers.js";
 
+// HIF-LEIM
+export {
+  fetchHifLeim,
+  buildHifLeimHeaders,
+  HifLeimCache,
+  type HifLeimValue,
+  type HifLeimResponse,
+} from "./hif-leim.js";
+
+export { StateManager } from "./state-manager.js";
+
 // PoW
 export { solvePow, encodePowResponse } from "./pow.js";
 export { createPowChallenge } from "./pow-challenge.js";
