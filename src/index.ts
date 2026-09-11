@@ -25,27 +25,27 @@ export default {
 
     // Route /v1/chat/completions to Durable Object for conversation management
     if (pathname === '/v1/chat/completions' && request.method === 'POST') {
-      const url = new URL(request.url)
-      let conversationId: string | null = url.searchParams.get('conversation_id')
+      // Get session ID from headers (OpenCode uses X-Session-Id or x-session-affinity)
+      const sessionId = request.headers.get('X-Session-Id') ?? request.headers.get('x-session-affinity')
       
-      if (!conversationId) {
-        // Try to get from request body
-        try {
-          const body = await request.clone().json()
-          if (body && typeof body === 'object' && 'conversation_id' in body && typeof body.conversation_id === 'string') {
-            conversationId = body.conversation_id
-          } else {
-            return json({ error: { message: 'conversation_id is required' } }, 400)
-          }
-        } catch {
-          return json({ error: { message: 'conversation_id is required' } }, 400)
-        }
+      if (!sessionId) {
+        return json({ error: { message: 'OpenCode session ID is missing (expected X-Session-Id or x-session-affinity)' } }, 400)
       }
       
-      // Get or create Durable Object for this conversation
-      const id = env.COMPLETION_SESSIONS.idFromName(conversationId)
+      // Get or create Durable Object for this session
+      const id = env.COMPLETION_SESSIONS.idFromName(sessionId)
       const stub = env.COMPLETION_SESSIONS.get(id)
-      return stub.fetch(request)
+      
+      // Normalize path to internal DO API (/completions) while preserving method, headers, and body
+      const url = new URL(request.url)
+      const internalUrl = `${url.origin}/completions${url.search}`
+      const normalizedRequest = new Request(internalUrl, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+      })
+      
+      return stub.fetch(normalizedRequest)
     }
 
     // POST /v1/auth - Store credentials

@@ -63,16 +63,10 @@ export function validateCompletionRequest(
     throw new Error('stream must be a boolean');
   }
 
-  // Validate conversation_id (required for our API)
-  if (typeof req.conversation_id !== 'string' || !req.conversation_id) {
-    throw new Error('conversation_id is required and must be a non-empty string');
-  }
-
   return {
     model: req.model,
     messages,
     stream: req.stream ?? true,
-    conversation_id: req.conversation_id,
   };
 }
 

@@ -11,7 +11,6 @@ export interface OpenAICompletionRequest {
   model: string;
   messages: OpenAIMessage[];
   stream?: boolean;
-  conversation_id?: string;
 }
 
 export interface OpenAICompletionResponse {
