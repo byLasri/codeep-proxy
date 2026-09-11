@@ -9,9 +9,8 @@ export type {
   DeepSeekConversationState,
   DeepSeekPowChallenge,
   DeepSeekPowSolution,
-  DeepSeekReadyEvent,
-  DeepSeekSSEEvent,
-  DeepSeekCompletionResult,
+  DeepSeekClientHeaders,
+  DeepSeekApiResponse,
   DeepSeekCompletionInput,
   DeepSeekCredentials,
 } from "./types.js";
@@ -41,9 +40,6 @@ export { createSession } from "./session.js";
 
 // Completion
 export { buildCompletionRequest } from "./completion.js";
-
-// SSE
-export { parseCompletionStream } from "./sse.js";
 
 // Client
 export { DeepSeekWebClient, createConversationState } from "./client.js";

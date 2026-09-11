@@ -58,17 +58,6 @@ export interface DeepSeekPowSolution {
   [key: string]: unknown;
 }
 
-export interface DeepSeekReadyEvent {
-  request_message_id: number;
-  response_message_id: number;
-  model_type: string;
-}
-
-export interface DeepSeekSSEEvent {
-  event?: string;
-  data?: unknown;
-}
-
 export interface DeepSeekClientHeaders {
   authorization?: string;
   cookie?: string;
@@ -84,26 +73,6 @@ export interface DeepSeekClientHeaders {
 
   "content-type": string;
   accept: string;
-}
-
-export interface DeepSeekDelta {
-  p?: string;
-  o?: "SET" | "APPEND" | "BATCH";
-  v?: unknown;
-}
-
-export interface DeepSeekCompletionResult {
-  request_message_id: number | null;
-  response_message_id: number | null;
-  model_type: string | null;
-
-  output_text: string;
-
-  search_enabled?: boolean;
-  search_triggered?: boolean;
-  conversation_mode?: string;
-
-  events: DeepSeekSSEEvent[];
 }
 
 export interface DeepSeekApiResponse<T = unknown> {

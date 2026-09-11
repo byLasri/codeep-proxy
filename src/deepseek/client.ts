@@ -4,7 +4,6 @@ import type {
   DeepSeekConversationState,
   DeepSeekSession,
   DeepSeekCompletionInput,
-  DeepSeekCompletionResult,
   DeepSeekApiResponse,
 } from "./types.js";
 import { DeepSeekProtocolError } from "./errors.js";
@@ -13,7 +12,6 @@ import { createPowChallenge } from "./pow-challenge.js";
 import { solvePow, encodePowResponse } from "./pow.js";
 import { buildCompletionRequest } from "./completion.js";
 import { buildCompletionHeaders } from "./headers.js";
-import { parseCompletionStream } from "./sse.js";
 
 export type CredentialsProvider = () => Promise<DeepSeekCredentials>;
 
@@ -45,7 +43,7 @@ export class DeepSeekWebClient {
     return createSession(credentials, this.origin);
   }
 
-  async complete(input: DeepSeekCompletionInput): Promise<DeepSeekCompletionResult> {
+  async complete(input: DeepSeekCompletionInput): Promise<Response> {
     const { session, prompt, ...options } = input;
 
     // Build the DeepSeek completion request
@@ -78,17 +76,8 @@ export class DeepSeekWebClient {
       );
     }
 
-    // Parse SSE stream
-    const result = await parseCompletionStream(response);
-
-    if (result.response_message_id === null) {
-      throw new DeepSeekProtocolError(
-        "DeepSeek completion did not provide response_message_id",
-        { kind: "protocol" }
-      );
-    }
-
-    return result;
+    // Return raw Response - caller handles SSE parsing
+    return response;
   }
 
   private async buildBaseHeaders(): Promise<Record<string, string>> {
@@ -114,55 +103,56 @@ export class DeepSeekWebClient {
   }
 
   // Convenience method: create session and complete in one call
-    async startConversation(input: Omit<DeepSeekCompletionInput, "session">): Promise<{
-      session: DeepSeekSession;
-      result: DeepSeekCompletionResult;
-      state: DeepSeekConversationState;
-    }> {
-      const session = await this.createSession();
-      const state: DeepSeekConversationState = {
-        chat_session_id: session.id,
-        parent_message_id: null,
-        model_type: input.model_type,
-        thinking_enabled: input.thinking_enabled,
-        search_enabled: input.search_enabled,
-        created_at: Date.now(),
-      };
+  async startConversation(input: Omit<DeepSeekCompletionInput, "session">): Promise<{
+    session: DeepSeekSession;
+    response: Response;
+    state: DeepSeekConversationState;
+  }> {
+    const session = await this.createSession();
+    const state: DeepSeekConversationState = {
+      chat_session_id: session.id,
+      parent_message_id: null,
+      model_type: input.model_type,
+      thinking_enabled: input.thinking_enabled,
+      search_enabled: input.search_enabled,
+      created_at: Date.now(),
+    };
 
-      const result = await this.complete({ session: state, ...input });
+    const response = await this.complete({ session: state, ...input });
 
-      const nextState: DeepSeekConversationState = {
-        ...state,
-        parent_message_id: result.response_message_id,
-        updated_at: Date.now(),
-      };
+    // Note: caller must parse response to get response_message_id for next state
+    const nextState: DeepSeekConversationState = {
+      ...state,
+      parent_message_id: null, // Will be updated by caller after parsing
+      updated_at: Date.now(),
+    };
 
-      return { session, result, state: nextState };
-    }
+    return { session, response, state: nextState };
+  }
 
-    // Convenience method for continuing a conversation
-    async continueConversation(
-      state: DeepSeekConversationState,
-      prompt: string,
-      options: Omit<DeepSeekCompletionInput, "session" | "prompt">
-    ): Promise<{ result: DeepSeekCompletionResult; state: DeepSeekConversationState }> {
-      const result = await this.complete({
-        session: state,
-        prompt,
-        ...options,
-      });
+  // Convenience method for continuing a conversation
+  async continueConversation(
+    state: DeepSeekConversationState,
+    prompt: string,
+    options: Omit<DeepSeekCompletionInput, "session" | "prompt">
+  ): Promise<{ response: Response; state: DeepSeekConversationState }> {
+    const response = await this.complete({
+      session: state,
+      prompt,
+      ...options,
+    });
 
-      const nextState: DeepSeekConversationState = {
-        ...state,
-        parent_message_id: result.response_message_id,
-        model_type: options.model_type ?? state.model_type,
-        thinking_enabled: options.thinking_enabled ?? state.thinking_enabled,
-        search_enabled: options.search_enabled ?? state.search_enabled,
-        updated_at: Date.now(),
-      };
+    const nextState: DeepSeekConversationState = {
+      ...state,
+      parent_message_id: null, // Will be updated by caller after parsing
+      model_type: options.model_type ?? state.model_type,
+      thinking_enabled: options.thinking_enabled ?? state.thinking_enabled,
+      search_enabled: options.search_enabled ?? state.search_enabled,
+      updated_at: Date.now(),
+    };
 
-      return { result, state: nextState };
-    }
+    return { response, state: nextState };
+  }
 }
 
 export function createConversationState(session: DeepSeekSession): DeepSeekConversationState {
