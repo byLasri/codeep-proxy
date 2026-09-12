@@ -148,8 +148,14 @@ export default {
     if (pathname === '/deepseekprotocol' && request.method === 'POST') {
       await rateLimit()
 
+      let body: unknown
       try {
-        const body = await request.json()
+        body = await request.json()
+      } catch {
+        return json({ error: { message: 'Invalid request: body must be valid JSON' } }, 400)
+      }
+
+      try {
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
           return json({ error: { message: 'Invalid request: body must be an object' } }, 400)
         }
@@ -180,6 +186,11 @@ export default {
           return json({ error: { message: 'Invalid request: model_type is required' } }, 400)
         }
 
+        const modelType = input.model_type
+        if (modelType !== null && typeof modelType !== 'string') {
+          return json({ error: { message: 'Invalid request: model_type must be a string or null' } }, 400)
+        }
+
         const thinkingEnabled = input.thinking_enabled
         const searchEnabled = input.search_enabled
 
@@ -197,7 +208,7 @@ export default {
         return await client.completeProtocol({
           session,
           prompt,
-          model_type: input.model_type as DeepSeekCompletionInput['model_type'],
+          model_type: modelType as DeepSeekCompletionInput['model_type'],
           thinking_enabled: thinkingEnabled,
           search_enabled: searchEnabled,
         })
