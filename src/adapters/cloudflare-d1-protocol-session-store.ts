@@ -1,11 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { ProtocolSession, ProtocolSessionStore } from '../deepseek_api/session-store.js';
 
-type TableInfoRow = {
-  name: string;
-  notnull: number;
-};
-
 export class CloudflareD1ProtocolSessionStore implements ProtocolSessionStore {
   constructor(private readonly db: D1Database) {}
 
@@ -18,32 +13,6 @@ export class CloudflareD1ProtocolSessionStore implements ProtocolSessionStore {
         updated_at INTEGER NOT NULL
       )
     `).run()
-
-    const columns = await this.db.prepare('PRAGMA table_info(sessions)').all<TableInfoRow>()
-    const parentColumn = columns.results?.find(column => column.name === 'parent_message_id')
-
-    if (parentColumn?.notnull === 1) {
-      await this.db.prepare(`
-        CREATE TABLE sessions_protocol_v2 (
-          chat_session_id TEXT PRIMARY KEY,
-          parent_message_id INTEGER,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      `).run()
-
-      await this.db.prepare(`
-        INSERT INTO sessions_protocol_v2 (chat_session_id, parent_message_id, created_at, updated_at)
-        SELECT chat_session_id,
-               CASE WHEN parent_message_id = 0 THEN NULL ELSE parent_message_id END,
-               created_at,
-               updated_at
-        FROM sessions
-      `).run()
-
-      await this.db.prepare('DROP TABLE sessions').run()
-      await this.db.prepare('ALTER TABLE sessions_protocol_v2 RENAME TO sessions').run()
-    }
   }
 
   async get(chatSessionId: string): Promise<ProtocolSession | null> {
