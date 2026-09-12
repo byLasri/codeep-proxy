@@ -2,7 +2,7 @@
 // This adapter lives in the Worker layer, not in the DeepSeek module
 
 import type { KVNamespace } from '@cloudflare/workers-types';
-import type { ProtocolStateStore } from '../deepseek/state-store.js';
+import type { ProtocolStateStore } from '../deepseek_api/state-store.js';
 
 export class CloudflareKVStateStore implements ProtocolStateStore {
   constructor(private readonly kv: KVNamespace) {}

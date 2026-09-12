@@ -84,15 +84,15 @@ export interface DeepSeekApiResponse<T = unknown> {
 }
 
 export interface DeepSeekCompletionInput {
-  session: DeepSeekConversationState;
+  session?: DeepSeekConversationState;
   prompt: string;
 
   model_type: DeepSeekModelType;  // required - no fallback
   thinking_enabled: boolean;
   search_enabled: boolean;
-  ref_file_ids: string[];
-  action: unknown | null;
-  preempt: boolean;
+  // ref_file_ids: [] (FIXED - protocol constant, enforced in deepseek_api)
+  // action: null (FIXED - protocol constant, enforced in deepseek_api)
+  // preempt: false (FIXED - protocol constant, enforced in deepseek_api)
 }
 
 export interface DeepSeekCredentials {

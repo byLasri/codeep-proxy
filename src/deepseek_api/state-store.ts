@@ -30,6 +30,8 @@ export interface ProtocolStateStore {
  * 
  * AUTH is the single canonical credential record containing:
  * { authorizationToken?: string, cookies?: Array<{name: string, value: string}> }
+ * 
+ * HIF_LEIM is the cached HIF-LEIM token
  */
 export const PROTOCOL_STATE_KEYS = {
   AUTH: 'deepseek:auth',

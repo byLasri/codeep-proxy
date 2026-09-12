@@ -6,6 +6,16 @@ import { DEEPSEEK } from "./constants.js";
 import type { ProtocolStateStore } from "./state-store.js";
 import { PROTOCOL_STATE_KEYS } from './state-store.js';
 
+function logHif(message: string, meta?: Record<string, unknown>) {
+  const timestamp = new Date().toISOString();
+  const prefix = `[HIF-LEIM] ${timestamp}`;
+  if (meta) {
+    console.log(`${prefix} ${message}`, JSON.stringify(meta));
+  } else {
+    console.log(`${prefix} ${message}`);
+  }
+}
+
 export interface HifLeimValue {
   value: string;
   acquiredAt: number;
@@ -49,7 +59,7 @@ export function buildHifLeimHeaders(): Record<string, string> {
 export async function fetchHifLeim(origin?: string): Promise<string> {
   const leimOrigin = origin || DEEPSEEK.HIF.LEIM_ORIGIN;
   const endpoint = `${leimOrigin}${DEEPSEEK.HIF.LEIM_ENDPOINT}`;
-  
+
   const response = await fetch(endpoint, {
     method: "GET",
     headers: buildHifLeimHeaders(),
@@ -101,11 +111,15 @@ export class HifLeimCache {
     // Try to get from cache first
     const cached = await this.getFromCache();
     if (cached) {
+      logHif("Cache HIT - returning cached value", { length: cached.length, prefix: cached.slice(0, 20) });
       return cached;
     }
 
+    logHif("Cache MISS - fetching fresh value");
+
     // Check if there's already an in-flight fetch
     if (this.inFlight) {
+      logHif("In-flight fetch detected - deduplicating");
       return this.inFlight;
     }
 
@@ -129,8 +143,10 @@ export class HifLeimCache {
    * Fetches fresh value and stores in cache
    */
   private async fetchAndStore(origin?: string): Promise<string> {
+    logHif("Fetching fresh HIF-LEIM from side-channel");
     const value = await fetchHifLeim(origin);
     await this.storeInCache(value);
+    logHif("Stored fresh HIF-LEIM in cache", { length: value.length, prefix: value.slice(0, 20) });
     return value;
   }
 
@@ -145,6 +161,7 @@ export class HifLeimCache {
    * Forces a refresh of the cached value.
    */
   async refresh(origin?: string): Promise<string> {
+    logHif("Manual refresh requested");
     await this.invalidate();
     return this.getValue(origin);
   }
@@ -153,6 +170,7 @@ export class HifLeimCache {
    * Invalidates the cached value.
    */
   async invalidate(): Promise<void> {
+    logHif("Invalidating cached HIF-LEIM");
     if (this.state.delete) {
       await this.state.delete(PROTOCOL_STATE_KEYS.HIF_LEIM);
     } else {

@@ -8,3 +8,8 @@ port = 3568
 [[kv_namespaces]]
 binding = "AUTH_KV"
 id = "local-auth"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "deepseek-sessions"
+database_id = "local-db"
