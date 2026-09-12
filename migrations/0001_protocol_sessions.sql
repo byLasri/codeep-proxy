@@ -1,11 +1,18 @@
 -- Protocol session state migration.
 -- Creates the canonical sessions table with nullable parent_message_id.
--- For databases that already contain the old NOT NULL schema, preserve existing rows
--- and translate the old 0 first-turn sentinel to NULL.
+-- The CREATE below makes the migration safe for a fresh database; on an existing
+-- database it is a no-op and the existing rows are converted transactionally.
 
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS sessions_protocol_v2 (
+CREATE TABLE IF NOT EXISTS sessions (
+  chat_session_id TEXT PRIMARY KEY,
+  parent_message_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE sessions_protocol_v2 (
   chat_session_id TEXT PRIMARY KEY,
   parent_message_id INTEGER,
   created_at INTEGER NOT NULL,
