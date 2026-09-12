@@ -15,8 +15,8 @@ export type {
   DeepSeekCredentials,
 } from "./types.js";
 
-// Client types (includes StoredDeepSeekCredentials)
-export type { StoredDeepSeekCredentials } from "./client.js";
+// Client types
+export type { StoredDeepSeekCredentials, DeepSeekWebClientConfig, DeepSeekProtocolRequest } from "./client.js";
 
 // Constants
 export { DEEPSEEK, DEFAULT_TIMEZONE_OFFSET } from "./constants.js";
@@ -43,9 +43,10 @@ export {
   type HifLeimResponse,
 } from "./hif-leim.js";
 
-// State Store (platform-independent abstraction)
+// State stores
 export { PROTOCOL_STATE_KEYS } from "./state-store.js";
 export type { ProtocolStateStore } from "./state-store.js";
+export type { ProtocolSession, ProtocolSessionStore } from "./session-store.js";
 
 // PoW
 export { solvePow, encodePowResponse } from "./pow.js";
@@ -59,4 +60,3 @@ export { buildCompletionRequest } from "./completion.js";
 
 // Client
 export { DeepSeekWebClient, createDefaultCredentialsReader } from "./client.js";
-export type { DeepSeekWebClientConfig } from "./client.js";
