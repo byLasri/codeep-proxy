@@ -5,6 +5,7 @@ import {
   DeepSeekWebClient,
   PROTOCOL_STATE_KEYS,
 } from './deepseek_api/index.js'
+import type { DeepSeekCompletionInput } from './deepseek_api/index.js'
 
 const RATE_LIMIT_MS = 5000
 let lastRequestTime = 0
@@ -196,7 +197,7 @@ export default {
         return await client.completeProtocol({
           session,
           prompt,
-          model_type: input.model_type as never,
+          model_type: input.model_type as DeepSeekCompletionInput['model_type'],
           thinking_enabled: thinkingEnabled,
           search_enabled: searchEnabled,
         })
