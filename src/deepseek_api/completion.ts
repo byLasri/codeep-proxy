@@ -16,7 +16,7 @@ import type {
  * - action: ALWAYS null (fixed)
  * - preempt: ALWAYS false (fixed)
  * - ref_file_ids: ALWAYS [] (fixed)
- * - parent_message_id: from validated state (null for first turn, D1 value for continuation)
+ * - parent_message_id: from protocol session state (null for first turn, stored D1 value for continuation)
  */
 export function buildCompletionRequest(
   state: DeepSeekConversationState,
@@ -32,8 +32,7 @@ export function buildCompletionRequest(
   const FIXED_PREEMPT = false;
   const FIXED_REF_FILE_IDS: string[] = [];
 
-  // parent_message_id MUST come from state (validated D1 value or null for first turn)
-  // deepseek_api never generates it - always from worker/D1 validation
+  // parent_message_id is resolved by deepseek_api from ProtocolSessionStore.
   const parentMessageId = state.parent_message_id;
 
   return {
