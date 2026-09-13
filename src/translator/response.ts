@@ -96,7 +96,7 @@ export function translateDeepSeekStreamToSSE(
           try {
             const parsedJson = JSON.parse(dataStr);
 
-            // Handle close event data: if the previous event was close, we emit [DONE] if not already.
+            // On event: close, emit the final chunk + [DONE] if not already sent.
             if (currentEvent === 'close') {
               if (!hasEmittedDone) {
                 // Emit final chunk (if we haven't) and [DONE]
@@ -327,10 +327,6 @@ export function translateDeepSeekStreamToJSON(
 
                   if (isFinish) {
                     hasEmittedDone = true;
-                    // We don't break here because we want to consume the rest of the stream? But we can break to save time.
-                    // However, we must still parse the rest of the stream to get the buffer ready for the next line? 
-                    // Since we are not emitting chunks, we can break early.
-                    // But note: we might have multiple finish signals? We'll just set the flag and continue.
                   }
                 }
               } catch (e) {
