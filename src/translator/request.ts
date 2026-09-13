@@ -51,7 +51,7 @@ export function isFirstTurn(messages: OpenAIChatMessage[]): boolean {
 export function buildDeepSeekPrompt(messages: OpenAIChatMessage[], tools?: any[]): string {
   // Find the latest user message (last one with role 'user')
   const latestUserMsg = messages.slice().reverse().find(msg => msg.role === 'user');
-  if (!latestUserMsg || latestUserMsg.content === null) {
+  if (!latestUserMsg || latestUserMsg.content == null) {
     // According to spec, throw a 400 error. However, we are in a translator function.
     // We'll throw an error that the caller can catch and turn into a 400 response.
     throw new Error('No user message found');
@@ -60,12 +60,7 @@ export function buildDeepSeekPrompt(messages: OpenAIChatMessage[], tools?: any[]
   if (isFirstTurn(messages)) {
     const parts: string[] = [];
 
-    // System content: concatenate all system messages? The spec says system.content (if present).
-    // We'll take the first system message's content, or concatenate? Let's assume we take the first.
-    // But note: there could be multiple system messages. The spec doesn't specify.
-    // We'll follow the common practice: concatenate all system messages with '\n\n'.
-    // However, the spec says: system.content (if present). We'll interpret as the content of the system message(s).
-    // Let's collect all system message contents and join them with '\n\n'.
+    // Concatenate all system messages; DeepSeek has no native multi-system concept.
     const systemContents = messages
       .filter(msg => msg.role === 'system')
       .map(msg => msg.content)
@@ -102,11 +97,10 @@ export function translateOpenAIRequest(
   const xSessionId = getXSessionIdFromHeaders(headers);
   const tools = 'tools' in openaiRequest && Array.isArray(openaiRequest.tools) ? openaiRequest.tools : undefined;
   const prompt = buildDeepSeekPrompt(openaiRequest.messages, tools);
+  // xSessionId drives the D1 mapping; chat_session_id stays unset so the
+  // body-based path in completeWithAutoSession is bypassed.
   return {
-    chat_session_id: undefined, // To be set by the caller? No, the deepseek_api expects chat_session_id from body or mapping.
-    // We are not setting chat_session_id here because it comes from the body or mapping via xSessionId.
-    // The deepseek_api.completeWithAutoSession will use the xSessionId to map to a chat_session_id.
-    // So we leave chat_session_id undefined and set xSessionId.
+    chat_session_id: undefined,
     prompt,
     model_type: mapOpenAIModelToDeepSeek(openaiRequest.model),
     thinking_enabled: false, // defaults for now
