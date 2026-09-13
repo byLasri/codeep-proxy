@@ -1,13 +1,22 @@
 // Translate DeepSeek SSE stream to OpenAI Chat Completions response (streaming or non-streaming).
 
+import type { ReadableStream } from 'stream/web';
+import { OpenAIChatCompletionResponse } from './types.js';
+
 /**
- * State for the SSE parser.
+ * Helper function to format an OpenAI SSE chunk line.
+ * @param chunk The OpenAIChatCompletionStreamResponse object.
+ * @returns A string like "data: {\"id\":...}\\n\\n"
  */
-interface SSEParserState {
-  currentEvent: string | null;
-  currentData: string;
-  currentPath: string | null;
-  currentOp: string | null;
+export function formatOpenAISSEChunk(chunk: any): string {
+  return `data: ${JSON.stringify(chunk)}\n\n`;
+}
+
+/**
+ * Helper function to emit the final [DONE] line.
+ */
+export function formatOpenAIDone(): string {
+  return 'data: [DONE]\n\n';
 }
 
 /**
@@ -32,114 +41,8 @@ export function translateDeepSeekStreamToSSE(
   let responseMessageId: string | null = null;
   let hasEmittedRole: boolean = false;
   let hasEmittedDone: boolean = false;
+  let lastWasAppend: boolean = false;
   let accumulatedContent: string = '';
-
-  const handleDataLine = (parsedJson: any, event: string | null, controller: TransformStreamDefaultController<Uint8Array>) => {
-    // Handle update_session event for initial content
-    if (event === "update_session") {
-      if (parsedJson.v?.response?.fragments?.[0]?.content !== undefined) {
-        const initialContent = parsedJson.v.response.fragments[0].content;
-        if (!hasEmittedRole) {
-          const chunk = createOpenAIChunk({
-            role: 'assistant',
-            content: initialContent
-          }, false);
-          emitChunk(chunk, controller);
-          hasEmittedRole = true;
-        }
-      }
-    }
-
-    // Update currentPath and currentOp if p and o are present
-    if (parsedJson.p !== undefined && parsedJson.o !== undefined) {
-      currentPath = parsedJson.p;
-      currentOp = parsedJson.o;
-    }
-
-    // Handle content appends
-    if (parsedJson.v !== undefined) {
-      const isAppendLine = (currentPath === "response/fragments/-1/content" && currentOp === "APPEND");
-      if (isAppendLine) {
-        accumulatedContent += parsedJson.v;
-        const chunk = createOpenAIChunk({
-          content: parsedJson.v
-        }, false);
-        emitChunk(chunk, controller);
-      } else {
-        // If we have a currentPath and currentOp set (from a previous data line) and we have a v field, we append.
-        // Note: currentPath and currentOp might have been set by this data line if it had p and o but not the append condition.
-        if (currentPath !== null && currentOp !== null && parsedJson.v !== undefined) {
-          accumulatedContent += parsedJson.v;
-          const chunk = createOpenAIChunk({
-            content: parsedJson.v
-          }, false);
-          emitChunk(chunk, controller);
-        }
-      }
-    }
-
-    // Check for finish signals
-    let isFinish = false;
-    if (currentPath === "response" && currentOp === "SET") {
-      if (typeof parsedJson.v === "string" && parsedJson.v === "FINISHED") {
-        isFinish = true;
-      }
-    } else if (currentPath === "response" && currentOp === "BATCH") {
-      if (Array.isArray(parsedJson.v)) {
-        const quasiStatusObj = parsedJson.v.find((item: any) => item.p === "quasi_status" && item.v === "FINISHED");
-        if (quasiStatusObj !== undefined) {
-          isFinish = true;
-        }
-      }
-    }
-
-    if (isFinish && !hasEmittedDone) {
-      // Emit the final chunk with finish_reason: "stop"
-      const finalChunk = createOpenAIChunk({}, true);
-      emitChunk(finalChunk, controller);
-      emitDone(controller);
-      hasEmittedDone = true;
-    }
-  };
-
-  // Helper functions that do not need controller
-  const formatOpenAISSEChunk = (chunk: any): string => {
-    return `data: ${JSON.stringify(chunk)}\n\n`;
-  };
-
-  const formatOpenAIDone = (): string => {
-    return 'data: [DONE]\n\n';
-  };
-
-  const createOpenAIChunk = (delta: { role?: string; content?: string }, isFinal: boolean): any => {
-    let finish_reason: string | undefined = undefined;
-    if (isFinal) {
-      finish_reason = "stop";
-    }
-    return {
-      id: `chatcmpl-${responseMessageId}`,
-      object: 'chat.completion.chunk',
-      created: openaiRequestInfo.created,
-      model: openaiRequestInfo.model,
-      choices: [
-        {
-          index: 0,
-          delta: delta,
-          finish_reason: finish_reason
-        }
-      ]
-    };
-  };
-
-  const emitChunk = (chunk: any, controller: TransformStreamDefaultController<Uint8Array>) => {
-    const chunkLine = formatOpenAISSEChunk(chunk);
-    controller.enqueue(new TextEncoder().encode(chunkLine));
-  };
-
-  const emitDone = (controller: TransformStreamDefaultController<Uint8Array>) => {
-    const doneLine = formatOpenAIDone();
-    controller.enqueue(new TextEncoder().encode(doneLine));
-  };
 
   return deepSeekStream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -155,22 +58,167 @@ export function translateDeepSeekStreamToSSE(
       buffer = hasTrailingNewline ? '' : lines[lines.length - 1];
 
       for (const line of processedLines) {
+        // Reset currentEvent on blank line so events delimit correctly
         if (line.trim() === '') {
-          // Blank line: ignore (we don't use blank lines to delimit events)
+          currentEvent = null;
           continue;
         }
         if (line.startsWith('event:')) {
           const eventValue = line.substring(6).trim();
           currentEvent = eventValue;
-          // If we see a close event, we don't reset currentPath and currentOp? We'll leave them.
-          // We'll handle the close event in the data line handler.
           continue;
         }
         if (line.startsWith('data:')) {
           const dataStr = line.substring(5).trim();
           try {
             const parsedJson = JSON.parse(dataStr);
-            handleDataLine(parsedJson, currentEvent, controller);
+
+            // Handle close event data: if the previous event was close, we emit [DONE] if not already.
+            // We'll handle close event by setting a flag when we see the event line, but we don't have that here.
+            // Instead, we'll check the event type from currentEvent.
+            // We'll handle close event after processing the data line? Actually, the close event's data line is just a data line.
+            // We'll treat the close event like any other event: we set currentEvent to 'close' and then when we see the data line we know it's the close event's data.
+            // We'll handle it by checking currentEvent === 'close' and then emitting [DONE] if we haven't already, and then we skip further processing of this data line.
+            if (currentEvent === 'close') {
+              if (!hasEmittedDone) {
+                // Emit final chunk (if we haven't) and [DONE]
+                const finalChunk = {
+                  id: `chatcmpl-${responseMessageId}`,
+                  object: 'chat.completion.chunk',
+                  created: openaiRequestInfo.created,
+                  model: openaiRequestInfo.model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {},
+                      finish_reason: 'stop'
+                    }
+                  ]
+                };
+                controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)));
+                controller.enqueue(new TextEncoder().encode(formatOpenAIDone()));
+                hasEmittedDone = true;
+              }
+              // Skip further processing of this data line
+              continue;
+            }
+
+            // Handle ready event to capture response_message_id
+            if (currentEvent === 'ready' && typeof parsedJson.response_message_id === 'number') {
+              responseMessageId = String(parsedJson.response_message_id);
+            }
+
+            // Handle update_session event for initial content
+            if (currentEvent === 'update_session') {
+              if (parsedJson.v?.response?.fragments?.[0]?.content !== undefined) {
+                const initialContent = parsedJson.v.response.fragments[0].content;
+                if (typeof initialContent === 'string' && !hasEmittedRole) {
+                  // Emit a role chunk
+                  const roleChunk = {
+                    id: `chatcmpl-${responseMessageId}`,
+                    object: 'chat.completion.chunk',
+                    created: openaiRequestInfo.created,
+                    model: openaiRequestInfo.model,
+                    choices: [
+                      {
+                        index: 0,
+                        delta: {
+                          role: 'assistant',
+                          content: initialContent
+                        },
+                        finish_reason: null
+                      }
+                    ]
+                  };
+                  controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)));
+                  hasEmittedRole = true;
+                  accumulatedContent += initialContent;
+                }
+              }
+            }
+
+            // Update currentPath and currentOp if p and o are present
+            if (parsedJson.p !== undefined && parsedJson.o !== undefined) {
+              currentPath = parsedJson.p;
+              currentOp = parsedJson.o;
+              // Set lastWasAppend based on whether this is an APPEND to the content path
+              lastWasAppend = (currentPath === "response/fragments/-1/content" && currentOp === "APPEND");
+              // If this line is an APPEND to the content path and v is a string, append the content
+              if (lastWasAppend && typeof parsedJson.v === "string") {
+                controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk({
+                  id: `chatcmpl-${responseMessageId}`,
+                  object: 'chat.completion.chunk',
+                  created: openaiRequestInfo.created,
+                  model: openaiRequestInfo.model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        content: parsedJson.v
+                      },
+                      finish_reason: null
+                    }
+                  ]
+                })));
+                accumulatedContent += parsedJson.v;
+              }
+            } else {
+              // No p and o in this data line
+              // If we are in an appending state (last p/o line was an APPEND to the content path) and v is a string, append
+              if (lastWasAppend && typeof parsedJson.v === "string") {
+                controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk({
+                  id: `chatcmpl-${responseMessageId}`,
+                  object: 'chat.completion.chunk',
+                  created: openaiRequestInfo.created,
+                  model: openaiRequestInfo.model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {
+                        content: parsedJson.v
+                      },
+                      finish_reason: null
+                    }
+                  ]
+                })));
+                accumulatedContent += parsedJson.v;
+              }
+            }
+
+            // Check for finish signals
+            let isFinish = false;
+            if (currentPath === "response/status" && currentOp === "SET") {
+              if (typeof parsedJson.v === "string" && parsedJson.v === "FINISHED") {
+                isFinish = true;
+              }
+            } else if (currentPath === "response" && currentOp === "BATCH") {
+              if (Array.isArray(parsedJson.v)) {
+                const quasiStatusObj = parsedJson.v.find((item: any) => item.p === "quasi_status" && item.v === "FINISHED");
+                if (quasiStatusObj !== undefined) {
+                  isFinish = true;
+                }
+              }
+            }
+
+            if (isFinish && !hasEmittedDone) {
+              // Emit the final chunk with finish_reason: "stop"
+              const finalChunk = {
+                id: `chatcmpl-${responseMessageId}`,
+                object: 'chat.completion.chunk',
+                created: openaiRequestInfo.created,
+                model: openaiRequestInfo.model,
+                choices: [
+                  {
+                    index: 0,
+                    delta: {},
+                    finish_reason: 'stop'
+                  }
+                ]
+              };
+              controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)));
+              controller.enqueue(new TextEncoder().encode(formatOpenAIDone()));
+              hasEmittedDone = true;
+            }
           } catch (e) {
             // Ignore invalid JSON
             continue;
@@ -181,33 +229,24 @@ export function translateDeepSeekStreamToSSE(
       }
     },
     flush(controller) {
-      // Process any remaining buffer
-      if (buffer !== '') {
-        // We'll treat the remaining buffer as a line (even if it doesn't end with newline)
-        const line = buffer;
-        buffer = '';
-        if (line.trim() !== '') {
-          if (line.startsWith('event:')) {
-            const eventValue = line.substring(6).trim();
-            currentEvent = eventValue;
-          } else if (line.startsWith('data:')) {
-            const dataStr = line.substring(5).trim();
-            try {
-              const parsedJson = JSON.parse(dataStr);
-              handleDataLine(parsedJson, currentEvent, controller);
-            } catch (e) {
-              // Ignore
-            }
-          }
-        }
-      }
-
       // If we have not emitted [DONE] yet, emit the final chunk and [DONE] now.
       if (!hasEmittedDone) {
         // Emit the final chunk with finish_reason: "stop"
-        const finalChunk = createOpenAIChunk({}, true);
-        emitChunk(finalChunk, controller);
-        emitDone(controller);
+        const finalChunk = {
+          id: `chatcmpl-${responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: openaiRequestInfo.created,
+          model: openaiRequestInfo.model,
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: 'stop'
+            }
+          ]
+        };
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)));
+        controller.enqueue(new TextEncoder().encode(formatOpenAIDone()));
         hasEmittedDone = true;
       }
     }
@@ -227,7 +266,7 @@ export function translateDeepSeekStreamToJSON(
     id: string; // Will be set to chatcmpl-{responseMessageId}
     created: number; // Unix timestamp
   }
-): Promise<any> {
+): Promise<OpenAIChatCompletionResponse> {
   // We'll collect the entire stream into a string, then parse it line by line using the same logic as the streaming version,
   // but instead of emitting chunks, we accumulate the content and detect the finish signals.
   // At the end, we build the OpenAI response object.
@@ -241,82 +280,103 @@ export function translateDeepSeekStreamToJSON(
     let responseMessageId: string | null = null;
     let hasEmittedRole: boolean = false;
     let hasEmittedDone: boolean = false;
+    let lastWasAppend: boolean = false;
     let accumulatedContent: string = '';
 
-    const handleDataLine = (parsedJson: any, event: string | null) => {
-      // Handle update_session event for initial content
-      if (event === "update_session") {
-        if (parsedJson.v?.response?.fragments?.[0]?.content !== undefined) {
-          const initialContent = parsedJson.v.response.fragments[0].content;
-          if (!hasEmittedRole) {
-            accumulatedContent += initialContent;
-            hasEmittedRole = true;
-          }
-        }
-      }
-
-      // Update currentPath and currentOp if p and o are present
-      if (parsedJson.p !== undefined && parsedJson.o !== undefined) {
-        currentPath = parsedJson.p;
-        currentOp = parsedJson.o;
-      }
-
-      // Handle content appends
-      if (parsedJson.v !== undefined) {
-        const isAppendLine = (currentPath === "response/fragments/-1/content" && currentOp === "APPEND");
-        if (isAppendLine) {
-          accumulatedContent += parsedJson.v;
-        } else {
-          if (currentPath !== null && currentOp !== null && parsedJson.v !== undefined) {
-            accumulatedContent += parsedJson.v;
-          }
-        }
-      }
-
-      // Check for finish signals
-      let isFinish = false;
-      if (currentPath === "response" && currentOp === "SET") {
-        if (typeof parsedJson.v === "string" && parsedJson.v === "FINISHED") {
-          isFinish = true;
-        }
-      } else if (currentPath === "response" && currentOp === "BATCH") {
-        if (Array.isArray(parsedJson.v)) {
-          const quasiStatusObj = parsedJson.v.find((item: any) => item.p === "quasi_status" && item.v === "FINISHED");
-          if (quasiStatusObj !== undefined) {
-            isFinish = true;
-          }
-        }
-      }
-
-      if (isFinish) {
-        hasEmittedDone = true;
-        // We don't break here because we want to consume the rest of the stream? But we can break to save time.
-        // However, we must still parse the rest of the stream to get the buffer ready for the next line? 
-        // Since we are not emitting chunks, we can break early.
-        // But note: we might have multiple finish signals? We'll just set the flag and continue.
-      }
-    };
-
     const reader = deepSeekStream.getReader();
-    const pump = (): Promise<void> => {
+    const pump = () => {
       return reader.read().then(({ done, value }) => {
         if (done) {
-          // Process any remaining buffer
-          if (buffer !== '') {
-            const line = buffer;
-            buffer = '';
-            if (line.trim() !== '') {
-              if (line.startsWith('event:')) {
-                const eventValue = line.substring(6).trim();
-                currentEvent = eventValue;
-              } else if (line.startsWith('data:')) {
-                const dataStr = line.substring(5).trim();
-                try {
-                  const parsedJson = JSON.parse(dataStr);
-                  handleDataLine(parsedJson, currentEvent);
-                } catch (e) {
-                  // Ignore
+          // Process the entire buffer line by line, similar to the streaming version
+          const lines = buffer.split('\n');
+          // If the buffer ends with a newline, then the last element is an empty string and we have a complete line.
+          // Otherwise, the last element is an incomplete line.
+          const hasTrailingNewline = buffer.endsWith('\n');
+          const processedLines = hasTrailingNewline ? lines : lines.slice(0, -1);
+          buffer = hasTrailingNewline ? '' : lines[lines.length - 1];
+
+          for (const line of processedLines) {
+            // Reset currentEvent on blank line so events delimit correctly
+            if (line.trim() === '') {
+              currentEvent = null;
+              continue;
+            }
+            if (line.startsWith('event:')) {
+              const eventValue = line.substring(6).trim();
+              currentEvent = eventValue;
+              continue;
+            }
+            if (line.startsWith('data:')) {
+              const dataStr = line.substring(5).trim();
+              try {
+                const parsedJson = JSON.parse(dataStr);
+
+                // Handle close event data: if the previous event was close, we treat it as finished.
+                if (currentEvent === 'close') {
+                  if (!hasEmittedDone) {
+                    hasEmittedDone = true;
+                  }
+                  // Skip further processing of this data line
+                } else {
+                  // Handle ready event to capture response_message_id
+                  if (currentEvent === 'ready' && typeof parsedJson.response_message_id === 'number') {
+                    responseMessageId = String(parsedJson.response_message_id);
+                  }
+
+                  // Handle update_session event for initial content
+                  if (currentEvent === 'update_session') {
+                    if (parsedJson.v?.response?.fragments?.[0]?.content !== undefined) {
+                      const initialContent = parsedJson.v.response.fragments[0].content;
+                      if (typeof initialContent === 'string' && !hasEmittedRole) {
+                        accumulatedContent += initialContent;
+                        hasEmittedRole = true;
+                      }
+                    }
+                  }
+
+                  // Update currentPath and currentOp if p and o are present
+                  if (parsedJson.p !== undefined && parsedJson.o !== undefined) {
+                    currentPath = parsedJson.p;
+                    currentOp = parsedJson.o;
+                    // Set lastWasAppend based on whether this is an APPEND to the content path
+                    lastWasAppend = (currentPath === "response/fragments/-1/content" && currentOp === "APPEND");
+                    // If this line is an APPEND to the content path and v is a string, append the content
+                    if (lastWasAppend && typeof parsedJson.v === "string") {
+                      accumulatedContent += parsedJson.v;
+                    }
+                  } else {
+                    // No p and o in this data line
+                    // If we are in an appending state (last p/o line was an APPEND to the content path) and v is a string, append
+                    if (lastWasAppend && typeof parsedJson.v === "string") {
+                      accumulatedContent += parsedJson.v;
+                    }
+                  }
+
+                  // Check for finish signals
+                  let isFinish = false;
+                  if (currentPath === "response/status" && currentOp === "SET") {
+                    if (typeof parsedJson.v === "string" && parsedJson.v === "FINISHED") {
+                      isFinish = true;
+                    }
+                  } else if (currentPath === "response" && currentOp === "BATCH") {
+                    if (Array.isArray(parsedJson.v)) {
+                      const quasiStatusObj = parsedJson.v.find((item: any) => item.p === "quasi_status" && item.v === "FINISHED");
+                      if (quasiStatusObj !== undefined) {
+                        isFinish = true;
+                      }
+                    }
+                  }
+
+                  if (isFinish) {
+                    hasEmittedDone = true;
+                    // We don't break here because we want to consume the rest of the stream? But we can break to save time.
+                    // However, we must still parse the rest of the stream to get the buffer ready for the next line? 
+                    // Since we are not emitting chunks, we can break early.
+                    // But note: we might have multiple finish signals? We'll just set the flag and continue.
+                  }
                 }
+              } catch (e) {
+                // Ignore invalid JSON
               }
             }
           }
@@ -327,7 +387,7 @@ export function translateDeepSeekStreamToJSON(
           }
 
           // Build the OpenAI response object
-          const response = {
+          const response: OpenAIChatCompletionResponse = {
             id: `chatcmpl-${responseMessageId}`,
             object: 'chat.completion',
             created: openaiRequestInfo.created,
@@ -344,8 +404,7 @@ export function translateDeepSeekStreamToJSON(
             ],
             usage: {
               prompt_tokens: 0,
-              completion_tokens: 0,
-              total_tokens: 0
+              completion_tokens: 0
             }
           };
 
@@ -360,20 +419,4 @@ export function translateDeepSeekStreamToJSON(
 
     pump().catch(reject);
   });
-}
-
-/**
- * Helper function to format an OpenAI SSE chunk line.
- * @param chunk The OpenAIChatCompletionStreamResponse object.
- * @returns A string like "data: {\"id\":...}\\n\\n"
- */
-export function formatOpenAISSEChunk(chunk: any): string {
-  return `data: ${JSON.stringify(chunk)}\n\n`;
-}
-
-/**
- * Helper function to emit the final [DONE] line.
- */
-export function formatOpenAIDone(): string {
-  return 'data: [DONE]\n\n';
 }
