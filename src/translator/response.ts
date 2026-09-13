@@ -18,6 +18,7 @@ interface SSEParserState {
   currentOp: string | null
   isAppending: boolean
   accumulatedTokens: number
+  pendingContent: string
 }
 
 function createParser(
@@ -34,6 +35,7 @@ function createParser(
     currentOp: null,
     isAppending: false,
     accumulatedTokens: 0,
+    pendingContent: '',
   }
 
   const emitFinal = () => {
@@ -66,18 +68,25 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
+    if (state.responseMessageId === 'null') {
+      // ready event has not arrived yet; buffer this text and flush it when
+      // ready sets responseMessageId
+      state.pendingContent = (state.pendingContent || '') + text
+      return
+    }
+    state.accumulatedContent += text
     if (!state.hasEmittedRole) {
       state.hasEmittedRole = true
-      const roleChunk: OpenAIChatCompletionStreamResponse = {
+      const firstChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
         created: info.created,
         model: info.model,
-        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+        choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }],
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(firstChunk)))
+      return
     }
-    state.accumulatedContent += text
     const chunk: OpenAIChatCompletionStreamResponse = {
       id: `chatcmpl-${state.responseMessageId}`,
       object: 'chat.completion.chunk',
@@ -106,10 +115,16 @@ function createParser(
       return
     }
 
-    // 1. ready event: capture response_message_id
+    // 1. ready event: capture response_message_id and flush pending content
     if (state.currentEvent === 'ready') {
       if (typeof parsed.response_message_id === 'number') {
         state.responseMessageId = String(parsed.response_message_id)
+      }
+      // Flush any pending content that arrived before the ready event
+      if (state.pendingContent) {
+        const pending = state.pendingContent
+        state.pendingContent = ''
+        emitContent(pending)
       }
       return
     }

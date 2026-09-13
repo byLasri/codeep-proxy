@@ -57,4 +57,24 @@ assert.throws(() => buildDeepSeekPrompt([{ role: 'system', content: 'S' }]))
 // malformed user message with no content does not produce "undefined"
 assert.throws(() => buildDeepSeekPrompt([{ role: 'user' } as unknown as import('./types.js').OpenAIChatMessage]))
 
+// sessionExists override test
+const messages = [
+  { role: 'user', content: 'hello' },
+  { role: 'user', content: 'second turn' },
+]
+const first = buildDeepSeekPrompt(
+  [{ role: 'system', content: 'S' }, ...messages],
+  [{ type: 'function', function: { name: 'f' } }],
+  false
+)
+assert.ok(first.includes('S'), 'first turn must include system prompt')
+assert.ok(first.includes('"name":"f"'), 'first turn must include tools')
+
+const later = buildDeepSeekPrompt(
+  [{ role: 'system', content: 'S' }, ...messages],
+  [{ type: 'function', function: { name: 'f' } }],
+  true
+)
+assert.equal(later, 'second turn', 'session-exists turn must send only latest user message')
+
 console.log('All request.test.ts assertions passed.')
