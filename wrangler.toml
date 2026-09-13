@@ -1,0 +1,15 @@
+name = "deepfree-cloudflare-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-09-07"
+
+[dev]
+port = 3568
+
+[[kv_namespaces]]
+binding = "AUTH_KV"
+id = "local-auth"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "deepseek-sessions"
+database_id = "local-db"

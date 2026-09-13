@@ -1,0 +1,27 @@
+```
+# Cloudflare Workers/Wrangler
+.wrangler/
+wrangler-local-state/
+.opencode/
+
+# Database files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Temporary files
+*.tmp
+bundle-*/
+dev-*/
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Logs
+*.log
+
+# Dependencies (if any)
+node_modules/
+```
