@@ -281,14 +281,15 @@ const completionInput = {
               },
             })
           } catch (err) {
-            return new Response(JSON.stringify({
-              error: {
-                message: err instanceof Error ? err.message : 'Invalid request',
-              },
-            }), {
-              status: 400,
-              headers: { 'Content-Type': 'application/json' },
-            })
+            const status =
+              err && typeof err === "object" && "status" in err &&
+              typeof (err as { status?: unknown }).status === "number"
+                ? (err as { status: number }).status
+                : 500
+            return new Response(
+              JSON.stringify({ error: { message: err instanceof Error ? err.message : "Internal error" } }),
+              { status, headers: { "Content-Type": "application/json" } },
+            )
           }
         }
 

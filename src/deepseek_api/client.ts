@@ -196,6 +196,9 @@ async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Completio
      const xSessionId = input.xSessionId
      let mappedChatSessionId: string | null = null
      if (xSessionId) {
+         // D1 lookup failure propagates and fails the request. We do NOT fall back to
+         // creating a fresh upstream session, because that would silently fork a new
+         // conversation for a client that believes it is resuming an existing one.
          const mapping = await this.sessionStore.getByXSessionId(xSessionId)
          if (mapping) mappedChatSessionId = mapping.chatSessionId
      }
@@ -239,9 +242,12 @@ async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Completio
              parent_message_id: null,
              created_at: Date.now(),
              updated_at: Date.now(),
-         })
+}) 
          // NEW: if xSessionId was provided, persist the mapping now
          if (xSessionId) {
+             // Mapping-write failure propagates. The upstream session was already created
+             // and the response has not been streamed yet at this point, so failing here is
+             // safe and surfaces the persistence problem to the caller.
              await this.sessionStore.setXSessionMapping(xSessionId, resolvedChatSessionId)
          }
      }
@@ -275,7 +281,7 @@ private async completeWithSessionUpdate(
      session: DeepSeekConversationState,
      input: DeepSeekCompletionInput
    ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
-     const { prompt, xSessionId, ...options } = input;
+     const { prompt, ...options } = input;
 
      // Build the DeepSeek completion request
      // Only pass required options - fixed values (action, preempt, ref_file_ids) enforced in buildCompletionRequest
@@ -299,7 +305,7 @@ private async completeWithSessionUpdate(
      const powHeader = encodePowResponse(solution);
 
      // Build completion headers with HIF-LEIM
-     const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, xSessionId);
+     const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
 
     // Send completion request
     const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {
@@ -367,6 +373,8 @@ private async completeWithSessionUpdate(
           responseMessageId
         );
       } catch (error) {
+        // Best-effort: parent_message_id write happens after the response has begun
+        // streaming, so we log and continue rather than corrupting the client stream.
         console.error("[DeepSeekWebClient] Failed to store session info:", error);
       }
     };

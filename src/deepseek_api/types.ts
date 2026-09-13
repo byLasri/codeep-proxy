@@ -61,7 +61,6 @@ export interface DeepSeekPowSolution {
 export interface DeepSeekClientHeaders {
   authorization?: string;
   cookie?: string;
-  "x-session-id"?: string;
 
   "x-client-bundle-id": string;
   "x-client-platform": string;
