@@ -1,46 +1,38 @@
-# Dependencies
-node_modules/
-.pnp/
-.pnp.js
-
-# Build outputs
-dist/
-build/
-*.tsbuildinfo
-
-# IDE files
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Testing
-coverage/
-.nyc_output/
+```
+# Wrangler/Miniflare state files
+.wrangler/
 
 # Environment variables
 .env
 .env.local
-.env.*.local
+.env.*
 
-# Temporary files
-tmp/
-temp/
-.cache/
+# SQLite database files (typically generated)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
-# OS files
+# Temporary and cache files
+*.tmp
+*.cache
+.DS_Store
 Thumbs.db
-.AppleDouble
-.LSOverride
 
-# Runtime
-.pid
-.seed
+# Logs
+*.log
+
+# Dependencies (if any detected in project)
+node_modules/
+__pycache__/
+*.egg-info/
+dist/
+build/
+target/
+.gradle/
+.mypy_cache/
+.pytest_cache/
+coverage/
+htmlcov/
+.julia/
+zig-cache/
+```

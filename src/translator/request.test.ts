@@ -55,6 +55,6 @@ assert.equal(p2, 'second')
 assert.throws(() => buildDeepSeekPrompt([{ role: 'system', content: 'S' }]))
 
 // malformed user message with no content does not produce "undefined"
-assert.throws(() => buildDeepSeekPrompt([{ role: 'user' } as any]))
+assert.throws(() => buildDeepSeekPrompt([{ role: 'user' } as unknown as import('./types.js').OpenAIChatMessage]))
 
 console.log('All request.test.ts assertions passed.')
