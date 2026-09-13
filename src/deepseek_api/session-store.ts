@@ -21,4 +21,20 @@ export interface ProtocolSessionStore {
    * Optional operation - some backends may not need explicit deletion.
    */
   delete?(chatSessionId: string): Promise<void>;
+
+  /**
+   * Retrieve chat session ID by X-Session-Id.
+   * Returns null if the mapping does not exist.
+   */
+  getByXSessionId(xSessionId: string): Promise<{ chatSessionId: string } | null>;
+
+  /**
+   * Store or update the mapping from X-Session-Id to chat session ID.
+   */
+  setXSessionMapping(xSessionId: string, chatSessionId: string): Promise<void>;
+
+  /**
+   * Delete the mapping by X-Session-Id.
+   */
+  deleteXSessionMapping(xSessionId: string): Promise<void>;
 }

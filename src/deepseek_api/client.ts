@@ -187,61 +187,85 @@ export class DeepSeekWebClient {
    * 3. Send completion to external /completion endpoint with resolved parent_message_id
    * 4. On success, extract response_message_id and store as new parent_message_id
    */
-  async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<CompletionResult> {
-    const chat_session_id = input.chat_session_id;
-    let sessionWasAutoCreated = false;
-    let resolvedParentMessageId: number | null = null;
-    let resolvedChatSessionId: string;
+async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<CompletionResult> {
+     const chat_session_id = input.chat_session_id;
+     let sessionWasAutoCreated = false;
+     let resolvedParentMessageId: number | null = null;
+     let resolvedChatSessionId: string;
 
-    if (chat_session_id) {
-      // Caller provided a session ID - resolve parent_message_id from store
-      const existingSession = await this.sessionStore.get(chat_session_id);
-      if (!existingSession) {
-        throw new DeepSeekProtocolError(
-          `Session not found: ${chat_session_id}`,
-          { kind: "session", status: 404 }
-        );
-      }
-      resolvedChatSessionId = chat_session_id;
-      // D1 stores first-turn null as 0 (INTEGER NOT NULL). Wire protocol uses null.
-      const storedParent = existingSession.parent_message_id ?? null;
-      resolvedParentMessageId = storedParent === 0 ? null : storedParent;
-    } else {
-      // No session ID provided - create new DeepSeek session
-      const newSession = await this.createSession();
-      resolvedChatSessionId = newSession.id;
-      resolvedParentMessageId = null; // First turn always uses null
-      sessionWasAutoCreated = true;
+     const xSessionId = input.xSessionId
+     let mappedChatSessionId: string | null = null
+     if (xSessionId) {
+         const mapping = await this.sessionStore.getByXSessionId(xSessionId)
+         if (mapping) mappedChatSessionId = mapping.chatSessionId
+     }
 
-      // Store initial session state
-      await this.sessionStore.set(resolvedChatSessionId, {
-        chat_session_id: resolvedChatSessionId,
-        parent_message_id: null,
-        created_at: Date.now(),
-        updated_at: Date.now(),
-      });
-    }
+     if (mappedChatSessionId) {
+         // Reuse existing upstream session
+         const existingSession = await this.sessionStore.get(mappedChatSessionId)
+         if (!existingSession) {
+             throw new DeepSeekProtocolError(
+                 `Session not found: ${mappedChatSessionId}`,
+                 { kind: "session", status: 404 }
+             );
+         }
+         resolvedChatSessionId = mappedChatSessionId
+         // D1 stores first-turn null as 0 (INTEGER NOT NULL). Wire protocol uses null.
+         const storedParent = existingSession.parent_message_id ?? null;
+         resolvedParentMessageId = storedParent === 0 ? null : storedParent;
+     } else if (chat_session_id) {
+         // Caller provided a session ID - resolve parent_message_id from store
+         const existingSession = await this.sessionStore.get(chat_session_id);
+         if (!existingSession) {
+             throw new DeepSeekProtocolError(
+                 `Session not found: ${chat_session_id}`,
+                 { kind: "session", status: 404 }
+             );
+         }
+         resolvedChatSessionId = chat_session_id;
+         // D1 stores first-turn null as 0 (INTEGER NOT NULL). Wire protocol uses null.
+         const storedParent = existingSession.parent_message_id ?? null;
+         resolvedParentMessageId = storedParent === 0 ? null : storedParent;
+     } else {
+         // No session ID provided - create new DeepSeek session
+         const newSession = await this.createSession();
+         resolvedChatSessionId = newSession.id;
+         resolvedParentMessageId = null; // First turn always uses null
+         sessionWasAutoCreated = true;
 
-    // Build completion input with protocol-resolved session state
-    const completionInput: DeepSeekCompletionInput = {
-      ...input,
-      chat_session_id: resolvedChatSessionId,
-    };
+         // Store initial session state
+         await this.sessionStore.set(resolvedChatSessionId, {
+             chat_session_id: resolvedChatSessionId,
+             parent_message_id: null,
+             created_at: Date.now(),
+             updated_at: Date.now(),
+         })
+         // NEW: if xSessionId was provided, persist the mapping now
+         if (xSessionId) {
+             await this.sessionStore.setXSessionMapping(xSessionId, resolvedChatSessionId)
+         }
+     }
 
-    // Create a session state object for the completion request
-    const sessionState: DeepSeekConversationState = {
-      chat_session_id: resolvedChatSessionId,
-      parent_message_id: resolvedParentMessageId,
-    };
+     // Build completion input with protocol-resolved session state
+     const completionInput: DeepSeekCompletionInput = {
+       ...input,
+       chat_session_id: resolvedChatSessionId,
+     };
 
-    // Send completion and capture response for session update
-    const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
-      sessionState,
-      completionInput
-    );
+     // Create a session state object for the completion request
+     const sessionState: DeepSeekConversationState = {
+       chat_session_id: resolvedChatSessionId,
+       parent_message_id: resolvedParentMessageId,
+     };
 
-    return { response, sessionUpdatePromise };
-  }
+     // Send completion and capture response for session update
+     const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
+       sessionState,
+       completionInput
+     );
+
+     return { response, sessionUpdatePromise };
+   }
 
   /**
    * Sends completion request and updates session in KV on success.

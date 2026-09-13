@@ -51,6 +51,20 @@ async function initSessionsTable(db: D1Database): Promise<void> {
       updated_at INTEGER NOT NULL
     )
   `).run()
+
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS x_session_map (
+      x_session_id TEXT PRIMARY KEY,
+      chat_session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `).run()
+
+  await db.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_x_session_map_chat
+      ON x_session_map(chat_session_id)
+  `).run()
 }
 
 function createDeepSeekClient(env: Env): DeepSeekWebClient {
@@ -183,16 +197,28 @@ export default {
               return json({ error: { message: 'Invalid request: body must be an object' } }, 400)
             }
 
-            const input = body as {
-              chat_session_id?: string
-              prompt?: string
-              model_type?: string | null
-              thinking_enabled?: boolean
-              search_enabled?: boolean
-              ref_file_ids?: string[]
-              action?: unknown | null
-              preempt?: boolean
-            }
+const input = body as {
+               chat_session_id?: string
+               prompt?: string
+               model_type?: string | null
+               thinking_enabled?: boolean
+               search_enabled?: boolean
+               ref_file_ids?: string[]
+               action?: unknown | null
+               preempt?: boolean
+               // Note: xSessionId is not taken from body; it comes from header below
+             }
+
+             // Read X-Session-Id header (proxy-local, not forwarded upstream)
+             const xSessionIdHeader = request.headers.get('X-Session-Id');
+             let xSessionId: string | undefined;
+             if (xSessionIdHeader !== null) {
+               const trimmed = xSessionIdHeader.trim();
+               if (trimmed.length > 0 && trimmed.length <= 128) {
+                 xSessionId = trimmed;
+               }
+               // If empty, too long, or only whitespace, treat as absent
+             }
 
             if (!input.prompt || typeof input.prompt !== 'string') {
               return json({ error: { message: 'Invalid request: prompt is required' } }, 400)
@@ -211,13 +237,14 @@ export default {
             const client = createDeepSeekClient(env)
 
             // Build completion input - protocol handles session creation/persistence via sessionStore
-            const completionInput = {
-              chat_session_id: input.chat_session_id,
-              prompt: input.prompt,
-              model_type: input.model_type,
-              thinking_enabled: input.thinking_enabled ?? false,
-              search_enabled: input.search_enabled ?? false,
-            }
+const completionInput = {
+               chat_session_id: input.chat_session_id,
+               prompt: input.prompt,
+               model_type: input.model_type,
+               thinking_enabled: input.thinking_enabled ?? false,
+               search_enabled: input.search_enabled ?? false,
+               xSessionId: xSessionId,
+             }
 
             // Protocol handles session resolution and persistence
             const { response, sessionUpdatePromise } = await client.completeWithAutoSession(completionInput)
