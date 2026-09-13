@@ -2,7 +2,7 @@ import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
-import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON } from './translator/index.js'
+import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, buildDeepSeekPrompt, getXSessionIdFromHeaders } from './translator/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
 // Simple rate limiter - 5 second delay for EVERY request (including first)
@@ -200,7 +200,17 @@ export default {
               return json({ error: { message: 'Invalid request: messages must be an array', type: 'invalid_request_error' } }, 400)
             }
 
-            const input = translateOpenAIRequest(openaiReq, request.headers)
+            // Check if session already exists in D1 to determine if this is first turn
+            const xSessionId = getXSessionIdFromHeaders(request.headers)
+            let sessionExists = false
+            if (xSessionId) {
+              const mapping = await env.DB.prepare(
+                'SELECT chat_session_id FROM x_session_map WHERE x_session_id = ?'
+              ).bind(xSessionId).first()
+              sessionExists = mapping !== null
+            }
+
+            const input = translateOpenAIRequest(openaiReq, request.headers, sessionExists)
             const client = createDeepSeekClient(env)
             const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input)
 
