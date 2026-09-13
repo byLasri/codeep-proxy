@@ -1,27 +1,42 @@
 ```
-# Cloudflare Workers/Wrangler
-.wrangler/
-wrangler-local-state/
-.opencode/
+# Dependencies
+node_modules/
 
-# Database files
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
+# Compiled JavaScript/TypeScript
+*.js
+*.tsbuildinfo
 
-# Temporary files
+# Logs and temp files
+*.log
 *.tmp
-bundle-*/
-dev-*/
 
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# Logs
-*.log
+# Editors
+.vscode/
+.idea/
 
-# Dependencies (if any)
-node_modules/
+# Coverage
+coverage/
+htmlcov/
+*.coverage
+
+# Build outputs
+dist/
+build/
+target/
+
+# Python cache (if any Python files exist)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.swp
+*.swo
+*~
 ```
