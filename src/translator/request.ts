@@ -29,8 +29,12 @@ export function isFirstTurn(messages: OpenAIChatMessage[]): boolean {
   return true
 }
 
-export function buildDeepSeekPrompt(messages: OpenAIChatMessage[], tools?: unknown[]): string {
-  const firstTurn = isFirstTurn(messages)
+export function buildDeepSeekPrompt(
+  messages: OpenAIChatMessage[],
+  tools?: unknown[],
+  sessionExists?: boolean
+): string {
+  const firstTurn = sessionExists === true ? false : isFirstTurn(messages)
 
   if (firstTurn) {
     const systems = messages
@@ -63,11 +67,12 @@ export function buildDeepSeekPrompt(messages: OpenAIChatMessage[], tools?: unkno
 
 export function translateOpenAIRequest(
   req: OpenAIChatCompletionRequest,
-  headers: Headers
+  headers: Headers,
+  sessionExists?: boolean
 ): DeepSeekCompletionInput {
   return {
     xSessionId: getXSessionIdFromHeaders(headers),
-    prompt: buildDeepSeekPrompt(req.messages, Array.isArray(req.tools) ? req.tools : undefined),
+    prompt: buildDeepSeekPrompt(req.messages, Array.isArray(req.tools) ? req.tools : undefined, sessionExists),
     model_type: mapOpenAIModelToDeepSeek(req.model),
     thinking_enabled: false,
     search_enabled: false,

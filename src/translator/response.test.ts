@@ -98,6 +98,8 @@ assert.ok(firstData)
 const firstChunk = JSON.parse(firstData.slice(6))
 assert.equal(firstChunk.id, 'chatcmpl-6', 'chunk id must be chatcmpl-6')
 assert.equal(firstChunk.choices[0].delta.role, 'assistant', 'first delta must have role')
+assert.equal(typeof firstChunk.choices[0].delta.content, 'string', 'first delta must have content')
+assert.ok(firstChunk.choices[0].delta.content.length > 0, 'first delta content must not be empty')
 
 // every chunk id must be chatcmpl-6, not chatcmpl-null
 const allIds = sseOut.split('\n')
