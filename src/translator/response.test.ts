@@ -93,13 +93,13 @@ assert.ok(!sseOut.includes('"content":"FINISHED"'), 'FINISHED leaked as content'
 assert.equal(count(sseOut, '"finish_reason":"stop"'), 1, 'exactly one stop chunk')
 assert.equal(count(sseOut, 'data: [DONE]'), 1, 'exactly one [DONE]')
 
-// First data line must have role ONLY (no content)
+// First data line must have role with empty content (client compatibility)
 // Second data line must have the first content
 const dataLines = sseOut.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
 const first = JSON.parse(dataLines[0].slice(6))
 const second = JSON.parse(dataLines[1].slice(6))
 assert.equal(first.choices[0].delta.role, 'assistant', 'first delta must have role')
-assert.equal(first.choices[0].delta.content, undefined, 'first delta must NOT have content')
+assert.equal(first.choices[0].delta.content, '', 'first delta must have empty content')
 assert.ok(typeof second.choices[0].delta.content === 'string' && second.choices[0].delta.content.length > 0,
   'second delta must carry first content')
 

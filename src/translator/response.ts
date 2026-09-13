@@ -77,13 +77,13 @@ function createParser(
     state.accumulatedContent += text
     if (!state.hasEmittedRole) {
       state.hasEmittedRole = true
-      // Emit role-ONLY chunk first (OpenAI spec compatibility)
+      // Emit role chunk WITH empty content to ensure client processes it
       const roleChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
         created: info.created,
         model: info.model,
-        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+        choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
       // Then emit content chunk separately
