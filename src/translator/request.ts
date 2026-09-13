@@ -43,8 +43,8 @@ export function isFirstTurn(messages: OpenAIChatMessage[]): boolean {
  * For first turn: [
  *     system.content (if present),
  *     JSON.stringify(tools) (if present),
- *     latest user.content
- *   ].join("\n\n")
+     latest user.content
+   ].join("\n\n")
  * For continuation: latest user message content only.
  * Throws if no user message found.
  */
@@ -52,8 +52,7 @@ export function buildDeepSeekPrompt(messages: OpenAIChatMessage[], tools?: any[]
   // Find the latest user message (last one with role 'user')
   const latestUserMsg = messages.slice().reverse().find(msg => msg.role === 'user');
   if (!latestUserMsg || latestUserMsg.content == null) {
-    // According to spec, throw a 400 error. However, we are in a translator function.
-    // We'll throw an error that the caller can catch and turn into a 400 response.
+    // Caller is responsible for converting this into an HTTP 400.
     throw new Error('No user message found');
   }
 

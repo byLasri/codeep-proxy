@@ -10,6 +10,7 @@ export type {
   OpenAIChatCompletionRequest,
   OpenAIChatCompletionResponse,
   OpenAIChatCompletionStreamResponse,
+  OpenAIChatMessage,
 } from './types.js';
 
 // Note: SSEParserState is internal to response.ts and not exported.

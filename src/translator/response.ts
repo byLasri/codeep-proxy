@@ -1,6 +1,5 @@
 // Translate DeepSeek SSE stream to OpenAI Chat Completions response (streaming or non-streaming).
-
-import type { ReadableStream } from 'stream/web';
+/// <reference lib="dom" />
 import { OpenAIChatCompletionResponse } from './types.js';
 
 /**
@@ -57,6 +56,30 @@ export function translateDeepSeekStreamToSSE(
       const processedLines = hasTrailingNewline ? lines : lines.slice(0, -1);
       buffer = hasTrailingNewline ? '' : lines[lines.length - 1];
 
+      // Helper to emit a content chunk (handles role emission on first call)
+      const emitContent = (text: string) => {
+        if (!hasEmittedRole) {
+          hasEmittedRole = true;
+          const roleChunk = {
+            id: `chatcmpl-${responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: openaiRequestInfo.created,
+            model: openaiRequestInfo.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]
+          };
+          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)));
+        }
+        accumulatedContent += text;
+        const chunk = {
+          id: `chatcmpl-${responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: openaiRequestInfo.created,
+          model: openaiRequestInfo.model,
+          choices: [{ index: 0, delta: { content: text }, finish_reason: null }]
+        };
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)));
+      };
+
       for (const line of processedLines) {
         // Reset currentEvent on blank line so events delimit correctly
         if (line.trim() === '') {
@@ -74,11 +97,6 @@ export function translateDeepSeekStreamToSSE(
             const parsedJson = JSON.parse(dataStr);
 
             // Handle close event data: if the previous event was close, we emit [DONE] if not already.
-            // We'll handle close event by setting a flag when we see the event line, but we don't have that here.
-            // Instead, we'll check the event type from currentEvent.
-            // We'll handle close event after processing the data line? Actually, the close event's data line is just a data line.
-            // We'll treat the close event like any other event: we set currentEvent to 'close' and then when we see the data line we know it's the close event's data.
-            // We'll handle it by checking currentEvent === 'close' and then emitting [DONE] if we haven't already, and then we skip further processing of this data line.
             if (currentEvent === 'close') {
               if (!hasEmittedDone) {
                 // Emit final chunk (if we haven't) and [DONE]
@@ -87,13 +105,7 @@ export function translateDeepSeekStreamToSSE(
                   object: 'chat.completion.chunk',
                   created: openaiRequestInfo.created,
                   model: openaiRequestInfo.model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {},
-                      finish_reason: 'stop'
-                    }
-                  ]
+                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
                 };
                 controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)));
                 controller.enqueue(new TextEncoder().encode(formatOpenAIDone()));
@@ -112,27 +124,8 @@ export function translateDeepSeekStreamToSSE(
             if (currentEvent === 'update_session') {
               if (parsedJson.v?.response?.fragments?.[0]?.content !== undefined) {
                 const initialContent = parsedJson.v.response.fragments[0].content;
-                if (typeof initialContent === 'string' && !hasEmittedRole) {
-                  // Emit a role chunk
-                  const roleChunk = {
-                    id: `chatcmpl-${responseMessageId}`,
-                    object: 'chat.completion.chunk',
-                    created: openaiRequestInfo.created,
-                    model: openaiRequestInfo.model,
-                    choices: [
-                      {
-                        index: 0,
-                        delta: {
-                          role: 'assistant',
-                          content: initialContent
-                        },
-                        finish_reason: null
-                      }
-                    ]
-                  };
-                  controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)));
-                  hasEmittedRole = true;
-                  accumulatedContent += initialContent;
+                if (typeof initialContent === 'string') {
+                  emitContent(initialContent);
                 }
               }
             }
@@ -145,43 +138,13 @@ export function translateDeepSeekStreamToSSE(
               lastWasAppend = (currentPath === "response/fragments/-1/content" && currentOp === "APPEND");
               // If this line is an APPEND to the content path and v is a string, append the content
               if (lastWasAppend && typeof parsedJson.v === "string") {
-                controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk({
-                  id: `chatcmpl-${responseMessageId}`,
-                  object: 'chat.completion.chunk',
-                  created: openaiRequestInfo.created,
-                  model: openaiRequestInfo.model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {
-                        content: parsedJson.v
-                      },
-                      finish_reason: null
-                    }
-                  ]
-                })));
-                accumulatedContent += parsedJson.v;
+                emitContent(parsedJson.v);
               }
             } else {
               // No p and o in this data line
               // If we are in an appending state (last p/o line was an APPEND to the content path) and v is a string, append
               if (lastWasAppend && typeof parsedJson.v === "string") {
-                controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk({
-                  id: `chatcmpl-${responseMessageId}`,
-                  object: 'chat.completion.chunk',
-                  created: openaiRequestInfo.created,
-                  model: openaiRequestInfo.model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {
-                        content: parsedJson.v
-                      },
-                      finish_reason: null
-                    }
-                  ]
-                })));
-                accumulatedContent += parsedJson.v;
+                emitContent(parsedJson.v);
               }
             }
 
@@ -207,13 +170,7 @@ export function translateDeepSeekStreamToSSE(
                 object: 'chat.completion.chunk',
                 created: openaiRequestInfo.created,
                 model: openaiRequestInfo.model,
-                choices: [
-                  {
-                    index: 0,
-                    delta: {},
-                    finish_reason: 'stop'
-                  }
-                ]
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
               };
               controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)));
               controller.enqueue(new TextEncoder().encode(formatOpenAIDone()));
@@ -237,13 +194,7 @@ export function translateDeepSeekStreamToSSE(
           object: 'chat.completion.chunk',
           created: openaiRequestInfo.created,
           model: openaiRequestInfo.model,
-          choices: [
-            {
-              index: 0,
-              delta: {},
-              finish_reason: 'stop'
-            }
-          ]
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
         };
         controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)));
         controller.enqueue(new TextEncoder().encode(formatOpenAIDone()));
@@ -282,10 +233,12 @@ export function translateDeepSeekStreamToJSON(
     let hasEmittedDone: boolean = false;
     let lastWasAppend: boolean = false;
     let accumulatedContent: string = '';
+    let accumulatedTokens: number = 0; // To store accumulated_token_usage from BATCH
 
     const reader = deepSeekStream.getReader();
-    const pump = () => {
-      return reader.read().then(({ done, value }) => {
+    const pump = (): Promise<void> => {
+      return reader.read().then((result: ReadableStreamReadResult<Uint8Array>) => {
+        const { done, value } = result;
         if (done) {
           // Process the entire buffer line by line, similar to the streaming version
           const lines = buffer.split('\n');
@@ -352,7 +305,7 @@ export function translateDeepSeekStreamToJSON(
                     }
                   }
 
-                  // Check for finish signals
+                  // Check for finish signals and accumulate token usage
                   let isFinish = false;
                   if (currentPath === "response/status" && currentOp === "SET") {
                     if (typeof parsedJson.v === "string" && parsedJson.v === "FINISHED") {
@@ -360,6 +313,11 @@ export function translateDeepSeekStreamToJSON(
                     }
                   } else if (currentPath === "response" && currentOp === "BATCH") {
                     if (Array.isArray(parsedJson.v)) {
+                      // Look for accumulated_token_usage in the BATCH array
+                      const usageObj = parsedJson.v.find((item: any) => item.p === "accumulated_token_usage");
+                      if (usageObj !== undefined && typeof usageObj.v === "number") {
+                        accumulatedTokens = usageObj.v;
+                      }
                       const quasiStatusObj = parsedJson.v.find((item: any) => item.p === "quasi_status" && item.v === "FINISHED");
                       if (quasiStatusObj !== undefined) {
                         isFinish = true;
@@ -404,7 +362,8 @@ export function translateDeepSeekStreamToJSON(
             ],
             usage: {
               prompt_tokens: 0,
-              completion_tokens: 0
+              completion_tokens: accumulatedTokens,
+              total_tokens: accumulatedTokens
             }
           };
 

@@ -2,6 +2,7 @@ import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
+import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders, OpenAIChatCompletionRequest } from './translator'
 
 // Simple rate limiter - 5 second delay for EVERY request (including first)
 const RATE_LIMIT_MS = 5000
@@ -290,6 +291,63 @@ const completionInput = {
               JSON.stringify({ error: { message: err instanceof Error ? err.message : "Internal error" } }),
               { status, headers: { "Content-Type": "application/json" } },
             )
+          }
+        }
+
+        // POST /v1/chat/completions - OpenAI Chat Completions endpoint
+        if (pathname === '/v1/chat/completions' && request.method === 'POST') {
+          await rateLimit()
+          try {
+            const openaiRequest = await request.json().catch(() => null) as OpenAIChatCompletionRequest | null;
+            if (!openaiRequest || typeof openaiRequest !== 'object' || Array.isArray(openaiRequest)) {
+              return json({ error: { message: 'Invalid request: body must be an object' } }, 400);
+            }
+            // At this point, openaiRequest is OpenAIChatCompletionRequest
+            const stream = openaiRequest.stream ?? false;
+            const deepSeekInput = translateOpenAIRequest(openaiRequest, request.headers);
+            const client = createDeepSeekClient(env);
+            const { response: deepSeekResponse, sessionUpdatePromise } = await client.completeWithAutoSession(deepSeekInput);
+            if (!deepSeekResponse.ok) {
+              return new Response(JSON.stringify({
+                error: { message: `DeepSeek API error: ${deepSeekResponse.status} ${deepSeekResponse.statusText}` }
+              }), {
+                status: 502,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+            if (!deepSeekResponse.body) {
+              return new Response(JSON.stringify({
+                error: { message: 'DeepSeek API returned no body' }
+              }), {
+                status: 502,
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+            ctx.waitUntil(sessionUpdatePromise);
+            const openaiRequestInfo = {
+              model: openaiRequest.model,
+              id: 'chatcmpl-temp',
+              created: Math.floor(Date.now() / 1000)
+            };
+            if (stream) {
+              const aiStream = translateDeepSeekStreamToSSE(deepSeekResponse.body, openaiRequestInfo);
+              return new Response(aiStream, {
+                headers: {
+                  'Content-Type': 'text/event-stream; charset=utf-8',
+                  'Cache-Control': 'no-cache, no-transform',
+                  'Connection': 'keep-alive',
+                }
+              });
+            } else {
+              const jsonResponse = await translateDeepSeekStreamToJSON(deepSeekResponse.body, openaiRequestInfo);
+              return json(jsonResponse);
+            }
+          } catch (err) {
+            const status = err instanceof Error && err.message.includes('No user message found') ? 400 : 500;
+            return new Response(
+              JSON.stringify({ error: { message: err instanceof Error ? err.message : "Internal error" } }),
+              { status, headers: { "Content-Type": "application/json" } },
+            );
           }
         }
 
