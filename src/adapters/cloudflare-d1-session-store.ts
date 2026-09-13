@@ -27,7 +27,8 @@ export class CloudflareD1SessionStore implements ProtocolSessionStore {
 
     return {
       chat_session_id: row.chat_session_id,
-      parent_message_id: row.parent_message_id,
+      // 0 is the D1 sentinel for first-turn null (column is INTEGER NOT NULL)
+      parent_message_id: row.parent_message_id === 0 ? null : row.parent_message_id,
       created_at: row.created_at,
       updated_at: row.updated_at,
     };

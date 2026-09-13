@@ -16,6 +16,27 @@ import type { ProtocolStateStore } from "./state-store.js";
 import { PROTOCOL_STATE_KEYS } from "./state-store.js";
 import type { ProtocolSessionStore } from "./session-store.js";
 
+/** Parse response_message_id from a single SSE line (ready event data payload). */
+function extractResponseMessageId(line: string): number | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+  if (!payload.startsWith("{")) {
+    return null;
+  }
+  try {
+    const data = JSON.parse(payload) as { response_message_id?: unknown };
+    if (typeof data.response_message_id === "number") {
+      return data.response_message_id;
+    }
+  } catch {
+    // Incomplete or non-JSON line
+  }
+  return null;
+}
+
 export interface StoredDeepSeekCredentials {
   authorizationToken?: string;
   cookies?: Array<{
@@ -182,7 +203,9 @@ export class DeepSeekWebClient {
         );
       }
       resolvedChatSessionId = chat_session_id;
-      resolvedParentMessageId = existingSession.parent_message_id ?? null;
+      // D1 stores first-turn null as 0 (INTEGER NOT NULL). Wire protocol uses null.
+      const storedParent = existingSession.parent_message_id ?? null;
+      resolvedParentMessageId = storedParent === 0 ? null : storedParent;
     } else {
       // No session ID provided - create new DeepSeek session
       const newSession = await this.createSession();
@@ -214,8 +237,7 @@ export class DeepSeekWebClient {
     // Send completion and capture response for session update
     const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
       sessionState,
-      completionInput,
-      sessionWasAutoCreated
+      completionInput
     );
 
     return { response, sessionUpdatePromise };
@@ -227,8 +249,7 @@ export class DeepSeekWebClient {
    */
   private async completeWithSessionUpdate(
     session: DeepSeekConversationState,
-    input: DeepSeekCompletionInput,
-    sessionWasAutoCreated: boolean
+    input: DeepSeekCompletionInput
   ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
     const { prompt, ...options } = input;
 
@@ -270,98 +291,109 @@ export class DeepSeekWebClient {
       );
     }
 
-    // Clone response body for session extraction (we need to read it twice)
-    const [responseForStream, responseForParsing] = response.body!.tee();
+    if (!response.body) {
+      throw new DeepSeekProtocolError(
+        "DeepSeek completion returned no body",
+        { kind: "completion", status: 502 }
+      );
+    }
 
-    console.log("[DeepSeekWebClient] Response received, starting session extraction...");
+    const { stream: instrumentedBody, sessionUpdatePromise: persistPromise } =
+      this.attachSessionPersistence(response.body, session.chat_session_id);
 
-    // Parse SSE stream in background to extract response_message_id and store session
-    const sessionUpdatePromise = this.extractAndStoreSession(responseForParsing, session.chat_session_id, sessionWasAutoCreated);
+    const outboundHeaders = new Headers(response.headers);
+    outboundHeaders.set("X-Chat-Session-Id", session.chat_session_id);
 
-    // Return streamed response to caller
     return {
-      response: new Response(responseForStream, {
-        headers: response.headers,
+      response: new Response(instrumentedBody, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: outboundHeaders,
       }),
-      sessionUpdatePromise,
+      sessionUpdatePromise: persistPromise,
     };
   }
 
   /**
-   * Extracts response_message_id from SSE 'ready' event and stores session via ProtocolSessionStore.
-   * Runs asynchronously to not block the response stream.
+   * Forwards SSE chunks to the caller while buffering lines so a split
+   * `ready` event still yields response_message_id. Upserts that id as
+   * parent_message_id for the next turn as soon as it is seen.
    */
-  private async extractAndStoreSession(
+  private attachSessionPersistence(
     body: ReadableStream<Uint8Array>,
-    chat_session_id: string,
-    sessionWasAutoCreated: boolean
-  ): Promise<void> {
-    try {
-      console.log("[DeepSeekWebClient] extractAndStoreSession started for:", chat_session_id);
-      const reader = body.getReader();
-      const decoder = new TextDecoder();
-      let responseMessageId: number | null = null;
+    chatSessionId: string
+  ): { stream: ReadableStream<Uint8Array>; sessionUpdatePromise: Promise<void> } {
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    let persistPromise: Promise<void> | null = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          console.log("[DeepSeekWebClient] Stream reading done");
-          break;
-        }
+    const persistParent = async (responseMessageId: number): Promise<void> => {
+      try {
+        const existingSession = await this.sessionStore.get(chatSessionId);
+        await this.sessionStore.set(chatSessionId, {
+          chat_session_id: chatSessionId,
+          parent_message_id: responseMessageId,
+          created_at: existingSession?.created_at ?? Date.now(),
+          updated_at: Date.now(),
+        });
+        console.log(
+          "[DeepSeekWebClient] Stored session",
+          chatSessionId,
+          "parent_message_id:",
+          responseMessageId
+        );
+      } catch (error) {
+        console.error("[DeepSeekWebClient] Failed to store session info:", error);
+      }
+    };
 
-        const text = decoder.decode(value, { stream: true });
-        const lines = text.split('\n');
+    const consumeLine = (line: string) => {
+      if (persistPromise) {
+        return;
+      }
+      const id = extractResponseMessageId(line);
+      if (id !== null) {
+        persistPromise = persistParent(id).finally(() => resolveUpdate());
+      }
+    };
 
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            const dataStr = line.slice(5).trim();
-            try {
-              const data = JSON.parse(dataStr);
+    let resolveUpdate: () => void;
+    const sessionUpdatePromise = new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    });
 
-              // Look for ready event with response_message_id
-              if (data.response_message_id !== undefined && data.request_message_id !== undefined) {
-                responseMessageId = data.response_message_id;
-                console.log("[DeepSeekWebClient] Found response_message_id:", responseMessageId);
-                break;
-              }
-            } catch {
-              // Non-JSON data, ignore
-            }
+    const finish = async () => {
+      consumeLine(sseBuffer);
+      sseBuffer = "";
+      if (persistPromise) {
+        await persistPromise;
+      } else {
+        console.log(
+          "[DeepSeekWebClient] No response_message_id found for session",
+          chatSessionId
+        );
+      }
+      resolveUpdate();
+    };
+
+    const stream = body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          controller.enqueue(chunk);
+          sseBuffer += decoder.decode(chunk, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+          for (const line of lines) {
+            consumeLine(line);
           }
-        }
+        },
+        async flush() {
+          await finish();
+        },
+      })
+    );
 
-        if (responseMessageId !== null) break;
-      }
-
-      reader.releaseLock();
-
-      if (responseMessageId !== null) {
-        // Store the updated session with new parent_message_id
-        const existingSession = await this.sessionStore.get(chat_session_id);
-        if (existingSession) {
-          await this.sessionStore.set(chat_session_id, {
-            ...existingSession,
-            parent_message_id: responseMessageId,
-            updated_at: Date.now(),
-          });
-          console.log("[DeepSeekWebClient] Stored session with parent_message_id:", responseMessageId);
-        } else if (sessionWasAutoCreated) {
-          // Fallback: session wasn't found, create it
-          await this.sessionStore.set(chat_session_id, {
-            chat_session_id,
-            parent_message_id: responseMessageId,
-            created_at: Date.now(),
-            updated_at: Date.now(),
-          });
-          console.log("[DeepSeekWebClient] Created and stored session with parent_message_id:", responseMessageId);
-        }
-      } else if (sessionWasAutoCreated) {
-        console.log("[DeepSeekWebClient] No response_message_id found for auto-created session");
-      }
-    } catch (error) {
-      // Log error but don't fail the main response
-      console.error("[DeepSeekWebClient] Failed to extract session info:", error);
-    }
+    return { stream, sessionUpdatePromise };
   }
 
   async complete(input: DeepSeekCompletionInput): Promise<CompletionResult> {

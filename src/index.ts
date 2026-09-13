@@ -577,11 +577,13 @@ export default {
             ctx.waitUntil(sessionUpdatePromise)
 
             // Return raw DeepSeek SSE stream - session persistence handled by protocol
+            const chatSessionId = response.headers.get('X-Chat-Session-Id')
             return new Response(response.body, {
               headers: {
                 'Content-Type': 'text/event-stream; charset=utf-8',
                 'Cache-Control': 'no-cache, no-transform',
                 'Connection': 'keep-alive',
+                ...(chatSessionId ? { 'X-Chat-Session-Id': chatSessionId } : {}),
               },
             })
           } catch (err) {
