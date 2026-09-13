@@ -14,6 +14,7 @@ import { buildCompletionHeaders } from "./headers.js";
 import { HifLeimCache } from "./hif-leim.js";
 import type { ProtocolStateStore } from "./state-store.js";
 import { PROTOCOL_STATE_KEYS } from "./state-store.js";
+import type { ProtocolSessionStore } from "./session-store.js";
 
 export interface StoredDeepSeekCredentials {
   authorizationToken?: string;
@@ -122,22 +123,25 @@ export function createDefaultCredentialsReader(
 
 export interface DeepSeekWebClientConfig {
   stateStore: ProtocolStateStore;
+  sessionStore: ProtocolSessionStore;
   origin?: string;
 }
 
 export class DeepSeekWebClient {
   private readonly stateStore: ProtocolStateStore;
+  private readonly sessionStore: ProtocolSessionStore;
   private readonly getCredentials: () => Promise<DeepSeekCredentials>;
   private readonly origin: string;
   private readonly hifLeimCache: HifLeimCache;
 
   constructor(config: DeepSeekWebClientConfig) {
     this.stateStore = config.stateStore;
+    this.sessionStore = config.sessionStore;
     this.origin = config.origin || DEEPSEEK.ORIGIN;
-    
+
     // Initialize HIF-LEIM cache with the protocol state store
     this.hifLeimCache = new HifLeimCache(this.stateStore);
-    
+
     // Create default credentials reader that reads from state store
     const credentialsReader = createDefaultCredentialsReader(this.stateStore);
     this.getCredentials = () => credentialsReader.getCredentials();
@@ -161,7 +165,7 @@ export class DeepSeekWebClient {
   async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Response> {
     let session: DeepSeekConversationState = input.session!;
     let sessionWasAutoCreated = false;
-    
+
     // Auto-create session if not provided
     if (!session?.chat_session_id) {
       const newSession = await this.createSession();
@@ -170,6 +174,14 @@ export class DeepSeekWebClient {
         parent_message_id: null, // First turn always uses null
       };
       sessionWasAutoCreated = true;
+
+      // Store the newly created session
+      await this.sessionStore.set(session.chat_session_id, {
+        chat_session_id: session.chat_session_id,
+        parent_message_id: session.parent_message_id ?? 0,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      });
     }
 
     // Build completion input with session
@@ -183,7 +195,7 @@ export class DeepSeekWebClient {
 
     // Send completion and capture response for session update
     const response = await this.completeWithSessionUpdate(completionInput, sessionWasAutoCreated);
-    
+
     return response;
   }
 
@@ -257,7 +269,7 @@ export class DeepSeekWebClient {
   }
 
   /**
-   * Extracts response_message_id from SSE 'ready' event and stores session in KV.
+   * Extracts response_message_id from SSE 'ready' event and stores session via ProtocolSessionStore.
    * Runs asynchronously to not block the response stream.
    */
   private async extractAndStoreSession(
@@ -286,7 +298,7 @@ export class DeepSeekWebClient {
             const dataStr = line.slice(5).trim();
             try {
               const data = JSON.parse(dataStr);
-              
+
               // Look for ready event with response_message_id
               if (data.response_message_id !== undefined && data.request_message_id !== undefined) {
                 responseMessageId = data.response_message_id;
@@ -298,15 +310,32 @@ export class DeepSeekWebClient {
             }
           }
         }
-        
+
         if (responseMessageId !== null) break;
       }
 
       reader.releaseLock();
 
       if (responseMessageId !== null) {
-        // Session storage is now handled at worker level with D1
-        console.log("[DeepSeekWebClient] Found response_message_id:", responseMessageId, "- worker will store session");
+        // Store the updated session with new parent_message_id
+        const existingSession = await this.sessionStore.get(chat_session_id);
+        if (existingSession) {
+          await this.sessionStore.set(chat_session_id, {
+            ...existingSession,
+            parent_message_id: responseMessageId,
+            updated_at: Date.now(),
+          });
+          console.log("[DeepSeekWebClient] Stored session with parent_message_id:", responseMessageId);
+        } else if (sessionWasAutoCreated) {
+          // Fallback: session wasn't found, create it
+          await this.sessionStore.set(chat_session_id, {
+            chat_session_id,
+            parent_message_id: responseMessageId,
+            created_at: Date.now(),
+            updated_at: Date.now(),
+          });
+          console.log("[DeepSeekWebClient] Created and stored session with parent_message_id:", responseMessageId);
+        }
       } else if (sessionWasAutoCreated) {
         console.log("[DeepSeekWebClient] No response_message_id found for auto-created session");
       }

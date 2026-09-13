@@ -47,6 +47,9 @@ export {
 export { PROTOCOL_STATE_KEYS } from "./state-store.js";
 export type { ProtocolStateStore } from "./state-store.js";
 
+// Session Store (platform-independent abstraction)
+export type { ProtocolSessionStore } from "./session-store.js";
+
 // PoW
 export { solvePow, encodePowResponse } from "./pow.js";
 export { createPowChallenge } from "./pow-challenge.js";

@@ -1,5 +1,6 @@
 import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
+import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
 
 // Simple rate limiter - 5 second delay for EVERY request (including first)
@@ -38,13 +39,6 @@ interface AuthState {
   cookies?: AuthCookie[]
 }
 
-interface DBSession {
-  chat_session_id: string
-  parent_message_id: number
-  created_at: number
-  updated_at: number
-}
-
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 
@@ -61,31 +55,8 @@ async function initSessionsTable(db: D1Database): Promise<void> {
 
 function createDeepSeekClient(env: Env): DeepSeekWebClient {
   const stateStore = new CloudflareKVStateStore(env.AUTH_KV)
-  return new DeepSeekWebClient({ stateStore })
-}
-
-async function getSession(db: D1Database, chatSessionId: string): Promise<DBSession | null> {
-  const result = await db.prepare('SELECT * FROM sessions WHERE chat_session_id = ?').bind(chatSessionId).first()
-  return result as DBSession | null
-}
-
-async function upsertSession(db: D1Database, chatSessionId: string, parentMessageId: number): Promise<void> {
-  const now = Date.now()
-  await db.prepare(`
-    INSERT INTO sessions (chat_session_id, parent_message_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(chat_session_id) DO UPDATE SET
-      parent_message_id = excluded.parent_message_id,
-      updated_at = excluded.updated_at
-  `).bind(chatSessionId, parentMessageId, now, now).run()
-}
-
-async function createSessionRecord(db: D1Database, chatSessionId: string): Promise<void> {
-  const now = Date.now()
-  await db.prepare(`
-    INSERT INTO sessions (chat_session_id, parent_message_id, created_at, updated_at)
-    VALUES (?, 0, ?, ?)
-  `).bind(chatSessionId, now, now).run()
+  const sessionStore = new CloudflareD1SessionStore(env.DB)
+  return new DeepSeekWebClient({ stateStore, sessionStore })
 }
 
 function createStreamingResponse(
@@ -376,28 +347,19 @@ export default {
         
             const client = createDeepSeekClient(env)
         
-            // Create fresh DeepSeek session for this request
-            const newSession = await client.createSession()
-                    const chat_session_id = newSession.id
-                    const parent_message_id = null
+            // Map OpenAI model to DeepSeek model_type
+            const modelType = openAIRequest.model === 'deepseek-reasoner' || openAIRequest.model === 'expert' ? 'expert' : null
         
-                    // Map OpenAI model to DeepSeek model_type
-                    const modelType = openAIRequest.model === 'deepseek-reasoner' || openAIRequest.model === 'expert' ? 'expert' : null
+            // Build DeepSeek completion input - protocol handles session creation/persistence via sessionStore
+            const completionInput = {
+              prompt,
+              model_type: modelType,
+              thinking_enabled: false,
+              search_enabled: false,
+            }
         
-                    // Build DeepSeek completion input
-                    const completionInput = {
-                      session: { chat_session_id, parent_message_id },
-                      prompt,
-                      model_type: modelType,
-                      thinking_enabled: false,
-                      search_enabled: false,
-                      ref_file_ids: [],
-                      action: null,
-                      preempt: false,
-                    }
-        
-                    // Call DeepSeek completion
-                    const response = await client.complete(completionInput)
+            // Call DeepSeek completion with auto-session
+            const response = await client.completeWithAutoSession(completionInput)
         
             if (!response.ok) {
               return new Response(JSON.stringify({
@@ -579,55 +541,26 @@ export default {
               }
             }
 
-            // action and preempt are FIXED values - must not be overridden
-            // They are protocol constants: action=null, preempt=false
-            // ref_file_ids is also FIXED: [] (empty array)
-            // deepseek_api enforces all three as protocol constants
-            const fixedAction = null;
-            const fixedPreempt = false;
-
             const client = createDeepSeekClient(env)
 
-            // If no session provided, create one first so we have the session ID for storage
-            let sessionChatId = input.session?.chat_session_id;
-            let sessionParentId = input.session?.parent_message_id ?? null;
-            let sessionWasAutoCreated = false;
-
-            if (!sessionChatId) {
-              const newSession = await client.createSession();
-              sessionChatId = newSession.id;
-              sessionParentId = null; // First turn MUST use null (enforced by deepseek_api)
-              sessionWasAutoCreated = true;
-              // Create session record in D1
-              await createSessionRecord(env.DB, sessionChatId)
-            } else {
-              // Validate provided session exists in D1
-              const storedSession = await getSession(env.DB, sessionChatId)
-              if (!storedSession) {
-                return json({ error: { message: 'Invalid request: session not found in store' } }, 404)
-              }
-              // Use stored parent_message_id for continuation (ignore provided value)
-              sessionParentId = storedSession.parent_message_id
-            }
-
-            // Build completion input with the session (either provided or newly created)
-            // ref_file_ids, action, preempt are FIXED in deepseek_api - not passed from input
+            // Build completion input - protocol handles session creation/persistence via sessionStore
             const completionInput = {
-              session: {
-                chat_session_id: sessionChatId,
-                parent_message_id: sessionParentId,
-              },
+              session: input.session
+                ? {
+                    chat_session_id: input.session.chat_session_id,
+                    parent_message_id: input.session.parent_message_id,
+                  }
+                : undefined,
               prompt: input.prompt,
               model_type: input.model_type,
               thinking_enabled: input.thinking_enabled ?? false,
               search_enabled: input.search_enabled ?? false,
-              // ref_file_ids: [] (FIXED in deepseek_api)
-              // action: null (FIXED in deepseek_api)
-              // preempt: false (FIXED in deepseek_api)
             }
 
-            // Use the session we created/validated
-            const response = await client.complete(completionInput)
+            // Use completeWithAutoSession for auto-session creation, complete for provided session
+            const response = input.session
+              ? await client.complete(completionInput)
+              : await client.completeWithAutoSession(completionInput)
 
             if (!response.ok) {
               return new Response(JSON.stringify({
@@ -647,89 +580,8 @@ export default {
               })
             }
 
-            // Parse stream to extract response_message_id and store session
-            // We need to consume the stream to find the ready event
-            const reader = response.body!.getReader();
-            const decoder = new TextDecoder();
-            let responseMessageId: number | null = null;
-            let currentEvent: string | null = null;
-            let buffer = '';
-
-            // We'll collect chunks to rebuild the stream for the client
-            const chunks: Uint8Array[] = [];
-
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                chunks.push(value);
-                
-                const text = decoder.decode(value, { stream: true });
-                buffer += text;
-                
-                const lines = buffer.split('\n');
-                // Keep the last incomplete line in buffer
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                  if (line.startsWith('event:')) {
-                    currentEvent = line.slice(6).trim();
-                  } else if (line.startsWith('data:')) {
-                    const dataStr = line.slice(5).trim();
-                    try {
-                      const data = JSON.parse(dataStr);
-                      
-                      // Look for ready event with response_message_id
-                      if (currentEvent === 'ready' && data.response_message_id !== undefined && data.request_message_id !== undefined) {
-                        responseMessageId = data.response_message_id;
-                        break;
-                      }
-                    } catch {
-                      // Non-JSON data, ignore
-                    }
-                  }
-                }
-                
-                if (responseMessageId !== null) break;
-              }
-            } finally {
-              reader.releaseLock();
-            }
-
-            // Rebuild the stream from collected chunks + remaining stream
-            const remainingStream = new ReadableStream({
-              async start(controller) {
-                // First, send collected chunks
-                for (const chunk of chunks) {
-                  controller.enqueue(chunk);
-                }
-                // Then pipe the rest of the original stream
-                const remainingReader = response.body!.getReader();
-                try {
-                  while (true) {
-                    const { done, value } = await remainingReader.read();
-                    if (done) break;
-                    controller.enqueue(value);
-                  }
-                } finally {
-                  remainingReader.releaseLock();
-                  controller.close();
-                }
-              }
-            });
-
-            // Store session in background using ctx.waitUntil
-            if (sessionChatId) {
-              const finalParentMessageId = responseMessageId !== null ? responseMessageId : (sessionWasAutoCreated ? 0 : null);
-              
-              if (finalParentMessageId !== null) {
-                ctx.waitUntil(upsertSession(env.DB, sessionChatId, finalParentMessageId));
-              }
-            }
-
-            // Return rebuilt stream
-            return new Response(remainingStream, {
+            // Return raw DeepSeek SSE stream - session persistence handled by protocol
+            return new Response(response.body, {
               headers: {
                 'Content-Type': 'text/event-stream; charset=utf-8',
                 'Cache-Control': 'no-cache, no-transform',
