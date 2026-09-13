@@ -2,6 +2,8 @@ import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
+import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON } from './translator/index.js'
+import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
 // Simple rate limiter - 5 second delay for EVERY request (including first)
 const RATE_LIMIT_MS = 5000
@@ -183,6 +185,58 @@ export default {
             count: sessions.results?.length || 0,
             sessions: sessions.results || []
           })
+        }
+
+        // POST /v1/chat/completions - OpenAI-compatible endpoint
+        if (pathname === '/v1/chat/completions' && request.method === 'POST') {
+          await rateLimit()
+          try {
+            const body = await request.json().catch(() => null)
+            if (!body || typeof body !== 'object' || Array.isArray(body)) {
+              return json({ error: { message: 'Invalid request: body must be an object', type: 'invalid_request_error' } }, 400)
+            }
+            const openaiReq = body as OpenAIChatCompletionRequest
+            if (!Array.isArray(openaiReq.messages)) {
+              return json({ error: { message: 'Invalid request: messages must be an array', type: 'invalid_request_error' } }, 400)
+            }
+
+            const input = translateOpenAIRequest(openaiReq, request.headers)
+            const client = createDeepSeekClient(env)
+            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input)
+
+            // MUST run before returning, otherwise attachSessionPersistence may be cancelled
+            ctx.waitUntil(sessionUpdatePromise)
+
+            if (!response.ok) {
+              return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+            }
+            if (!response.body) {
+              return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+            }
+
+            const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
+
+            if (openaiReq.stream === true) {
+              const stream = translateDeepSeekStreamToSSE(response.body, info)
+              return new Response(stream, {
+                headers: {
+                  'Content-Type': 'text/event-stream; charset=utf-8',
+                  'Cache-Control': 'no-cache, no-transform',
+                  'Connection': 'keep-alive',
+                },
+              })
+            }
+
+            const jsonResp = await translateDeepSeekStreamToJSON(response.body, info)
+            return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
+          } catch (err) {
+            // translateOpenAIRequest throws 'No user message found' on bad input -> 400
+            const message = err instanceof Error ? err.message : 'Internal error'
+            const status = message === 'No user message found' ? 400
+              : err && typeof err === 'object' && 'status' in err && typeof (err as { status?: unknown }).status === 'number'
+                ? (err as { status: number }).status : 500
+            return new Response(JSON.stringify({ error: { message, type: status === 400 ? 'invalid_request_error' : 'internal_error' } }), { status, headers: { 'Content-Type': 'application/json' } })
+          }
         }
 
         // POST /deepseekprotocol - Raw DeepSeek protocol endpoint

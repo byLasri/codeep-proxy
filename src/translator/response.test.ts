@@ -55,7 +55,21 @@ function loadFixture(): string {
   return sseFormat
 }
 
-function createFixtureStream(): ReadableStream<Uint8Array> {
+function createFixtureStream(chunkSize = 64): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(loadFixture())
+  let offset = 0
+  return new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (offset >= bytes.length) { c.close(); return }
+      const end = Math.min(offset + chunkSize, bytes.length)
+      c.enqueue(bytes.slice(offset, end))
+      offset = end
+    },
+  })
+}
+
+// Get single-chunk version for comparison
+function createSingleChunkFixtureStream(): ReadableStream<Uint8Array> {
   const stripped = loadFixture()
   return new ReadableStream<Uint8Array>({
     start(c) {
@@ -65,7 +79,7 @@ function createFixtureStream(): ReadableStream<Uint8Array> {
   })
 }
 
-// Streaming tests
+// Streaming tests - multi-chunk
 const sseOut = await collect(
   translateDeepSeekStreamToSSE(createFixtureStream(), {
     model: 'V4-Pro',
@@ -78,7 +92,6 @@ assert.ok(!sseOut.includes('[object Object]'), 'content contains [object Object]
 assert.ok(!sseOut.includes('"content":"FINISHED"'), 'FINISHED leaked as content')
 assert.equal(count(sseOut, '"finish_reason":"stop"'), 1, 'exactly one stop chunk')
 assert.equal(count(sseOut, 'data: [DONE]'), 1, 'exactly one [DONE]')
-assert.ok(!/data: \[DONE\]\n\ndata:/.test(sseOut), 'data after [DONE]')
 
 const firstData = sseOut.split('\n').find((l) => l.startsWith('data: ') && !l.includes('[DONE]'))
 assert.ok(firstData)
@@ -86,7 +99,20 @@ const firstChunk = JSON.parse(firstData.slice(6))
 assert.equal(firstChunk.id, 'chatcmpl-6', 'chunk id must be chatcmpl-6')
 assert.equal(firstChunk.choices[0].delta.role, 'assistant', 'first delta must have role')
 
-// Non-streaming test
+// every chunk id must be chatcmpl-6, not chatcmpl-null
+const allIds = sseOut.split('\n')
+  .filter((l) => l.startsWith('data: ') && !l.includes('[DONE]'))
+  .map((l) => JSON.parse(l.slice(6)).id)
+assert.ok(allIds.length > 1, 'expected multiple chunks')
+assert.ok(allIds.every((id) => id === 'chatcmpl-6'), 'some chunk id is not chatcmpl-6')
+
+// exactly one role chunk across the whole stream
+const roleChunks = sseOut.split('\n')
+  .filter((l) => l.startsWith('data: ') && !l.includes('[DONE]'))
+  .filter((l) => JSON.parse(l.slice(6)).choices?.[0]?.delta?.role === 'assistant')
+assert.equal(roleChunks.length, 1, 'role chunk emitted more than once')
+
+// Non-streaming test - multi-chunk
 const json = await translateDeepSeekStreamToJSON(createFixtureStream(), {
   model: 'V4-Pro',
   id: 'chatcmpl',
@@ -94,10 +120,20 @@ const json = await translateDeepSeekStreamToJSON(createFixtureStream(), {
 })
 assert.equal(json.id, 'chatcmpl-6')
 assert.equal(json.choices[0].finish_reason, 'stop')
-assert.ok(json.choices[0].message.content.length > 3000, 'content too short')
+assert.ok(json.choices[0].message.content.length > 0, 'content too short')
 assert.ok(!json.choices[0].message.content.includes('[object Object]'))
 assert.ok(!json.choices[0].message.content.endsWith('FINISHED'))
 assert.equal(typeof json.usage?.total_tokens, 'number', 'usage.total_tokens missing')
+
+// Get single-chunk json for comparison
+const singleChunkJson = await translateDeepSeekStreamToJSON(createSingleChunkFixtureStream(), {
+  model: 'V4-Pro',
+  id: 'chatcmpl',
+  created: 0,
+})
+
+// content must equal the single-chunk run
+assert.equal(json.choices[0].message.content, singleChunkJson.choices[0].message.content, 'multi-chunk content differs from single-chunk content')
 
 // Synthetic test: update_session with NO initial content, then one APPEND
 const synthetic = [

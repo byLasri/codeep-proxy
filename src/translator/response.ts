@@ -183,10 +183,11 @@ export function translateDeepSeekStreamToSSE(
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder()
   let buffer = ''
+  let parser: ReturnType<typeof createParser> | null = null
 
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      const parser = createParser(controller, info)
+      if (parser === null) parser = createParser(controller, info)
       buffer += decoder.decode(chunk, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
@@ -196,18 +197,15 @@ export function translateDeepSeekStreamToSSE(
       }
     },
     flush(controller) {
+      if (parser === null) parser = createParser(controller, info)
       if (buffer.length > 0) {
         const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
-        const parser = createParser(controller, info)
         parser.processLine(trimmed)
+        buffer = ''
       }
-      const parser = createParser(controller, info)
-      if (!parser.state.hasEmittedDone) {
-        parser.emitFinal()
-      }
+      parser.emitFinal()
     },
   })
-
   return deepSeekStream.pipeThrough(transform)
 }
 
