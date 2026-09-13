@@ -77,14 +77,24 @@ function createParser(
     state.accumulatedContent += text
     if (!state.hasEmittedRole) {
       state.hasEmittedRole = true
-      const firstChunk: OpenAIChatCompletionStreamResponse = {
+      // Emit role-ONLY chunk first (OpenAI spec compatibility)
+      const roleChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
         created: info.created,
         model: info.model,
-        choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }],
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(firstChunk)))
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+      // Then emit content chunk separately
+      const contentChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(contentChunk)))
       return
     }
     const chunk: OpenAIChatCompletionStreamResponse = {

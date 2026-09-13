@@ -58,10 +58,18 @@ async function initSessionsTable(db: D1Database): Promise<void> {
     CREATE TABLE IF NOT EXISTS x_session_map (
       x_session_id TEXT PRIMARY KEY,
       chat_session_id TEXT NOT NULL,
+      turn_count INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
   `).run()
+
+  // Migration for existing tables: add turn_count column if missing
+  try {
+    await db.prepare('ALTER TABLE x_session_map ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0').run()
+  } catch {
+    // column already exists
+  }
 
   await db.prepare(`
     CREATE INDEX IF NOT EXISTS idx_x_session_map_chat
@@ -200,22 +208,32 @@ export default {
               return json({ error: { message: 'Invalid request: messages must be an array', type: 'invalid_request_error' } }, 400)
             }
 
-            // Check if session already exists in D1 to determine if this is first turn
+            // Check turn_count to determine if we should send system prompt (turns 1 and 2 only)
             const xSessionId = getXSessionIdFromHeaders(request.headers)
-            let sessionExists = false
+            let sendSystemPrompt = true
             if (xSessionId) {
-              const mapping = await env.DB.prepare(
-                'SELECT chat_session_id FROM x_session_map WHERE x_session_id = ?'
+              const row = await env.DB.prepare(
+                'SELECT turn_count FROM x_session_map WHERE x_session_id = ?'
               ).bind(xSessionId).first()
-              sessionExists = mapping !== null
+              if (row && typeof row.turn_count === 'number') {
+                // Send system prompt on turn 1 and turn 2. Strip from turn 3 onward.
+                sendSystemPrompt = row.turn_count < 2
+              }
             }
 
-            const input = translateOpenAIRequest(openaiReq, request.headers, sessionExists)
+            const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt)
             const client = createDeepSeekClient(env)
             const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input)
 
             // MUST run before returning, otherwise attachSessionPersistence may be cancelled
             ctx.waitUntil(sessionUpdatePromise)
+
+            // Increment turn_count after the request
+            if (xSessionId) {
+              await env.DB.prepare(
+                'UPDATE x_session_map SET turn_count = turn_count + 1, updated_at = ? WHERE x_session_id = ?'
+              ).bind(Date.now(), xSessionId).run()
+            }
 
             if (!response.ok) {
               return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })

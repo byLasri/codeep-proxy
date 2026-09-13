@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt } from './request.js'
 import { mapOpenAIModelToDeepSeek } from './models.js'
 
-// model mapping
-assert.equal(mapOpenAIModelToDeepSeek('V4-Pro'), 'expert')
-assert.equal(mapOpenAIModelToDeepSeek('V4.1-flash'), null)
-assert.equal(mapOpenAIModelToDeepSeek('gpt-3.5-turbo'), null)
-assert.equal(mapOpenAIModelToDeepSeek(null), null)
-assert.equal(mapOpenAIModelToDeepSeek(undefined), null)
-assert.equal(mapOpenAIModelToDeepSeek(42), null)
+// model mapping - now returns ModelConfig
+assert.deepEqual(mapOpenAIModelToDeepSeek('V4-Pro'), { model_type: 'expert', thinking: false, search: false })
+assert.deepEqual(mapOpenAIModelToDeepSeek('V4.1-flash'), { model_type: null, thinking: false, search: false })
+assert.deepEqual(mapOpenAIModelToDeepSeek('gpt-3.5-turbo'), { model_type: null, thinking: false, search: false })
+assert.deepEqual(mapOpenAIModelToDeepSeek(null), { model_type: null, thinking: false, search: false })
+assert.deepEqual(mapOpenAIModelToDeepSeek(undefined), { model_type: null, thinking: false, search: false })
+assert.deepEqual(mapOpenAIModelToDeepSeek(42), { model_type: null, thinking: false, search: false })
 
 // header precedence
 const h1 = new Headers({ 'X-Session-Id': 'a', 'X-Session-Affinity': 'b' })
@@ -57,7 +57,7 @@ assert.throws(() => buildDeepSeekPrompt([{ role: 'system', content: 'S' }]))
 // malformed user message with no content does not produce "undefined"
 assert.throws(() => buildDeepSeekPrompt([{ role: 'user' } as unknown as import('./types.js').OpenAIChatMessage]))
 
-// sessionExists override test
+// sendSystemPrompt override test
 const messages = [
   { role: 'user', content: 'hello' },
   { role: 'user', content: 'second turn' },
@@ -65,16 +65,16 @@ const messages = [
 const first = buildDeepSeekPrompt(
   [{ role: 'system', content: 'S' }, ...messages],
   [{ type: 'function', function: { name: 'f' } }],
-  false
+  true
 )
-assert.ok(first.includes('S'), 'first turn must include system prompt')
-assert.ok(first.includes('"name":"f"'), 'first turn must include tools')
+assert.ok(first.includes('S'), 'sendSystemPrompt=true must include system prompt')
+assert.ok(first.includes('"name":"f"'), 'sendSystemPrompt=true must include tools')
 
 const later = buildDeepSeekPrompt(
   [{ role: 'system', content: 'S' }, ...messages],
   [{ type: 'function', function: { name: 'f' } }],
-  true
+  false
 )
-assert.equal(later, 'second turn', 'session-exists turn must send only latest user message')
+assert.equal(later, 'second turn', 'sendSystemPrompt=false must send only latest user message')
 
 console.log('All request.test.ts assertions passed.')

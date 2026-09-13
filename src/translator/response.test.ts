@@ -93,13 +93,15 @@ assert.ok(!sseOut.includes('"content":"FINISHED"'), 'FINISHED leaked as content'
 assert.equal(count(sseOut, '"finish_reason":"stop"'), 1, 'exactly one stop chunk')
 assert.equal(count(sseOut, 'data: [DONE]'), 1, 'exactly one [DONE]')
 
-const firstData = sseOut.split('\n').find((l) => l.startsWith('data: ') && !l.includes('[DONE]'))
-assert.ok(firstData)
-const firstChunk = JSON.parse(firstData.slice(6))
-assert.equal(firstChunk.id, 'chatcmpl-6', 'chunk id must be chatcmpl-6')
-assert.equal(firstChunk.choices[0].delta.role, 'assistant', 'first delta must have role')
-assert.equal(typeof firstChunk.choices[0].delta.content, 'string', 'first delta must have content')
-assert.ok(firstChunk.choices[0].delta.content.length > 0, 'first delta content must not be empty')
+// First data line must have role ONLY (no content)
+// Second data line must have the first content
+const dataLines = sseOut.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
+const first = JSON.parse(dataLines[0].slice(6))
+const second = JSON.parse(dataLines[1].slice(6))
+assert.equal(first.choices[0].delta.role, 'assistant', 'first delta must have role')
+assert.equal(first.choices[0].delta.content, undefined, 'first delta must NOT have content')
+assert.ok(typeof second.choices[0].delta.content === 'string' && second.choices[0].delta.content.length > 0,
+  'second delta must carry first content')
 
 // every chunk id must be chatcmpl-6, not chatcmpl-null
 const allIds = sseOut.split('\n')
