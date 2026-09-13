@@ -42,6 +42,7 @@ export function buildCompletionHeaders(
   credentials: DeepSeekCredentials,
   powResponse: string,
   hifLeim?: string,
+  sessionId?: string,
 ): Headers {
   const headers = new Headers(buildAuthenticationHeaders(credentials));
   headers.set("accept", "text/event-stream");
@@ -50,6 +51,9 @@ export function buildCompletionHeaders(
   // HIF-LEIM is now required for all completion requests per the wire contract
   if (hifLeim) {
     headers.set("x-hif-leim", hifLeim);
+  }
+  if (sessionId) {
+    headers.set("X-Session-Id", sessionId);
   }
 
   return headers;
@@ -60,6 +64,7 @@ export interface HeaderBuildOptions {
   powResponse?: string;
   hifLeim?: string;
   accept?: string;
+  sessionId?: string;
 }
 
 export function buildHeaders(options: HeaderBuildOptions): Headers {
@@ -75,6 +80,9 @@ export function buildHeaders(options: HeaderBuildOptions): Headers {
 
   if (options.hifLeim) {
     headers.set("x-hif-leim", options.hifLeim);
+  }
+  if (options.sessionId) {
+    headers.set("X-Session-Id", options.sessionId);
   }
 
   return headers;

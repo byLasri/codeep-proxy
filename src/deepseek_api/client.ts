@@ -247,35 +247,35 @@ export class DeepSeekWebClient {
    * Sends completion request and updates session in KV on success.
    * Parses the SSE stream to extract the new response_message_id.
    */
-  private async completeWithSessionUpdate(
-    session: DeepSeekConversationState,
-    input: DeepSeekCompletionInput
-  ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
-    const { prompt, ...options } = input;
+private async completeWithSessionUpdate(
+     session: DeepSeekConversationState,
+     input: DeepSeekCompletionInput
+   ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
+     const { prompt, xSessionId, ...options } = input;
 
-    // Build the DeepSeek completion request
-    // Only pass required options - fixed values (action, preempt, ref_file_ids) enforced in buildCompletionRequest
-    const request = buildCompletionRequest(session, prompt, {
-      model_type: options.model_type,
-      thinking_enabled: options.thinking_enabled ?? false,
-      search_enabled: options.search_enabled ?? false,
-    });
+     // Build the DeepSeek completion request
+     // Only pass required options - fixed values (action, preempt, ref_file_ids) enforced in buildCompletionRequest
+     const request = buildCompletionRequest(session, prompt, {
+       model_type: options.model_type,
+       thinking_enabled: options.thinking_enabled ?? false,
+       search_enabled: options.search_enabled ?? false,
+     });
 
-    // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
-    const hifLeim = await this.hifLeimCache.getValue();
+     // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
+     const hifLeim = await this.hifLeimCache.getValue();
 
-    // Create PoW challenge
-    const credentials = await this.getCredentials();
-    const challenge = await createPowChallenge(credentials, this.origin);
+     // Create PoW challenge
+     const credentials = await this.getCredentials();
+     const challenge = await createPowChallenge(credentials, this.origin);
 
-    // Solve PoW
-    const solution = solvePow(challenge);
+     // Solve PoW
+     const solution = solvePow(challenge);
 
-    // Encode PoW response
-    const powHeader = encodePowResponse(solution);
+     // Encode PoW response
+     const powHeader = encodePowResponse(solution);
 
-    // Build completion headers with HIF-LEIM
-    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
+     // Build completion headers with HIF-LEIM
+     const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, xSessionId);
 
     // Send completion request
     const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {

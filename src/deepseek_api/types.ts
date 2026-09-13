@@ -61,6 +61,7 @@ export interface DeepSeekPowSolution {
 export interface DeepSeekClientHeaders {
   authorization?: string;
   cookie?: string;
+  "x-session-id"?: string;
 
   "x-client-bundle-id": string;
   "x-client-platform": string;
@@ -85,6 +86,7 @@ export interface DeepSeekApiResponse<T = unknown> {
 
 export interface DeepSeekCompletionInput {
   chat_session_id?: string;
+  xSessionId?: string;
   prompt: string;
 
   model_type: DeepSeekModelType;  // required - no fallback
