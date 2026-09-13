@@ -62,4 +62,4 @@ export { buildCompletionRequest } from "./completion.js";
 
 // Client
 export { DeepSeekWebClient, createDefaultCredentialsReader } from "./client.js";
-export type { DeepSeekWebClientConfig } from "./client.js";
+export type { DeepSeekWebClientConfig, CompletionResult } from "./client.js";

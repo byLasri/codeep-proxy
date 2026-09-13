@@ -127,6 +127,11 @@ export interface DeepSeekWebClientConfig {
   origin?: string;
 }
 
+export interface CompletionResult {
+  response: Response;
+  sessionUpdatePromise: Promise<void>;
+}
+
 export class DeepSeekWebClient {
   private readonly stateStore: ProtocolStateStore;
   private readonly sessionStore: ProtocolSessionStore;
@@ -153,50 +158,67 @@ export class DeepSeekWebClient {
   }
 
   /**
-   * Complete with automatic session creation if session not provided.
-   * Internal method - not exposed publicly.
+   * Complete with automatic session management.
    * 
    * Flow:
-   * 1. If no session provided -> create new session via /create
-   * 2. If session provided -> validation happens at worker level with D1
-   * 3. Send completion to external /completion endpoint
-   * 4. On success, worker stores session with updated parent_message_id from response
+   * 1. If chat_session_id provided -> retrieve parent_message_id from sessionStore
+   * 2. If no chat_session_id -> create new DeepSeek session, parent_message_id = null
+   * 3. Send completion to external /completion endpoint with resolved parent_message_id
+   * 4. On success, extract response_message_id and store as new parent_message_id
    */
-  async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Response> {
-    let session: DeepSeekConversationState = input.session!;
+  async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<CompletionResult> {
+    const chat_session_id = input.chat_session_id;
     let sessionWasAutoCreated = false;
+    let resolvedParentMessageId: number | null = null;
+    let resolvedChatSessionId: string;
 
-    // Auto-create session if not provided
-    if (!session?.chat_session_id) {
+    if (chat_session_id) {
+      // Caller provided a session ID - resolve parent_message_id from store
+      const existingSession = await this.sessionStore.get(chat_session_id);
+      if (!existingSession) {
+        throw new DeepSeekProtocolError(
+          `Session not found: ${chat_session_id}`,
+          { kind: "session", status: 404 }
+        );
+      }
+      resolvedChatSessionId = chat_session_id;
+      resolvedParentMessageId = existingSession.parent_message_id ?? null;
+    } else {
+      // No session ID provided - create new DeepSeek session
       const newSession = await this.createSession();
-      session = {
-        chat_session_id: newSession.id,
-        parent_message_id: null, // First turn always uses null
-      };
+      resolvedChatSessionId = newSession.id;
+      resolvedParentMessageId = null; // First turn always uses null
       sessionWasAutoCreated = true;
 
-      // Store the newly created session
-      await this.sessionStore.set(session.chat_session_id, {
-        chat_session_id: session.chat_session_id,
-        parent_message_id: session.parent_message_id ?? 0,
+      // Store initial session state
+      await this.sessionStore.set(resolvedChatSessionId, {
+        chat_session_id: resolvedChatSessionId,
+        parent_message_id: null,
         created_at: Date.now(),
         updated_at: Date.now(),
       });
     }
 
-    // Build completion input with session
+    // Build completion input with protocol-resolved session state
     const completionInput: DeepSeekCompletionInput = {
       ...input,
-      session: {
-        chat_session_id: session.chat_session_id,
-        parent_message_id: session.parent_message_id ?? null,
-      },
+      chat_session_id: resolvedChatSessionId,
+    };
+
+    // Create a session state object for the completion request
+    const sessionState: DeepSeekConversationState = {
+      chat_session_id: resolvedChatSessionId,
+      parent_message_id: resolvedParentMessageId,
     };
 
     // Send completion and capture response for session update
-    const response = await this.completeWithSessionUpdate(completionInput, sessionWasAutoCreated);
+    const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
+      sessionState,
+      completionInput,
+      sessionWasAutoCreated
+    );
 
-    return response;
+    return { response, sessionUpdatePromise };
   }
 
   /**
@@ -204,17 +226,11 @@ export class DeepSeekWebClient {
    * Parses the SSE stream to extract the new response_message_id.
    */
   private async completeWithSessionUpdate(
+    session: DeepSeekConversationState,
     input: DeepSeekCompletionInput,
     sessionWasAutoCreated: boolean
-  ): Promise<Response> {
-    const { session, prompt, ...options } = input;
-
-    if (!session) {
-      throw new DeepSeekProtocolError(
-        "Session is required for completion",
-        { kind: "protocol", status: 400 }
-      );
-    }
+  ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
+    const { prompt, ...options } = input;
 
     // Build the DeepSeek completion request
     // Only pass required options - fixed values (action, preempt, ref_file_ids) enforced in buildCompletionRequest
@@ -260,12 +276,15 @@ export class DeepSeekWebClient {
     console.log("[DeepSeekWebClient] Response received, starting session extraction...");
 
     // Parse SSE stream in background to extract response_message_id and store session
-    this.extractAndStoreSession(responseForParsing, session.chat_session_id, sessionWasAutoCreated);
+    const sessionUpdatePromise = this.extractAndStoreSession(responseForParsing, session.chat_session_id, sessionWasAutoCreated);
 
     // Return streamed response to caller
-    return new Response(responseForStream, {
-      headers: response.headers,
-    });
+    return {
+      response: new Response(responseForStream, {
+        headers: response.headers,
+      }),
+      sessionUpdatePromise,
+    };
   }
 
   /**
@@ -345,50 +364,8 @@ export class DeepSeekWebClient {
     }
   }
 
-  async complete(input: DeepSeekCompletionInput): Promise<Response> {
-    const { session, prompt, ...options } = input;
-
-    if (!session) {
-      throw new DeepSeekProtocolError(
-        "Session is required for completion. Use completeWithAutoSession for automatic session creation.",
-        { kind: "protocol", status: 400 }
-      );
-    }
-
-    // Build the DeepSeek completion request
-    const request = buildCompletionRequest(session, prompt, options);
-
-    // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
-    const hifLeim = await this.hifLeimCache.getValue();
-
-    // Create PoW challenge
-    const credentials = await this.getCredentials();
-    const challenge = await createPowChallenge(credentials, this.origin);
-
-    // Solve PoW
-    const solution = solvePow(challenge);
-
-    // Encode PoW response
-    const powHeader = encodePowResponse(solution);
-
-    // Build completion headers with HIF-LEIM
-    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
-
-    // Send completion request
-    const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(request),
-    });
-
-    if (!response.ok) {
-      throw new DeepSeekProtocolError(
-        `DeepSeek completion failed: HTTP ${response.status}`,
-        { kind: "completion", status: response.status }
-      );
-    }
-
-    // Return raw Response - caller handles SSE parsing
-    return response;
+  async complete(input: DeepSeekCompletionInput): Promise<CompletionResult> {
+    // Delegate to completeWithAutoSession which handles session resolution and persistence
+    return this.completeWithAutoSession(input);
   }
 }

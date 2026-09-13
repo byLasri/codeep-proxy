@@ -84,7 +84,7 @@ export interface DeepSeekApiResponse<T = unknown> {
 }
 
 export interface DeepSeekCompletionInput {
-  session?: DeepSeekConversationState;
+  chat_session_id?: string;
   prompt: string;
 
   model_type: DeepSeekModelType;  // required - no fallback

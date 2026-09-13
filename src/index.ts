@@ -359,7 +359,7 @@ export default {
             }
         
             // Call DeepSeek completion with auto-session
-            const response = await client.completeWithAutoSession(completionInput)
+            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(completionInput)
         
             if (!response.ok) {
               return new Response(JSON.stringify({
@@ -378,6 +378,9 @@ export default {
                 headers: { 'Content-Type': 'application/json' }
               })
             }
+        
+            // Ensure session update completes in background (Cloudflare Workers requires ctx.waitUntil)
+            ctx.waitUntil(sessionUpdatePromise)
         
             if (isStreaming) {
               return createStreamingResponse(response.body, openAIRequest.model)
@@ -502,7 +505,7 @@ export default {
         }
 
         // POST /deepseekprotocol - Raw DeepSeek protocol endpoint
-        // Takes DeepSeekCompletionInput (session optional - auto-created if missing), returns raw DeepSeek SSE stream
+        // Takes DeepSeekCompletionInput (chat_session_id optional - auto-created if missing), returns raw DeepSeek SSE stream
         if (pathname === '/deepseekprotocol' && request.method === 'POST') {
           await rateLimit()
           try {
@@ -514,7 +517,7 @@ export default {
             }
 
             const input = body as {
-              session?: { chat_session_id: string; parent_message_id: number | null }
+              chat_session_id?: string
               prompt?: string
               model_type?: string | null
               thinking_enabled?: boolean
@@ -531,13 +534,10 @@ export default {
               return json({ error: { message: 'Invalid request: model_type is required' } }, 400)
             }
 
-            // Validate session: if provided, BOTH chat_session_id AND parent_message_id are required
-            if (input.session) {
-              if (!input.session.chat_session_id || typeof input.session.chat_session_id !== 'string') {
-                return json({ error: { message: 'Invalid request: session.chat_session_id is required' } }, 400)
-              }
-              if (input.session.parent_message_id === undefined || input.session.parent_message_id === null) {
-                return json({ error: { message: 'Invalid request: session.parent_message_id is required when session is provided' } }, 400)
+            // Validate chat_session_id if provided
+            if (input.chat_session_id !== undefined) {
+              if (typeof input.chat_session_id !== 'string') {
+                return json({ error: { message: 'Invalid request: chat_session_id must be a string' } }, 400)
               }
             }
 
@@ -545,22 +545,15 @@ export default {
 
             // Build completion input - protocol handles session creation/persistence via sessionStore
             const completionInput = {
-              session: input.session
-                ? {
-                    chat_session_id: input.session.chat_session_id,
-                    parent_message_id: input.session.parent_message_id,
-                  }
-                : undefined,
+              chat_session_id: input.chat_session_id,
               prompt: input.prompt,
               model_type: input.model_type,
               thinking_enabled: input.thinking_enabled ?? false,
               search_enabled: input.search_enabled ?? false,
             }
 
-            // Use completeWithAutoSession for auto-session creation, complete for provided session
-            const response = input.session
-              ? await client.complete(completionInput)
-              : await client.completeWithAutoSession(completionInput)
+            // Protocol handles session resolution and persistence
+            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(completionInput)
 
             if (!response.ok) {
               return new Response(JSON.stringify({
@@ -579,6 +572,9 @@ export default {
                 headers: { 'Content-Type': 'application/json' }
               })
             }
+
+            // Ensure session update completes in background (Cloudflare Workers requires ctx.waitUntil)
+            ctx.waitUntil(sessionUpdatePromise)
 
             // Return raw DeepSeek SSE stream - session persistence handled by protocol
             return new Response(response.body, {
