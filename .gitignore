@@ -1,27 +1,38 @@
 ```
-# Cloudflare Workers/Wrangler
+# Wrangler/Miniflare state files
 .wrangler/
-wrangler-local-state/
-.opencode/
 
-# Database files
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-
-# Temporary files
-*.tmp
-bundle-*/
-dev-*/
-
-# Environment
+# Environment variables
 .env
 .env.local
 .env.*
 
+# SQLite database files (typically generated)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Temporary and cache files
+*.tmp
+*.cache
+.DS_Store
+Thumbs.db
+
 # Logs
 *.log
 
-# Dependencies (if any)
+# Dependencies (if any detected in project)
 node_modules/
+__pycache__/
+*.egg-info/
+dist/
+build/
+target/
+.gradle/
+.mypy_cache/
+.pytest_cache/
+coverage/
+htmlcov/
+.julia/
+zig-cache/
 ```
