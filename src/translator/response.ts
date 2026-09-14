@@ -1,4 +1,6 @@
 import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse } from './types.js'
+import type { RequestLogger } from '../observability/logger.js'
+import { teeAndLogStream } from '../observability/logger.js'
 
 export function formatOpenAISSEChunk(chunk: OpenAIChatCompletionStreamResponse): string {
   return `data: ${JSON.stringify(chunk)}\n\n`
@@ -204,7 +206,8 @@ function createParser(
 
 export function translateDeepSeekStreamToSSE(
   deepSeekStream: ReadableStream<Uint8Array>,
-  info: { model: string; id: string; created: number }
+  info: { model: string; id: string; created: number },
+  logger?: RequestLogger
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder()
   let buffer = ''
@@ -231,12 +234,25 @@ export function translateDeepSeekStreamToSSE(
       parser.emitFinal()
     },
   })
-  return deepSeekStream.pipeThrough(transform)
+  const stream = deepSeekStream.pipeThrough(transform)
+  if (logger) {
+    const final = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk)
+      },
+      flush(controller) {
+        logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
+      },
+    })
+    return stream.pipeThrough(final)
+  }
+  return stream
 }
 
 export async function translateDeepSeekStreamToJSON(
   deepSeekStream: ReadableStream<Uint8Array>,
-  info: { model: string; id: string; created: number }
+  info: { model: string; id: string; created: number },
+  logger?: RequestLogger
 ): Promise<OpenAIChatCompletionResponse> {
   const decoder = new TextDecoder()
   let buffer = ''
@@ -356,7 +372,7 @@ export async function translateDeepSeekStreamToJSON(
     }
   }
 
-  return {
+  const result: OpenAIChatCompletionResponse = {
     id: `chatcmpl-${responseMessageId}`,
     object: 'chat.completion',
     created: info.created,
@@ -374,4 +390,6 @@ export async function translateDeepSeekStreamToJSON(
       total_tokens: accumulatedTokens,
     },
   }
+  logger?.logOutgoingToClient(result)
+  return result
 }

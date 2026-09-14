@@ -1,6 +1,7 @@
 import type { DeepSeekCompletionInput } from '../deepseek_api/types.js'
 import type { OpenAIChatCompletionRequest, OpenAIChatMessage } from './types.js'
 import { mapOpenAIModelToDeepSeek } from './models.js'
+import type { RequestLogger } from '../observability/logger.js'
 
 export function getXSessionIdFromHeaders(headers: Headers): string | undefined {
   let value = headers.get('X-Session-Id')
@@ -70,10 +71,11 @@ export function buildDeepSeekPrompt(
 export function translateOpenAIRequest(
   req: OpenAIChatCompletionRequest,
   headers: Headers,
-  sendSystemPrompt?: boolean
+  sendSystemPrompt?: boolean,
+  logger?: RequestLogger
 ): DeepSeekCompletionInput {
   const config = mapOpenAIModelToDeepSeek(req.model)
-  return {
+  const result: DeepSeekCompletionInput = {
     xSessionId: getXSessionIdFromHeaders(headers),
     prompt: buildDeepSeekPrompt(req.messages, Array.isArray(req.tools) ? req.tools : undefined, sendSystemPrompt),
     model_type: config.model_type,
@@ -81,4 +83,6 @@ export function translateOpenAIRequest(
     search_enabled: config.search,
     chat_session_id: undefined,
   }
+  logger?.logTranslatedRequest(result)
+  return result
 }

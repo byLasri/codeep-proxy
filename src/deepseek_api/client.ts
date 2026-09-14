@@ -15,6 +15,8 @@ import { HifLeimCache } from "./hif-leim.js";
 import type { ProtocolStateStore } from "./state-store.js";
 import { PROTOCOL_STATE_KEYS } from "./state-store.js";
 import type { ProtocolSessionStore } from "./session-store.js";
+import type { RequestLogger } from '../observability/logger.js'
+import { teeAndLogStream } from '../observability/logger.js'
 
 /** Parse response_message_id from a single SSE line (ready event data payload). */
 function extractResponseMessageId(line: string): number | null {
@@ -187,7 +189,7 @@ export class DeepSeekWebClient {
    * 3. Send completion to external /completion endpoint with resolved parent_message_id
    * 4. On success, extract response_message_id and store as new parent_message_id
    */
-async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<CompletionResult> {
+async completeWithAutoSession(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
      const chat_session_id = input.chat_session_id;
      let resolvedParentMessageId: number | null = null;
      let resolvedChatSessionId: string;
@@ -265,7 +267,8 @@ async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Completio
      // Send completion and capture response for session update
      const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
        sessionState,
-       completionInput
+       completionInput,
+       logger
      );
 
      return { response, sessionUpdatePromise };
@@ -277,7 +280,8 @@ async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Completio
    */
 private async completeWithSessionUpdate(
      session: DeepSeekConversationState,
-     input: DeepSeekCompletionInput
+     input: DeepSeekCompletionInput,
+     logger?: RequestLogger
    ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
      const { prompt, ...options } = input;
 
@@ -305,6 +309,16 @@ private async completeWithSessionUpdate(
      // Build completion headers with HIF-LEIM
      const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
 
+        // Log upstream request
+    if (logger) {
+      const initForLog = {
+        method: "POST",
+        headers: Object.fromEntries(headers.entries()),
+        body: JSON.stringify(request),
+      };
+      logger.logUpstreamRequest(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, initForLog);
+    }
+
     // Send completion request
     const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.COMPLETION}`, {
       method: "POST",
@@ -326,8 +340,22 @@ private async completeWithSessionUpdate(
       );
     }
 
-    const { stream: instrumentedBody, sessionUpdatePromise: persistPromise } =
-      this.attachSessionPersistence(response.body, session.chat_session_id);
+    let instrumentedBody: ReadableStream<Uint8Array>;
+    let persistPromise: Promise<void>;
+    
+    if (logger) {
+      // Tee the stream: one branch for logging, one for session persistence + client
+      const teeStream = teeAndLogStream(response.body, logger, "upstream_response");
+      const { stream: persistedStream, sessionUpdatePromise: sessionPersist } = 
+        this.attachSessionPersistence(teeStream, session.chat_session_id);
+      instrumentedBody = persistedStream;
+      persistPromise = sessionPersist;
+    } else {
+      const { stream: persistedStream, sessionUpdatePromise: sessionPersist } = 
+        this.attachSessionPersistence(response.body, session.chat_session_id);
+      instrumentedBody = persistedStream;
+      persistPromise = sessionPersist;
+    }
 
     const outboundHeaders = new Headers(response.headers);
     outboundHeaders.set("X-Chat-Session-Id", session.chat_session_id);
@@ -426,8 +454,8 @@ private async completeWithSessionUpdate(
     return { stream, sessionUpdatePromise };
   }
 
-  async complete(input: DeepSeekCompletionInput): Promise<CompletionResult> {
+  async complete(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
     // Delegate to completeWithAutoSession which handles session resolution and persistence
-    return this.completeWithAutoSession(input);
+    return this.completeWithAutoSession(input, logger);
   }
 }

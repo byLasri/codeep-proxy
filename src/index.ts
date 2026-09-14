@@ -3,6 +3,7 @@ import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
 import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders } from './translator/index.js'
+import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
 // Simple rate limiter - 5 second delay for EVERY request (including first)
@@ -85,6 +86,15 @@ function createDeepSeekClient(env: Env): DeepSeekWebClient {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Observability: generate trace ID and logger
+    const traceId = generateTraceId();
+    const logger = new RequestLogger(traceId);
+    
+    // Clone and log incoming request
+    const rawBody = await request.clone().text().catch(() => '');
+    logger.logIncoming(request, rawBody);
+
+    
     // Initialize D1 sessions table
     await initSessionsTable(env.DB)
     
@@ -92,6 +102,15 @@ export default {
 
     // POST /v1/auth - Store credentials
     if (pathname === '/v1/auth' && request.method === 'POST') {
+    // Observability: generate trace ID and logger
+    const traceId = generateTraceId();
+    const logger = new RequestLogger(traceId);
+    
+    // Clone and log incoming request
+    const rawBody = await request.clone().text().catch(() => '');
+    logger.logIncoming(request, rawBody);
+
+    
       const body = await request.json().catch(() => null)
 
       // Validate body is a non-null object (not array)
@@ -221,9 +240,9 @@ export default {
               }
             }
 
-            const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt)
+            const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt, logger)
             const client = createDeepSeekClient(env)
-            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input)
+            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input, logger)
 
             // MUST run before returning, otherwise attachSessionPersistence may be cancelled
             ctx.waitUntil(sessionUpdatePromise)
@@ -245,7 +264,7 @@ export default {
             const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
 
             if (openaiReq.stream === true) {
-              const stream = translateDeepSeekStreamToSSE(response.body, info)
+              const stream = translateDeepSeekStreamToSSE(response.body, info, logger)
               return new Response(stream, {
                 headers: {
                   'Content-Type': 'text/event-stream; charset=utf-8',
@@ -255,7 +274,7 @@ export default {
               })
             }
 
-            const jsonResp = await translateDeepSeekStreamToJSON(response.body, info)
+            const jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
             return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
           } catch (err) {
             // translateOpenAIRequest throws 'No user message found' on bad input -> 400
@@ -329,7 +348,7 @@ const completionInput = {
              }
 
             // Protocol handles session resolution and persistence
-            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(completionInput)
+            const { response, sessionUpdatePromise } = await client.completeWithAutoSession(completionInput, logger)
 
             if (!response.ok) {
               return new Response(JSON.stringify({
