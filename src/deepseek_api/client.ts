@@ -189,7 +189,6 @@ export class DeepSeekWebClient {
    */
 async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<CompletionResult> {
      const chat_session_id = input.chat_session_id;
-     let sessionWasAutoCreated = false;
      let resolvedParentMessageId: number | null = null;
      let resolvedChatSessionId: string;
 
@@ -234,7 +233,6 @@ async completeWithAutoSession(input: DeepSeekCompletionInput): Promise<Completio
          const newSession = await this.createSession();
          resolvedChatSessionId = newSession.id;
          resolvedParentMessageId = null; // First turn always uses null
-         sessionWasAutoCreated = true;
 
          // Store initial session state
          await this.sessionStore.set(resolvedChatSessionId, {

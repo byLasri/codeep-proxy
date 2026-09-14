@@ -90,10 +90,5 @@ export class CloudflareD1SessionStore implements ProtocolSessionStore {
       .run();
   }
 
-  async deleteXSessionMapping(xSessionId: string): Promise<void> {
-    await this.db
-      .prepare('DELETE FROM x_session_map WHERE x_session_id = ?')
-      .bind(xSessionId)
-      .run();
-  }
+  
 }

@@ -2,7 +2,7 @@ import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
-import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, buildDeepSeekPrompt, getXSessionIdFromHeaders } from './translator/index.js'
+import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders } from './translator/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
 // Simple rate limiter - 5 second delay for EVERY request (including first)

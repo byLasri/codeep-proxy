@@ -33,8 +33,5 @@ export interface ProtocolSessionStore {
    */
   setXSessionMapping(xSessionId: string, chatSessionId: string): Promise<void>;
 
-  /**
-   * Delete the mapping by X-Session-Id.
-   */
-  deleteXSessionMapping(xSessionId: string): Promise<void>;
+  
 }
