@@ -17,6 +17,7 @@ venv/
 
 # Logs and temp files
 *.log
+*.jsonl
 *.tmp
 *.swp
 

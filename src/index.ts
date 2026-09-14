@@ -102,12 +102,6 @@ export default {
 
     // POST /v1/auth - Store credentials
     if (pathname === '/v1/auth' && request.method === 'POST') {
-    // Observability: generate trace ID and logger
-    const traceId = generateTraceId();
-    const logger = new RequestLogger(traceId);
-    
-    // Clone and log incoming request
-    const rawBody = await request.clone().text().catch(() => '');
     logger.logIncoming(request, rawBody);
 
     
