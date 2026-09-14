@@ -102,7 +102,6 @@ export default {
 
     // POST /v1/auth - Store credentials
     if (pathname === '/v1/auth' && request.method === 'POST') {
-    logger.logIncoming(request, rawBody);
 
     
       const body = await request.json().catch(() => null)
