@@ -21,6 +21,8 @@ interface SSEParserState {
   isAppending: boolean
   accumulatedTokens: number
   pendingContent: string
+  currentFragmentType: 'THINK' | 'RESPONSE' | null
+  accumulatedReasoning: string
 }
 
 function createParser(
@@ -38,6 +40,8 @@ function createParser(
     isAppending: false,
     accumulatedTokens: 0,
     pendingContent: '',
+    currentFragmentType: 'RESPONSE',
+    accumulatedReasoning: '',
   }
 
   const emitFinal = () => {
@@ -302,6 +306,8 @@ export async function translateDeepSeekStreamToJSON(
   let currentPath: string | null = null
   let currentOp: string | null = null
   let isAppending = false
+  let accumulatedReasoning = ''
+  let currentFragmentType: 'THINK' | 'RESPONSE' = 'RESPONSE'
 
   const reader = deepSeekStream.getReader()
   try {
