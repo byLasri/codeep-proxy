@@ -21,30 +21,25 @@ import { teeAndLogStream } from '../observability/logger.js'
 // Per-session mutex to prevent DB race conditions
 const sessionLocks = new Map<string, Promise<void>>();
 
-async function withSessionLock<T>(
+async function withSessionLock<T extends { sessionUpdatePromise: Promise<void> }>(
   xSessionId: string | undefined,
   fn: () => Promise<T>
 ): Promise<T> {
   if (!xSessionId) return fn();
   
-  const previousLock = sessionLocks.get(xSessionId) || Promise.resolve();
+  // Wait for the previous request's DB write to finish before we even read the DB
+  const previousLock = sessionLocks.get(xSessionId);
+  if (previousLock) {
+    await previousLock.catch(() => {}); // Ignore errors from previous updates
+  }
   
-  let releaseLock: () => void;
-  const myLock = new Promise<void>(resolve => { releaseLock = resolve; });
+  // Now run our fetch (this returns the stream and the sessionUpdatePromise)
+  const result = await fn();
   
-  const execution = previousLock.then(async () => {
-    try {
-      return await fn();
-    } finally {
-      releaseLock!();
-      if (sessionLocks.get(xSessionId) === myLock) {
-        sessionLocks.delete(xSessionId);
-      }
-    }
-  });
+  // The next request for this session must wait for OUR DB write to finish
+  sessionLocks.set(xSessionId, result.sessionUpdatePromise.catch(() => {}));
   
-  sessionLocks.set(xSessionId, myLock);
-  return execution;
+  return result;
 }
 
 /** Parse response_message_id from a single SSE line (ready event data payload). */
