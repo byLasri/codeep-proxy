@@ -18,30 +18,6 @@ import type { ProtocolSessionStore, ProxySessionState } from "./session-store.js
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
 
-// Per-session mutex to prevent DB race conditions
-const sessionLocks = new Map<string, Promise<void>>();
-
-async function withSessionLock<T extends { sessionUpdatePromise: Promise<void> }>(
-  xSessionId: string | undefined,
-  fn: () => Promise<T>
-): Promise<T> {
-  if (!xSessionId) return fn();
-  
-  // Wait for the previous request's DB write to finish before we even read the DB
-  const previousLock = sessionLocks.get(xSessionId);
-  if (previousLock) {
-    await previousLock.catch(() => {}); // Ignore errors from previous updates
-  }
-  
-  // Now run our fetch (this returns the stream and the sessionUpdatePromise)
-  const result = await fn();
-  
-  // The next request for this session must wait for OUR DB write to finish
-  sessionLocks.set(xSessionId, result.sessionUpdatePromise.catch(() => {}));
-  
-  return result;
-}
-
 /** Parse response_message_id from a single SSE line (ready event data payload). */
 function extractResponseMessageId(line: string): number | null {
   const trimmed = line.trim();
@@ -214,7 +190,6 @@ export class DeepSeekWebClient {
    * 4. On success, extract response_message_id and store as new parent_message_id
    */
     async completeWithAutoSession(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
-    return withSessionLock(input.xSessionId, async () => {
       let resolvedParentMessageId: number | null = null;
       let resolvedChatSessionId: string;
       const xSessionId = input.xSessionId;
@@ -257,10 +232,8 @@ export class DeepSeekWebClient {
         logger
       );
 
-      await sessionUpdatePromise;
       return { response, sessionUpdatePromise };
-    });
-  }
+    }
 
   /**
    * Sends completion request and updates session in KV on success.
