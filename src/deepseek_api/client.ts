@@ -18,6 +18,35 @@ import type { ProtocolSessionStore, ProxySessionState } from "./session-store.js
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
 
+// Per-session mutex to prevent DB race conditions
+const sessionLocks = new Map<string, Promise<void>>();
+
+async function withSessionLock<T>(
+  xSessionId: string | undefined,
+  fn: () => Promise<T>
+): Promise<T> {
+  if (!xSessionId) return fn();
+  
+  const previousLock = sessionLocks.get(xSessionId) || Promise.resolve();
+  
+  let releaseLock: () => void;
+  const myLock = new Promise<void>(resolve => { releaseLock = resolve; });
+  
+  const execution = previousLock.then(async () => {
+    try {
+      return await fn();
+    } finally {
+      releaseLock!();
+      if (sessionLocks.get(xSessionId) === myLock) {
+        sessionLocks.delete(xSessionId);
+      }
+    }
+  });
+  
+  sessionLocks.set(xSessionId, myLock);
+  return execution;
+}
+
 /** Parse response_message_id from a single SSE line (ready event data payload). */
 function extractResponseMessageId(line: string): number | null {
   const trimmed = line.trim();
@@ -190,49 +219,52 @@ export class DeepSeekWebClient {
    * 4. On success, extract response_message_id and store as new parent_message_id
    */
     async completeWithAutoSession(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
-    let resolvedParentMessageId: number | null = null;
-    let resolvedChatSessionId: string;
-    const xSessionId = input.xSessionId;
-    let existingState: ProxySessionState | null = null;
+    return withSessionLock(input.xSessionId, async () => {
+      let resolvedParentMessageId: number | null = null;
+      let resolvedChatSessionId: string;
+      const xSessionId = input.xSessionId;
+      let existingState: ProxySessionState | null = null;
 
-    if (xSessionId) {
-      existingState = await this.sessionStore.get(xSessionId);
-    }
+      if (xSessionId) {
+        existingState = await this.sessionStore.get(xSessionId);
+      }
 
-    if (existingState) {
-      resolvedChatSessionId = existingState.chat_session_id;
-      resolvedParentMessageId = existingState.parent_message_id;
-    } else if (input.chat_session_id) {
-      resolvedChatSessionId = input.chat_session_id;
-      resolvedParentMessageId = null;
-    } else {
-      const newSession = await this.createSession();
-      resolvedChatSessionId = newSession.id;
-      resolvedParentMessageId = null;
-    }
+      if (existingState) {
+        resolvedChatSessionId = existingState.chat_session_id;
+        resolvedParentMessageId = existingState.parent_message_id;
+      } else if (input.chat_session_id) {
+        resolvedChatSessionId = input.chat_session_id;
+        resolvedParentMessageId = null;
+      } else {
+        const newSession = await this.createSession();
+        resolvedChatSessionId = newSession.id;
+        resolvedParentMessageId = null;
+      }
 
-    // Build completion input with protocol-resolved session state
-    const completionInput: DeepSeekCompletionInput = {
-      ...input,
-      chat_session_id: resolvedChatSessionId,
-    };
+      // Build completion input with protocol-resolved session state
+      const completionInput: DeepSeekCompletionInput = {
+        ...input,
+        chat_session_id: resolvedChatSessionId,
+      };
 
-    // Create a session state object for the completion request
-    const sessionState: DeepSeekConversationState = {
-      chat_session_id: resolvedChatSessionId,
-      parent_message_id: resolvedParentMessageId,
-    };
+      // Create a session state object for the completion request
+      const sessionState: DeepSeekConversationState = {
+        chat_session_id: resolvedChatSessionId,
+        parent_message_id: resolvedParentMessageId,
+      };
 
-    // Send completion and capture response for session update
-    const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
-      sessionState,
-      completionInput,
-      xSessionId,
-      existingState,
-      logger
-    );
+      // Send completion and capture response for session update
+      const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
+        sessionState,
+        completionInput,
+        xSessionId,
+        existingState,
+        logger
+      );
 
-    return { response, sessionUpdatePromise };
+      await sessionUpdatePromise;
+      return { response, sessionUpdatePromise };
+    });
   }
 
   /**
