@@ -1,4 +1,4 @@
-import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse } from './types.js'
+import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse, ToolCall } from './types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
 
@@ -91,6 +91,31 @@ function createParser(
   const emitFinal = () => {
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
+    
+    // Emit tool calls if we have any
+    if (state.parsedToolCalls.length > 0) {
+      const toolCallChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: state.parsedToolCalls.map((tc, idx) => ({
+              index: idx,
+              id: tc.id,
+              type: tc.type,
+              function: tc.function
+            }))
+          },
+          finish_reason: 'tool_calls'
+        }]
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
+    }
+    
+    // Emit final stop chunk (empty delta)
     const finalChunk: OpenAIChatCompletionStreamResponse = {
       id: `chatcmpl-${state.responseMessageId}`,
       object: 'chat.completion.chunk',
@@ -99,6 +124,8 @@ function createParser(
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
     }
     controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+    
+    // Emit usage if available
     if (state.accumulatedTokens > 0) {
       const usageChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
@@ -114,6 +141,7 @@ function createParser(
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
     }
+    
     controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
   }
 
