@@ -74,41 +74,36 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
+    const isReasoning = state.currentFragmentType === 'THINK'
     if (state.responseMessageId === 'null') {
-      // ready event has not arrived yet; buffer this text and flush it when
-      // ready sets responseMessageId
       state.pendingContent = (state.pendingContent || '') + text
       return
     }
-    state.accumulatedContent += text
+    
+    if (isReasoning) {
+      state.accumulatedReasoning += text
+    } else {
+      state.accumulatedContent += text
+    }
+    
     if (!state.hasEmittedRole) {
       state.hasEmittedRole = true
-      // Emit role chunk WITH empty content to ensure client processes it
       const roleChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
         created: info.created,
         model: info.model,
-        choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
-      // Then emit content chunk separately
-      const contentChunk: OpenAIChatCompletionStreamResponse = {
-        id: `chatcmpl-${state.responseMessageId}`,
-        object: 'chat.completion.chunk',
-        created: info.created,
-        model: info.model,
-        choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-      }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(contentChunk)))
-      return
     }
+    
     const chunk: OpenAIChatCompletionStreamResponse = {
       id: `chatcmpl-${state.responseMessageId}`,
       object: 'chat.completion.chunk',
       created: info.created,
       model: info.model,
-      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+      choices: [{ index: 0, delta: isReasoning ? { reasoning_content: text } : { content: text }, finish_reason: null }],
     }
     controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
   }
@@ -139,6 +134,8 @@ function createParser(
       const fragments = v?.response?.fragments;
       if (Array.isArray(fragments) && fragments.length > 0) {
         const frag = fragments[0];
+        const fragType = frag?.type === 'THINK' ? 'THINK' : 'RESPONSE'
+        state.currentFragmentType = fragType
         if (typeof frag?.content === 'string' && frag.content !== '') {
           emitContent(frag.content)
         }
@@ -181,6 +178,7 @@ function createParser(
       if (state.currentPath === 'response/fragments' && state.currentOp === 'APPEND') {
         if (Array.isArray(parsed.v) && parsed.v.length > 0) {
           const newFragment = parsed.v[0] as { type?: string; content?: string }
+          state.currentFragmentType = newFragment?.type === 'THINK' ? 'THINK' : 'RESPONSE'
           // We are now appending to this new fragment
           state.isAppending = true
           // Emit the initial content if present
@@ -344,8 +342,13 @@ export async function translateDeepSeekStreamToJSON(
           const fragments = v?.response?.fragments;
           if (Array.isArray(fragments) && fragments.length > 0) {
             const frag = fragments[0];
+            currentFragmentType = frag?.type === 'THINK' ? 'THINK' : 'RESPONSE'
             if (typeof frag?.content === 'string' && frag.content !== '') {
-              accumulatedContent += frag.content
+              if (currentFragmentType === 'THINK') {
+                accumulatedReasoning += frag.content
+              } else {
+                accumulatedContent += frag.content
+              }
             }
           }
           continue;
@@ -361,10 +364,19 @@ export async function translateDeepSeekStreamToJSON(
 
         // 2. update_session: capture initial fragment content
         if (currentEvent === 'update_session') {
-          const v = parsed.v as { response?: { fragments?: Array<{ content?: string }> } } | undefined
-          const initial = v?.response?.fragments?.[0]?.content
-          if (initial != null && initial !== '') {
-            accumulatedContent += initial
+          const v = parsed.v as { response?: { fragments?: Array<{ type?: string; content?: string }> } } | undefined
+          const fragments = v?.response?.fragments
+          if (Array.isArray(fragments) && fragments.length > 0) {
+            const frag = fragments[0]
+            currentFragmentType = frag?.type === 'THINK' ? 'THINK' : 'RESPONSE'
+            const initial = frag?.content
+            if (initial != null && initial !== '') {
+              if (currentFragmentType === 'THINK') {
+                accumulatedReasoning += initial
+              } else {
+                accumulatedContent += initial
+              }
+            }
           }
           continue
         }
@@ -380,17 +392,26 @@ export async function translateDeepSeekStreamToJSON(
           if (currentPath === 'response/fragments' && currentOp === 'APPEND') {
             if (Array.isArray(parsed.v) && parsed.v.length > 0) {
               const newFragment = parsed.v[0] as { type?: string; content?: string }
+              currentFragmentType = newFragment?.type === 'THINK' ? 'THINK' : 'RESPONSE'
               // We are now appending to this new fragment
               isAppending = true
               // Emit the initial content if present
               if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
-                accumulatedContent += newFragment.content
+                if (currentFragmentType === 'THINK') {
+                  accumulatedReasoning += newFragment.content
+                } else {
+                  accumulatedContent += newFragment.content
+                }
               }
             }
           }
           
           if (isAppending && typeof parsed.v === 'string') {
-            accumulatedContent += parsed.v
+            if (currentFragmentType === 'THINK') {
+              accumulatedReasoning += parsed.v
+            } else {
+              accumulatedContent += parsed.v
+            }
           }
           // capture token usage from BATCH
           if (currentPath === 'response' && currentOp === 'BATCH' && Array.isArray(parsed.v)) {
@@ -408,14 +429,22 @@ export async function translateDeepSeekStreamToJSON(
         // Example: {"p":"response/fragments/-1/content","v":" **"}
         if (parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
           if (parsed.p === 'response/fragments/-1/content' && isAppending) {
-            accumulatedContent += parsed.v
+            if (currentFragmentType === 'THINK') {
+              accumulatedReasoning += parsed.v
+            } else {
+              accumulatedContent += parsed.v
+            }
           }
           continue
         }
 
         // 4. v-only lines: append ONLY while isAppending
         if (parsed.v !== undefined && isAppending && typeof parsed.v === 'string') {
-          accumulatedContent += parsed.v
+          if (currentFragmentType === 'THINK') {
+            accumulatedReasoning += parsed.v
+          } else {
+            accumulatedContent += parsed.v
+          }
           continue
         }
       }
@@ -444,14 +473,23 @@ export async function translateDeepSeekStreamToJSON(
         if (path === 'response/fragments' && op === 'APPEND') {
           if (Array.isArray(parsed.v) && parsed.v.length > 0) {
             const newFragment = parsed.v[0] as { type?: string; content?: string }
+            currentFragmentType = newFragment?.type === 'THINK' ? 'THINK' : 'RESPONSE'
             if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
-              accumulatedContent += newFragment.content
+              if (currentFragmentType === 'THINK') {
+                accumulatedReasoning += newFragment.content
+              } else {
+                accumulatedContent += newFragment.content
+              }
             }
           }
         }
         
         if (appending && typeof parsed.v === 'string') {
-          accumulatedContent += parsed.v
+          if (currentFragmentType === 'THINK') {
+            accumulatedReasoning += parsed.v
+          } else {
+            accumulatedContent += parsed.v
+          }
         }
         if (path === 'response' && op === 'BATCH' && Array.isArray(parsed.v)) {
           for (const item of parsed.v) {
@@ -463,10 +501,18 @@ export async function translateDeepSeekStreamToJSON(
         }
       } else if (parsed && parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
         if (parsed.p === 'response/fragments/-1/content' && isAppending) {
-          accumulatedContent += parsed.v
+          if (currentFragmentType === 'THINK') {
+            accumulatedReasoning += parsed.v
+          } else {
+            accumulatedContent += parsed.v
+          }
         }
       } else if (parsed && parsed.v !== undefined && isAppending && typeof parsed.v === 'string') {
-        accumulatedContent += parsed.v
+        if (currentFragmentType === 'THINK') {
+          accumulatedReasoning += parsed.v
+        } else {
+          accumulatedContent += parsed.v
+        }
       }
     }
   }
@@ -479,7 +525,7 @@ export async function translateDeepSeekStreamToJSON(
     choices: [
       {
         index: 0,
-        message: { role: 'assistant', content: accumulatedContent },
+        message: { role: 'assistant', content: accumulatedContent, reasoning_content: accumulatedReasoning || undefined },
         finish_reason: 'stop',
       },
     ],
