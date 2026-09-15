@@ -156,6 +156,21 @@ function createParser(
       state.currentPath = String(parsed.p)
       state.currentOp = String(parsed.o)
       state.isAppending = state.currentPath === 'response/fragments/-1/content' && state.currentOp === 'APPEND'
+      
+      // Handle new fragment being appended to response/fragments array
+      // This happens when transitioning from THINK to RESPONSE, or adding a new fragment
+      if (state.currentPath === 'response/fragments' && state.currentOp === 'APPEND') {
+        if (Array.isArray(parsed.v) && parsed.v.length > 0) {
+          const newFragment = parsed.v[0] as { type?: string; content?: string }
+          // We are now appending to this new fragment
+          state.isAppending = true
+          // Emit the initial content if present
+          if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
+            emitContent(newFragment.content)
+          }
+        }
+      }
+      
       if (state.isAppending && typeof parsed.v === 'string') {
         emitContent(parsed.v)
       }
@@ -182,6 +197,15 @@ function createParser(
             emitFinal()
           }
         }
+      }
+      return
+    }
+
+    // 3.5. Handle lines with p but no o (continuation of previous APPEND)
+    // Example: {"p":"response/fragments/-1/content","v":" **"}
+    if (parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
+      if (parsed.p === 'response/fragments/-1/content' && state.isAppending) {
+        emitContent(parsed.v)
       }
       return
     }
@@ -314,6 +338,21 @@ export async function translateDeepSeekStreamToJSON(
           currentPath = String(parsed.p)
           currentOp = String(parsed.o)
           isAppending = currentPath === 'response/fragments/-1/content' && currentOp === 'APPEND'
+          
+          // Handle new fragment being appended to response/fragments array
+          // This happens when transitioning from THINK to RESPONSE, or adding a new fragment
+          if (currentPath === 'response/fragments' && currentOp === 'APPEND') {
+            if (Array.isArray(parsed.v) && parsed.v.length > 0) {
+              const newFragment = parsed.v[0] as { type?: string; content?: string }
+              // We are now appending to this new fragment
+              isAppending = true
+              // Emit the initial content if present
+              if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
+                accumulatedContent += newFragment.content
+              }
+            }
+          }
+          
           if (isAppending && typeof parsed.v === 'string') {
             accumulatedContent += parsed.v
           }
@@ -325,6 +364,15 @@ export async function translateDeepSeekStreamToJSON(
                 accumulatedTokens = it.v
               }
             }
+          }
+          continue
+        }
+
+        // 3.5. Handle lines with p but no o (continuation of previous APPEND)
+        // Example: {"p":"response/fragments/-1/content","v":" **"}
+        if (parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
+          if (parsed.p === 'response/fragments/-1/content' && isAppending) {
+            accumulatedContent += parsed.v
           }
           continue
         }
@@ -355,6 +403,17 @@ export async function translateDeepSeekStreamToJSON(
         const path = String(parsed.p)
         const op = String(parsed.o)
         const appending = path === 'response/fragments/-1/content' && op === 'APPEND'
+        
+        // Handle new fragment being appended to response/fragments array
+        if (path === 'response/fragments' && op === 'APPEND') {
+          if (Array.isArray(parsed.v) && parsed.v.length > 0) {
+            const newFragment = parsed.v[0] as { type?: string; content?: string }
+            if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
+              accumulatedContent += newFragment.content
+            }
+          }
+        }
+        
         if (appending && typeof parsed.v === 'string') {
           accumulatedContent += parsed.v
         }
@@ -365,6 +424,10 @@ export async function translateDeepSeekStreamToJSON(
               accumulatedTokens = it.v
             }
           }
+        }
+      } else if (parsed && parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
+        if (parsed.p === 'response/fragments/-1/content' && isAppending) {
+          accumulatedContent += parsed.v
         }
       } else if (parsed && parsed.v !== undefined && isAppending && typeof parsed.v === 'string') {
         accumulatedContent += parsed.v
