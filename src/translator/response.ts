@@ -23,6 +23,17 @@ interface SSEParserState {
   pendingContent: string
   currentFragmentType: 'THINK' | 'RESPONSE' | null
   accumulatedReasoning: string
+  toolCallBuffer: string
+  isToolCallInProgress: boolean
+  parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+}
+
+function detectDSMLStart(text: string): boolean {
+  return text.includes('<｜｜DSML｜ calls>')
+}
+
+function detectDSMLEnd(text: string): boolean {
+  return text.includes('</｜｜DSML｜ calls>')
 }
 
 function createParser(
@@ -42,6 +53,9 @@ function createParser(
     pendingContent: '',
     currentFragmentType: 'RESPONSE',
     accumulatedReasoning: '',
+    toolCallBuffer: '',
+    isToolCallInProgress: false,
+    parsedToolCalls: [],
   }
 
   const emitFinal = () => {
@@ -74,6 +88,12 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
+    if (detectDSMLStart(text)) {
+      state.isToolCallInProgress = true
+      state.toolCallBuffer = text
+      return
+    }
+
     const isReasoning = state.currentFragmentType === 'THINK'
     if (state.responseMessageId === 'null') {
       state.pendingContent = (state.pendingContent || '') + text

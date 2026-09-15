@@ -43,3 +43,12 @@ export interface OpenAIChatCompletionStreamResponse {
   choices: OpenAIChatCompletionStreamChoice[]
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
 }
+
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
