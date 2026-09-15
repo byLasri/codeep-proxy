@@ -14,7 +14,7 @@ import { buildCompletionHeaders } from "./headers.js";
 import { HifLeimCache } from "./hif-leim.js";
 import type { ProtocolStateStore } from "./state-store.js";
 import { PROTOCOL_STATE_KEYS } from "./state-store.js";
-import type { ProtocolSessionStore } from "./session-store.js";
+import type { ProtocolSessionStore, ProxySessionState } from "./session-store.js";
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
 
@@ -189,127 +189,90 @@ export class DeepSeekWebClient {
    * 3. Send completion to external /completion endpoint with resolved parent_message_id
    * 4. On success, extract response_message_id and store as new parent_message_id
    */
-async completeWithAutoSession(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
-     const chat_session_id = input.chat_session_id;
-     let resolvedParentMessageId: number | null = null;
-     let resolvedChatSessionId: string;
+    async completeWithAutoSession(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
+    let resolvedParentMessageId: number | null = null;
+    let resolvedChatSessionId: string;
+    const xSessionId = input.xSessionId;
+    let existingState: ProxySessionState | null = null;
 
-     const xSessionId = input.xSessionId
-     let mappedChatSessionId: string | null = null
-     if (xSessionId) {
-         // D1 lookup failure propagates and fails the request. We do NOT fall back to
-         // creating a fresh upstream session, because that would silently fork a new
-         // conversation for a client that believes it is resuming an existing one.
-         const mapping = await this.sessionStore.getByXSessionId(xSessionId)
-         if (mapping) mappedChatSessionId = mapping.chatSessionId
-     }
+    if (xSessionId) {
+      existingState = await this.sessionStore.get(xSessionId);
+    }
 
-     if (mappedChatSessionId) {
-         // Reuse existing upstream session
-         const existingSession = await this.sessionStore.get(mappedChatSessionId)
-         if (!existingSession) {
-             throw new DeepSeekProtocolError(
-                 `Session not found: ${mappedChatSessionId}`,
-                 { kind: "session", status: 404 }
-             );
-         }
-         resolvedChatSessionId = mappedChatSessionId
-         // D1 stores first-turn null as 0 (INTEGER NOT NULL). Wire protocol uses null.
-         const storedParent = existingSession.parent_message_id ?? null;
-         resolvedParentMessageId = storedParent === 0 ? null : storedParent;
-     } else if (chat_session_id) {
-         // Caller provided a session ID - resolve parent_message_id from store
-         const existingSession = await this.sessionStore.get(chat_session_id);
-         if (!existingSession) {
-             throw new DeepSeekProtocolError(
-                 `Session not found: ${chat_session_id}`,
-                 { kind: "session", status: 404 }
-             );
-         }
-         resolvedChatSessionId = chat_session_id;
-         // D1 stores first-turn null as 0 (INTEGER NOT NULL). Wire protocol uses null.
-         const storedParent = existingSession.parent_message_id ?? null;
-         resolvedParentMessageId = storedParent === 0 ? null : storedParent;
-     } else {
-         // No session ID provided - create new DeepSeek session
-         const newSession = await this.createSession();
-         resolvedChatSessionId = newSession.id;
-         resolvedParentMessageId = null; // First turn always uses null
+    if (existingState) {
+      resolvedChatSessionId = existingState.chat_session_id;
+      resolvedParentMessageId = existingState.parent_message_id;
+    } else if (input.chat_session_id) {
+      resolvedChatSessionId = input.chat_session_id;
+      resolvedParentMessageId = null;
+    } else {
+      const newSession = await this.createSession();
+      resolvedChatSessionId = newSession.id;
+      resolvedParentMessageId = null;
+    }
 
-         // Store initial session state
-         await this.sessionStore.set(resolvedChatSessionId, {
-             chat_session_id: resolvedChatSessionId,
-             parent_message_id: null,
-             created_at: Date.now(),
-             updated_at: Date.now(),
-}) 
-         // NEW: if xSessionId was provided, persist the mapping now
-         if (xSessionId) {
-             // Mapping-write failure propagates. The upstream session was already created
-             // and the response has not been streamed yet at this point, so failing here is
-             // safe and surfaces the persistence problem to the caller.
-             await this.sessionStore.setXSessionMapping(xSessionId, resolvedChatSessionId)
-         }
-     }
+    // Build completion input with protocol-resolved session state
+    const completionInput: DeepSeekCompletionInput = {
+      ...input,
+      chat_session_id: resolvedChatSessionId,
+    };
 
-     // Build completion input with protocol-resolved session state
-     const completionInput: DeepSeekCompletionInput = {
-       ...input,
-       chat_session_id: resolvedChatSessionId,
-     };
+    // Create a session state object for the completion request
+    const sessionState: DeepSeekConversationState = {
+      chat_session_id: resolvedChatSessionId,
+      parent_message_id: resolvedParentMessageId,
+    };
 
-     // Create a session state object for the completion request
-     const sessionState: DeepSeekConversationState = {
-       chat_session_id: resolvedChatSessionId,
-       parent_message_id: resolvedParentMessageId,
-     };
+    // Send completion and capture response for session update
+    const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
+      sessionState,
+      completionInput,
+      xSessionId,
+      existingState,
+      logger
+    );
 
-     // Send completion and capture response for session update
-     const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
-       sessionState,
-       completionInput,
-       logger
-     );
-
-     return { response, sessionUpdatePromise };
-   }
+    return { response, sessionUpdatePromise };
+  }
 
   /**
    * Sends completion request and updates session in KV on success.
    * Parses the SSE stream to extract the new response_message_id.
    */
-private async completeWithSessionUpdate(
-     session: DeepSeekConversationState,
-     input: DeepSeekCompletionInput,
-     logger?: RequestLogger
-   ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
-     const { prompt, ...options } = input;
+    private async completeWithSessionUpdate(
+    session: DeepSeekConversationState,
+    input: DeepSeekCompletionInput,
+    xSessionId: string | undefined,
+    existingState: ProxySessionState | null,
+    logger?: RequestLogger
+  ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
+    const { prompt, ...options } = input;
 
-     // Build the DeepSeek completion request
-     // Only pass required options - fixed values (action, preempt, ref_file_ids) enforced in buildCompletionRequest
-     const request = buildCompletionRequest(session, prompt, {
-       model_type: options.model_type,
-       thinking_enabled: options.thinking_enabled ?? false,
-       search_enabled: options.search_enabled ?? false,
-     });
+    // Build the DeepSeek completion request
+    // Only pass required options - fixed values (action, preempt, ref_file_ids) enforced in buildCompletionRequest
+    const request = buildCompletionRequest(session, prompt, {
+      model_type: options.model_type,
+      thinking_enabled: options.thinking_enabled ?? false,
+      search_enabled: options.search_enabled ?? false,
+    });
 
-     // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
-     const hifLeim = await this.hifLeimCache.getValue();
+    // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
+    const hifLeim = await this.hifLeimCache.getValue();
 
-     // Create PoW challenge
-     const credentials = await this.getCredentials();
-     const challenge = await createPowChallenge(credentials, this.origin);
+    // Create PoW challenge
+    const credentials = await this.getCredentials();
+    const challenge = await createPowChallenge(credentials, this.origin);
 
-     // Solve PoW
-     const solution = solvePow(challenge);
+    // Solve PoW
+    const solution = solvePow(challenge);
 
-     // Encode PoW response
-     const powHeader = encodePowResponse(solution);
+    // Encode PoW response
+    const powHeader = encodePowResponse(solution);
 
-     // Build completion headers with HIF-LEIM
-     const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
+    // Build completion headers with HIF-LEIM
+    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
 
-        // Log upstream request
+    // Log upstream request
     if (logger) {
       const initForLog = {
         method: "POST",
@@ -340,22 +303,8 @@ private async completeWithSessionUpdate(
       );
     }
 
-    let instrumentedBody: ReadableStream<Uint8Array>;
-    let persistPromise: Promise<void>;
-    
-    if (logger) {
-      // Tee the stream: one branch for logging, one for session persistence + client
-      const teeStream = teeAndLogStream(response.body, logger, "upstream_response");
-      const { stream: persistedStream, sessionUpdatePromise: sessionPersist } = 
-        this.attachSessionPersistence(teeStream, session.chat_session_id);
-      instrumentedBody = persistedStream;
-      persistPromise = sessionPersist;
-    } else {
-      const { stream: persistedStream, sessionUpdatePromise: sessionPersist } = 
-        this.attachSessionPersistence(response.body, session.chat_session_id);
-      instrumentedBody = persistedStream;
-      persistPromise = sessionPersist;
-    }
+    const { stream: instrumentedBody, sessionUpdatePromise: persistPromise } =
+      this.attachSessionPersistence(response.body, session.chat_session_id, xSessionId, existingState, logger);
 
     const outboundHeaders = new Headers(response.headers);
     outboundHeaders.set("X-Chat-Session-Id", session.chat_session_id);
@@ -375,9 +324,12 @@ private async completeWithSessionUpdate(
    * `ready` event still yields response_message_id. Upserts that id as
    * parent_message_id for the next turn as soon as it is seen.
    */
-  private attachSessionPersistence(
+      private attachSessionPersistence(
     body: ReadableStream<Uint8Array>,
-    chatSessionId: string
+    chatSessionId: string,
+    xSessionId: string | undefined,
+    existingState: ProxySessionState | null,
+    logger?: RequestLogger
   ): { stream: ReadableStream<Uint8Array>; sessionUpdatePromise: Promise<void> } {
     const decoder = new TextDecoder();
     let sseBuffer = "";
@@ -385,19 +337,22 @@ private async completeWithSessionUpdate(
 
     const persistParent = async (responseMessageId: number): Promise<void> => {
       try {
-        const existingSession = await this.sessionStore.get(chatSessionId);
-        await this.sessionStore.set(chatSessionId, {
-          chat_session_id: chatSessionId,
-          parent_message_id: responseMessageId,
-          created_at: existingSession?.created_at ?? Date.now(),
-          updated_at: Date.now(),
-        });
-        console.log(
-          "[DeepSeekWebClient] Stored session",
-          chatSessionId,
-          "parent_message_id:",
-          responseMessageId
-        );
+        if (xSessionId) {
+          await this.sessionStore.set(xSessionId, {
+            x_session_id: xSessionId,
+            chat_session_id: chatSessionId,
+            parent_message_id: responseMessageId,
+            turn_count: (existingState?.turn_count || 0) + 1,
+            created_at: existingState?.created_at || Date.now(),
+            updated_at: Date.now(),
+          });
+          console.log(
+            "[DeepSeekWebClient] Stored session",
+            xSessionId,
+            "parent_message_id:",
+            responseMessageId
+          );
+        }
       } catch (error) {
         // Best-effort: parent_message_id write happens after the response has begun
         // streaming, so we log and continue rather than corrupting the client stream.
@@ -451,7 +406,13 @@ private async completeWithSessionUpdate(
       })
     );
 
-    return { stream, sessionUpdatePromise };
+    // Wrap with teeAndLogStream if logger is provided
+    let finalStream = stream;
+    if (logger) {
+      finalStream = teeAndLogStream(stream, logger, "upstream_response");
+    }
+
+    return { stream: finalStream, sessionUpdatePromise };
   }
 
   async complete(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
