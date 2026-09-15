@@ -127,6 +127,21 @@ function createParser(
       return
     }
 
+    // Handle initial fragment content from update_session
+    // DeepSeek may send this in a standalone data: line after a blank line,
+    // so state.currentEvent may be null. We detect it by checking for v.response.fragments.
+    if (parsed.v && typeof parsed.v === 'object' && !Array.isArray(parsed.v)) {
+      const v = parsed.v as { response?: { fragments?: Array<{ type?: string; content?: string }> } };
+      const fragments = v?.response?.fragments;
+      if (Array.isArray(fragments) && fragments.length > 0) {
+        const frag = fragments[0];
+        if (typeof frag?.content === 'string' && frag.content !== '') {
+          emitContent(frag.content)
+        }
+      }
+      return;
+    }
+
     // 1. ready event: capture response_message_id and flush pending content
     if (state.currentEvent === 'ready') {
       if (typeof parsed.response_message_id === 'number') {
@@ -313,6 +328,21 @@ export async function translateDeepSeekStreamToJSON(
           parsed = JSON.parse(payload)
         } catch {
           continue
+        }
+
+        // Handle initial fragment content from update_session
+        // DeepSeek may send this in a standalone data: line after a blank line,
+        // so currentEvent may be null. We detect it by checking for v.response.fragments.
+        if (parsed.v && typeof parsed.v === 'object' && !Array.isArray(parsed.v)) {
+          const v = parsed.v as { response?: { fragments?: Array<{ type?: string; content?: string }> } };
+          const fragments = v?.response?.fragments;
+          if (Array.isArray(fragments) && fragments.length > 0) {
+            const frag = fragments[0];
+            if (typeof frag?.content === 'string' && frag.content !== '') {
+              accumulatedContent += frag.content
+            }
+          }
+          continue;
         }
 
         // 1. ready event: capture response_message_id
