@@ -177,13 +177,13 @@ export default {
           })
         }
 
-        // GET /v1/debug/d1-sessions - Debug D1 session storage
+        // GET /v1/debug/d1-sessions - Debug D1 proxy_sessions storage
         if (pathname === '/v1/debug/d1-sessions' && request.method === 'GET') {
-          const sessions = await env.DB.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all()
+          const proxySessions = await env.DB.prepare('SELECT * FROM proxy_sessions ORDER BY updated_at DESC').all()
           return json({
             ok: true,
-            count: sessions.results?.length || 0,
-            sessions: sessions.results || []
+            count: proxySessions.results?.length || 0,
+            sessions: proxySessions.results || []
           })
         }
 
@@ -205,7 +205,7 @@ export default {
             let sendSystemPrompt = true
             if (xSessionId) {
               const row = await env.DB.prepare(
-                'SELECT turn_count FROM x_session_map WHERE x_session_id = ?'
+                'SELECT turn_count FROM proxy_sessions WHERE x_session_id = ?'
               ).bind(xSessionId).first()
               if (row && typeof row.turn_count === 'number') {
                 // Send system prompt on turn 1 and turn 2. Strip from turn 3 onward.
@@ -219,13 +219,6 @@ export default {
 
             // MUST run before returning, otherwise attachSessionPersistence may be cancelled
             ctx.waitUntil(sessionUpdatePromise)
-
-            // Increment turn_count after the request
-            if (xSessionId) {
-              await env.DB.prepare(
-                'UPDATE x_session_map SET turn_count = turn_count + 1, updated_at = ? WHERE x_session_id = ?'
-              ).bind(Date.now(), xSessionId).run()
-            }
 
             if (!response.ok) {
               return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
