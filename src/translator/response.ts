@@ -26,6 +26,7 @@ interface SSEParserState {
   toolCallBuffer: string
   isToolCallInProgress: boolean
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  pendingLookahead: string
 }
 
 function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> {
@@ -78,6 +79,7 @@ function createParser(
     toolCallBuffer: '',
     isToolCallInProgress: false,
     parsedToolCalls: [],
+    pendingLookahead: '',
   }
 
   const emitFinal = () => {
@@ -137,83 +139,122 @@ function createParser(
     controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
   }
 
-  // Helper to emit raw content without DSML checks
-  const emitRawContent = (text: string) => {
-    if (!state.hasEmittedRole) {
-      state.hasEmittedRole = true
-      const roleChunk: OpenAIChatCompletionStreamResponse = {
-        id: `chatcmpl-${state.responseMessageId}`,
-        object: 'chat.completion.chunk',
-        created: info.created,
-        model: info.model,
-        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-      }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
-    }
-    
-    const chunk: OpenAIChatCompletionStreamResponse = {
-      id: `chatcmpl-${state.responseMessageId}`,
-      object: 'chat.completion.chunk',
-      created: info.created,
-      model: info.model,
-      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-    }
-    controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
-  }
-
   const emitContent = (text: string) => {
-    // Check if accumulating this text creates a DSML start pattern
-    const accumulated = state.accumulatedContent + text
+    const DSML_START = '<｜｜DSML｜ calls>'
     
-    if (accumulated.includes('<｜｜DSML｜ calls>')) {
-      // DSML pattern detected! Find where it starts in accumulated content
-      const dsmlStartIdx = accumulated.indexOf('<｜｜DSML｜ calls>')
-      
-      // Emit everything BEFORE the DSML pattern as normal content
-      if (dsmlStartIdx > 0) {
-        const safePortion = accumulated.substring(0, dsmlStartIdx)
-        const alreadyEmitted = state.accumulatedContent
-        const newSafeContent = safePortion.substring(alreadyEmitted.length)
-        if (newSafeContent.length > 0) {
-          // Emit the safe portion before DSML
-          emitRawContent(newSafeContent)
-        }
-      }
-      
-      // Start buffering from the DSML pattern onward
-      state.isToolCallInProgress = true
-      state.toolCallBuffer = accumulated.substring(dsmlStartIdx)
-      state.accumulatedContent = accumulated.substring(0, dsmlStartIdx)
-      return
-    }
-    
+    // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      
       if (state.toolCallBuffer.includes('</｜｜DSML｜ calls>')) {
         const toolCalls = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = toolCalls
-        
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
       }
+      return
+    }
+
+    // Combine pending lookahead with new text
+    const combined = state.pendingLookahead + text
+    state.pendingLookahead = ''
+
+    // Build full prospective content
+    const fullContent = state.accumulatedContent + combined
+
+    // Check for full DSML start pattern
+    if (fullContent.includes(DSML_START)) {
+      const dsmlIdx = fullContent.indexOf(DSML_START)
       
+      // Emit everything before DSML that hasn't been emitted yet
+      const beforeDSML = fullContent.substring(0, dsmlIdx)
+      const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
+      if (newSafeContent.length > 0 && state.responseMessageId !== 'null') {
+        const isReasoning = state.currentFragmentType === 'THINK'
+        if (!state.hasEmittedRole) {
+          state.hasEmittedRole = true
+          const roleChunk: OpenAIChatCompletionStreamResponse = {
+            id: `chatcmpl-${state.responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: info.created,
+            model: info.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+          }
+          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+        }
+        const safeChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
+        }
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+      }
+      
+      // Start tool call buffering
+      state.isToolCallInProgress = true
+      state.toolCallBuffer = fullContent.substring(dsmlIdx)
+      state.accumulatedContent = beforeDSML
       return
     }
-    
-    // Normal content emission (existing logic)
+
+    // Check for partial DSML prefix at the end - HOLD BACK these characters
+    let holdbackLength = 0
+    for (let i = 1; i < DSML_START.length; i++) {
+      if (fullContent.endsWith(DSML_START.substring(0, i))) {
+        holdbackLength = i
+      }
+    }
+
+    if (holdbackLength > 0) {
+      // Save partial match in lookahead buffer
+      state.pendingLookahead = fullContent.substring(fullContent.length - holdbackLength)
+      const safeContent = fullContent.substring(0, fullContent.length - holdbackLength)
+      
+      // Emit safe content that hasn't been emitted yet
+      const newContent = safeContent.substring(state.accumulatedContent.length)
+      if (newContent.length > 0 && state.responseMessageId !== 'null') {
+        const isReasoning = state.currentFragmentType === 'THINK'
+        if (!state.hasEmittedRole) {
+          state.hasEmittedRole = true
+          const roleChunk: OpenAIChatCompletionStreamResponse = {
+            id: `chatcmpl-${state.responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: info.created,
+            model: info.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+          }
+          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+        }
+        const chunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
+        }
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+      }
+      
+      state.accumulatedContent = safeContent
+      return
+    }
+
+    // No DSML pattern at all - emit everything normally
+    const newContent = fullContent.substring(state.accumulatedContent.length)
     const isReasoning = state.currentFragmentType === 'THINK'
-    if (state.responseMessageId === 'null') {
-      state.pendingContent = (state.pendingContent || '') + text
-      return
-    }
     
     if (isReasoning) {
-      state.accumulatedReasoning += text
+      state.accumulatedReasoning += newContent
     } else {
-      state.accumulatedContent += text
+      state.accumulatedContent = fullContent
     }
-    
+
+    if (state.responseMessageId === 'null') {
+      state.pendingContent = (state.pendingContent || '') + newContent
+      return
+    }
+
     if (!state.hasEmittedRole) {
       state.hasEmittedRole = true
       const roleChunk: OpenAIChatCompletionStreamResponse = {
@@ -225,13 +266,13 @@ function createParser(
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
     }
-    
+
     const chunk: OpenAIChatCompletionStreamResponse = {
       id: `chatcmpl-${state.responseMessageId}`,
       object: 'chat.completion.chunk',
       created: info.created,
       model: info.model,
-      choices: [{ index: 0, delta: isReasoning ? { reasoning_content: text } : { content: text }, finish_reason: null }],
+      choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
     }
     controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
   }
@@ -399,6 +440,10 @@ export function translateDeepSeekStreamToSSE(
         const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
         parser.processLine(trimmed)
         buffer = ''
+      }
+      // Flush any pending lookahead before finalizing
+      if (parser.state.pendingLookahead) {
+        parser.emitContent('')
       }
       parser.emitFinal()
     },
