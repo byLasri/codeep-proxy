@@ -36,6 +36,36 @@ function detectDSMLEnd(text: string): boolean {
   return text.includes('</｜｜DSML｜ calls>')
 }
 
+function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> {
+  const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
+  
+  const invokeRegex = /<｜｜DSML｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜\s+invoke>/g
+  const paramRegex = /<｜｜DSML｜\s+parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜\s+parameter>/g
+  
+  let invokeMatch
+  while ((invokeMatch = invokeRegex.exec(xml)) !== null) {
+    const toolName = invokeMatch[1]
+    const invokeContent = invokeMatch[2]
+    
+    const params: Record<string, string> = {}
+    let paramMatch
+    while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
+      params[paramMatch[1]] = paramMatch[2]
+    }
+    
+    toolCalls.push({
+      id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: 'function',
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(params)
+      }
+    })
+  }
+  
+  return toolCalls
+}
+
 function createParser(
   controller: TransformStreamDefaultController<Uint8Array>,
   info: { model: string; id: string; created: number }
@@ -91,6 +121,20 @@ function createParser(
     if (detectDSMLStart(text)) {
       state.isToolCallInProgress = true
       state.toolCallBuffer = text
+      return
+    }
+
+    if (state.isToolCallInProgress) {
+      state.toolCallBuffer += text
+      
+      if (detectDSMLEnd(state.toolCallBuffer)) {
+        const toolCalls = parseDSMLToolCalls(state.toolCallBuffer)
+        state.parsedToolCalls = toolCalls
+        
+        state.isToolCallInProgress = false
+        state.toolCallBuffer = ''
+      }
+      
       return
     }
 
