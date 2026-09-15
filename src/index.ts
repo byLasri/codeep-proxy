@@ -6,25 +6,20 @@ import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeek
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
-// Simple rate limiter - 5 second delay for EVERY request (including first)
-const RATE_LIMIT_MS = 5000
-let lastRequestTime = 0
+// Global FIFO queue for strict 5-second delay between requests
+let globalQueue: Promise<void> = Promise.resolve();
 
-async function rateLimit(): Promise<void> {
-  const now = Date.now()
-  const elapsed = now - lastRequestTime
-  if (lastRequestTime === 0) {
-    console.log(`[RateLimit] First request - waiting ${RATE_LIMIT_MS}ms`)
-    await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_MS))
-  } else if (elapsed < RATE_LIMIT_MS) {
-    const waitTime = RATE_LIMIT_MS - elapsed
-    console.log(`[RateLimit] Waiting ${waitTime}ms (elapsed: ${elapsed}ms)`)
-    await new Promise(resolve => setTimeout(resolve, waitTime))
-  } else {
-    console.log(`[RateLimit] Proceed immediately (elapsed: ${elapsed}ms)`)
-  }
-  lastRequestTime = Date.now()
-  console.log(`[RateLimit] Request processed at ${new Date().toISOString()}`)
+async function enqueueGlobalRequest(): Promise<void> {
+  const previousQueue = globalQueue;
+  let resolveMyTurn: () => void;
+  const myTurn = new Promise<void>(resolve => { resolveMyTurn = resolve; });
+
+  globalQueue = previousQueue.then(async () => {
+    await new Promise(r => setTimeout(r, 5000));
+    resolveMyTurn!();
+  });
+
+  await myTurn;
 }
 
 interface Env {
@@ -189,7 +184,7 @@ export default {
 
         // POST /v1/chat/completions - OpenAI-compatible endpoint
         if (pathname === '/v1/chat/completions' && request.method === 'POST') {
-          await rateLimit()
+          await enqueueGlobalRequest()
           try {
             const body = await request.json().catch(() => null)
             if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -255,7 +250,7 @@ export default {
         // POST /deepseekprotocol - Raw DeepSeek protocol endpoint
         // Takes DeepSeekCompletionInput (chat_session_id optional - auto-created if missing), returns raw DeepSeek SSE stream
         if (pathname === '/deepseekprotocol' && request.method === 'POST') {
-          await rateLimit()
+          await enqueueGlobalRequest()
           try {
             const body = await request.json()
 
