@@ -28,14 +28,6 @@ interface SSEParserState {
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
 }
 
-function detectDSMLStart(text: string): boolean {
-  return text.includes('<｜｜DSML｜ calls>')
-}
-
-function detectDSMLEnd(text: string): boolean {
-  return text.includes('</｜｜DSML｜ calls>')
-}
-
 function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
   
@@ -145,17 +137,60 @@ function createParser(
     controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
   }
 
+  // Helper to emit raw content without DSML checks
+  const emitRawContent = (text: string) => {
+    if (!state.hasEmittedRole) {
+      state.hasEmittedRole = true
+      const roleChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+    }
+    
+    const chunk: OpenAIChatCompletionStreamResponse = {
+      id: `chatcmpl-${state.responseMessageId}`,
+      object: 'chat.completion.chunk',
+      created: info.created,
+      model: info.model,
+      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+    }
+    controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+  }
+
   const emitContent = (text: string) => {
-    if (detectDSMLStart(text)) {
+    // Check if accumulating this text creates a DSML start pattern
+    const accumulated = state.accumulatedContent + text
+    
+    if (accumulated.includes('<｜｜DSML｜ calls>')) {
+      // DSML pattern detected! Find where it starts in accumulated content
+      const dsmlStartIdx = accumulated.indexOf('<｜｜DSML｜ calls>')
+      
+      // Emit everything BEFORE the DSML pattern as normal content
+      if (dsmlStartIdx > 0) {
+        const safePortion = accumulated.substring(0, dsmlStartIdx)
+        const alreadyEmitted = state.accumulatedContent
+        const newSafeContent = safePortion.substring(alreadyEmitted.length)
+        if (newSafeContent.length > 0) {
+          // Emit the safe portion before DSML
+          emitRawContent(newSafeContent)
+        }
+      }
+      
+      // Start buffering from the DSML pattern onward
       state.isToolCallInProgress = true
-      state.toolCallBuffer = text
+      state.toolCallBuffer = accumulated.substring(dsmlStartIdx)
+      state.accumulatedContent = accumulated.substring(0, dsmlStartIdx)
       return
     }
-
+    
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
       
-      if (detectDSMLEnd(state.toolCallBuffer)) {
+      if (state.toolCallBuffer.includes('</｜｜DSML｜ calls>')) {
         const toolCalls = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = toolCalls
         
@@ -165,7 +200,8 @@ function createParser(
       
       return
     }
-
+    
+    // Normal content emission (existing logic)
     const isReasoning = state.currentFragmentType === 'THINK'
     if (state.responseMessageId === 'null') {
       state.pendingContent = (state.pendingContent || '') + text
