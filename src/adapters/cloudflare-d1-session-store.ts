@@ -2,66 +2,14 @@
 // This adapter lives in the Worker layer, not in the DeepSeek module
 
 import type { D1Database } from '@cloudflare/workers-types';
-import type { ProtocolSessionStore } from '../deepseek_api/session-store.js';
-import type { DeepSeekConversationState } from '../deepseek_api/types.js';
+import type { ProtocolSessionStore, ProxySessionState } from '../deepseek_api/session-store.js';
 
 export class CloudflareD1SessionStore implements ProtocolSessionStore {
   constructor(private readonly db: D1Database) {}
 
-  async get(chatSessionId: string): Promise<DeepSeekConversationState | null> {
+  async get(xSessionId: string): Promise<ProxySessionState | null> {
     const result = await this.db
-      .prepare('SELECT * FROM sessions WHERE chat_session_id = ?')
-      .bind(chatSessionId)
-      .first();
-
-    if (!result) {
-      return null;
-    }
-
-    const row = result as {
-      chat_session_id: string;
-      parent_message_id: number;
-      created_at: number;
-      updated_at: number;
-    };
-
-    return {
-      chat_session_id: row.chat_session_id,
-      // 0 is the D1 sentinel for first-turn null (column is INTEGER NOT NULL)
-      parent_message_id: row.parent_message_id === 0 ? null : row.parent_message_id,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    };
-  }
-
-  async set(chatSessionId: string, state: DeepSeekConversationState): Promise<void> {
-    const now = Date.now();
-    const parentMessageId = state.parent_message_id ?? 0;
-    const createdAt = state.created_at ?? now;
-    const updatedAt = now;
-
-    await this.db
-      .prepare(`
-        INSERT INTO sessions (chat_session_id, parent_message_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(chat_session_id) DO UPDATE SET
-          parent_message_id = excluded.parent_message_id,
-          updated_at = excluded.updated_at
-      `)
-      .bind(chatSessionId, parentMessageId, createdAt, updatedAt)
-      .run();
-  }
-
-  async delete(chatSessionId: string): Promise<void> {
-    await this.db
-      .prepare('DELETE FROM sessions WHERE chat_session_id = ?')
-      .bind(chatSessionId)
-      .run();
-  }
-
-  async getByXSessionId(xSessionId: string): Promise<{ chatSessionId: string } | null> {
-    const result = await this.db
-      .prepare('SELECT chat_session_id FROM x_session_map WHERE x_session_id = ?')
+      .prepare('SELECT * FROM proxy_sessions WHERE x_session_id = ?')
       .bind(xSessionId)
       .first();
 
@@ -69,24 +17,50 @@ export class CloudflareD1SessionStore implements ProtocolSessionStore {
       return null;
     }
 
-    const row = result as { chat_session_id: string };
-    return { chatSessionId: row.chat_session_id };
+    const row = result as {
+      x_session_id: string;
+      chat_session_id: string;
+      parent_message_id: number;
+      turn_count: number;
+      created_at: number;
+      updated_at: number;
+    };
+
+    return {
+      x_session_id: row.x_session_id,
+      chat_session_id: row.chat_session_id,
+      // 0 is the D1 sentinel for first-turn null (column is INTEGER NOT NULL)
+      parent_message_id: row.parent_message_id === 0 ? null : row.parent_message_id,
+      turn_count: row.turn_count,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
   }
 
-  async setXSessionMapping(xSessionId: string, chatSessionId: string): Promise<void> {
-    // Atomic upsert. On conflict we update chat_session_id and updated_at but
-    // deliberately omit created_at from the SET clause — SQLite leaves an unset
-    // column unchanged, so the original created_at is preserved.
+  async set(xSessionId: string, state: ProxySessionState): Promise<void> {
     const now = Date.now();
+    const parentMessageId = state.parent_message_id ?? 0;
+    const createdAt = state.created_at ?? now;
+    const updatedAt = now;
+
     await this.db
       .prepare(`
-        INSERT INTO x_session_map (x_session_id, chat_session_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO proxy_sessions (x_session_id, chat_session_id, parent_message_id, turn_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(x_session_id) DO UPDATE SET
           chat_session_id = excluded.chat_session_id,
+          parent_message_id = excluded.parent_message_id,
+          turn_count = excluded.turn_count,
           updated_at = excluded.updated_at
       `)
-      .bind(xSessionId, chatSessionId, now, now)
+      .bind(xSessionId, state.chat_session_id, parentMessageId, state.turn_count, createdAt, updatedAt)
+      .run();
+  }
+
+  async delete(xSessionId: string): Promise<void> {
+    await this.db
+      .prepare('DELETE FROM proxy_sessions WHERE x_session_id = ?')
+      .bind(xSessionId)
       .run();
   }
 

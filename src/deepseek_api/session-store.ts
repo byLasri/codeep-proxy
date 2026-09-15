@@ -2,36 +2,30 @@
 // This interface allows the DeepSeek module to remain platform-independent
 // while supporting various storage backends (D1, KV, in-memory, etc.)
 
-import type { DeepSeekConversationState } from "./types.js";
+export interface ProxySessionState {
+  x_session_id: string;
+  chat_session_id: string;
+  parent_message_id: number | null;
+  turn_count: number;
+  created_at: number;
+  updated_at: number;
+}
 
 export interface ProtocolSessionStore {
   /**
-   * Retrieve conversation state by chat session ID.
+   * Retrieve session state by X-Session-Id.
    * Returns null if the session does not exist.
    */
-  get(chatSessionId: string): Promise<DeepSeekConversationState | null>;
+  get(xSessionId: string): Promise<ProxySessionState | null>;
 
   /**
-   * Store or update conversation state.
+   * Store or update session state.
    */
-  set(chatSessionId: string, state: DeepSeekConversationState): Promise<void>;
+  set(xSessionId: string, state: ProxySessionState): Promise<void>;
 
   /**
-   * Delete a session by chat session ID.
+   * Delete a session by X-Session-Id.
    * Optional operation - some backends may not need explicit deletion.
    */
-  delete?(chatSessionId: string): Promise<void>;
-
-  /**
-   * Retrieve chat session ID by X-Session-Id.
-   * Returns null if the mapping does not exist.
-   */
-  getByXSessionId(xSessionId: string): Promise<{ chatSessionId: string } | null>;
-
-  /**
-   * Store or update the mapping from X-Session-Id to chat session ID.
-   */
-  setXSessionMapping(xSessionId: string, chatSessionId: string): Promise<void>;
-
-  
+  delete?(xSessionId: string): Promise<void>;
 }

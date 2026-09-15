@@ -47,34 +47,14 @@ const json = (value: unknown, status = 200): Response =>
 
 async function initSessionsTable(db: D1Database): Promise<void> {
   await db.prepare(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      chat_session_id TEXT PRIMARY KEY,
-      parent_message_id INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `).run()
-
-  await db.prepare(`
-    CREATE TABLE IF NOT EXISTS x_session_map (
+    CREATE TABLE IF NOT EXISTS proxy_sessions (
       x_session_id TEXT PRIMARY KEY,
       chat_session_id TEXT NOT NULL,
+      parent_message_id INTEGER NOT NULL DEFAULT 0,
       turn_count INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
-  `).run()
-
-  // Migration for existing tables: add turn_count column if missing
-  try {
-    await db.prepare('ALTER TABLE x_session_map ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0').run()
-  } catch {
-    // column already exists
-  }
-
-  await db.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_x_session_map_chat
-      ON x_session_map(chat_session_id)
   `).run()
 }
 
