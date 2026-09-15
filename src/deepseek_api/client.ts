@@ -365,11 +365,17 @@ export class DeepSeekWebClient {
     const persistParent = async (responseMessageId: number): Promise<void> => {
       try {
         if (xSessionId) {
+          const newTurnCount = (existingState?.turn_count || 0) + 1;
+          // For the first 2 turns (turn_count becomes 1 or 2), DO NOT update parent_message_id.
+          // This forces the next request to send the same parent_message_id, triggering an upstream edit.
+          // Starting from turn 3, update parent_message_id normally.
+          const newParentId = (newTurnCount < 2) ? (existingState?.parent_message_id ?? null) : responseMessageId;
+          
           await this.sessionStore.set(xSessionId, {
             x_session_id: xSessionId,
             chat_session_id: chatSessionId,
-            parent_message_id: responseMessageId,
-            turn_count: (existingState?.turn_count || 0) + 1,
+            parent_message_id: newParentId,
+            turn_count: newTurnCount,
             created_at: existingState?.created_at || Date.now(),
             updated_at: Date.now(),
           });
@@ -377,7 +383,9 @@ export class DeepSeekWebClient {
             "[DeepSeekWebClient] Stored session",
             xSessionId,
             "parent_message_id:",
-            responseMessageId
+            newParentId,
+            "turn_count:",
+            newTurnCount
           );
         }
       } catch (error) {
