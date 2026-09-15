@@ -16,7 +16,7 @@ export interface OpenAIChatCompletionRequest {
 
 export interface OpenAIChatCompletionChoice {
   index: number
-  message: { role: 'assistant'; content: string }
+  message: { role: 'assistant'; content: string; reasoning_content?: string }
   finish_reason: string
 }
 
@@ -31,7 +31,7 @@ export interface OpenAIChatCompletionResponse {
 
 export interface OpenAIChatCompletionStreamChoice {
   index: number
-  delta: { role?: 'assistant'; content?: string }
+  delta: { role?: 'assistant'; content?: string; reasoning_content?: string; tool_calls?: Array<{ index: number; id: string; type: 'function'; function: { name: string; arguments: string } }> }
   finish_reason: string | null
 }
 
@@ -42,4 +42,13 @@ export interface OpenAIChatCompletionStreamResponse {
   model: string
   choices: OpenAIChatCompletionStreamChoice[]
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+}
+
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
 }

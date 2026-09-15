@@ -1,4 +1,4 @@
-import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse } from './types.js'
+import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse, ToolCall } from './types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
 
@@ -21,6 +21,42 @@ interface SSEParserState {
   isAppending: boolean
   accumulatedTokens: number
   pendingContent: string
+  currentFragmentType: 'THINK' | 'RESPONSE' | null
+  accumulatedReasoning: string
+  toolCallBuffer: string
+  isToolCallInProgress: boolean
+  parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  pendingLookahead: string
+}
+
+function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> {
+  const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
+  
+  const invokeRegex = /<｜｜DSML｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜\s+invoke>/g
+  const paramRegex = /<｜｜DSML｜\s+parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜\s+parameter>/g
+  
+  let invokeMatch
+  while ((invokeMatch = invokeRegex.exec(xml)) !== null) {
+    const toolName = invokeMatch[1]
+    const invokeContent = invokeMatch[2]
+    
+    const params: Record<string, string> = {}
+    let paramMatch
+    while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
+      params[paramMatch[1]] = paramMatch[2]
+    }
+    
+    toolCalls.push({
+      id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: 'function',
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(params)
+      }
+    })
+  }
+  
+  return toolCalls
 }
 
 function createParser(
@@ -38,11 +74,42 @@ function createParser(
     isAppending: false,
     accumulatedTokens: 0,
     pendingContent: '',
+    currentFragmentType: 'RESPONSE',
+    accumulatedReasoning: '',
+    toolCallBuffer: '',
+    isToolCallInProgress: false,
+    parsedToolCalls: [],
+    pendingLookahead: '',
   }
 
   const emitFinal = () => {
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
+    
+    // Emit tool calls if we have any
+    if (state.parsedToolCalls.length > 0) {
+      const toolCallChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: state.parsedToolCalls.map((tc, idx) => ({
+              index: idx,
+              id: tc.id,
+              type: tc.type,
+              function: tc.function
+            }))
+          },
+          finish_reason: 'tool_calls'
+        }]
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
+    }
+    
+    // Emit final stop chunk (empty delta)
     const finalChunk: OpenAIChatCompletionStreamResponse = {
       id: `chatcmpl-${state.responseMessageId}`,
       object: 'chat.completion.chunk',
@@ -51,6 +118,8 @@ function createParser(
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
     }
     controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+    
+    // Emit usage if available
     if (state.accumulatedTokens > 0) {
       const usageChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
@@ -66,45 +135,144 @@ function createParser(
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
     }
+    
     controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
   }
 
   const emitContent = (text: string) => {
-    if (state.responseMessageId === 'null') {
-      // ready event has not arrived yet; buffer this text and flush it when
-      // ready sets responseMessageId
-      state.pendingContent = (state.pendingContent || '') + text
+    const DSML_START = '<｜｜DSML｜ calls>'
+    
+    // If tool call buffering is already in progress
+    if (state.isToolCallInProgress) {
+      state.toolCallBuffer += text
+      if (state.toolCallBuffer.includes('</｜｜DSML｜ calls>')) {
+        const toolCalls = parseDSMLToolCalls(state.toolCallBuffer)
+        state.parsedToolCalls = toolCalls
+        state.isToolCallInProgress = false
+        state.toolCallBuffer = ''
+      }
       return
     }
-    state.accumulatedContent += text
+
+    // Combine pending lookahead with new text
+    const combined = state.pendingLookahead + text
+    state.pendingLookahead = ''
+
+    // Build full prospective content
+    const fullContent = state.accumulatedContent + combined
+
+    // Check for full DSML start pattern
+    if (fullContent.includes(DSML_START)) {
+      const dsmlIdx = fullContent.indexOf(DSML_START)
+      
+      // Emit everything before DSML that hasn't been emitted yet
+      const beforeDSML = fullContent.substring(0, dsmlIdx)
+      const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
+      if (newSafeContent.length > 0 && state.responseMessageId !== 'null') {
+        const isReasoning = state.currentFragmentType === 'THINK'
+        if (!state.hasEmittedRole) {
+          state.hasEmittedRole = true
+          const roleChunk: OpenAIChatCompletionStreamResponse = {
+            id: `chatcmpl-${state.responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: info.created,
+            model: info.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+          }
+          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+        }
+        const safeChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
+        }
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+      }
+      
+      // Start tool call buffering
+      state.isToolCallInProgress = true
+      state.toolCallBuffer = fullContent.substring(dsmlIdx)
+      state.accumulatedContent = beforeDSML
+      return
+    }
+
+    // Check for partial DSML prefix at the end - HOLD BACK these characters
+    let holdbackLength = 0
+    for (let i = 1; i < DSML_START.length; i++) {
+      if (fullContent.endsWith(DSML_START.substring(0, i))) {
+        holdbackLength = i
+      }
+    }
+
+    if (holdbackLength > 0) {
+      // Save partial match in lookahead buffer
+      state.pendingLookahead = fullContent.substring(fullContent.length - holdbackLength)
+      const safeContent = fullContent.substring(0, fullContent.length - holdbackLength)
+      
+      // Emit safe content that hasn't been emitted yet
+      const newContent = safeContent.substring(state.accumulatedContent.length)
+      if (newContent.length > 0 && state.responseMessageId !== 'null') {
+        const isReasoning = state.currentFragmentType === 'THINK'
+        if (!state.hasEmittedRole) {
+          state.hasEmittedRole = true
+          const roleChunk: OpenAIChatCompletionStreamResponse = {
+            id: `chatcmpl-${state.responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: info.created,
+            model: info.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+          }
+          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+        }
+        const chunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
+        }
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+      }
+      
+      state.accumulatedContent = safeContent
+      return
+    }
+
+    // No DSML pattern at all - emit everything normally
+    const newContent = fullContent.substring(state.accumulatedContent.length)
+    const isReasoning = state.currentFragmentType === 'THINK'
+    
+    if (isReasoning) {
+      state.accumulatedReasoning += newContent
+    } else {
+      state.accumulatedContent = fullContent
+    }
+
+    if (state.responseMessageId === 'null') {
+      state.pendingContent = (state.pendingContent || '') + newContent
+      return
+    }
+
     if (!state.hasEmittedRole) {
       state.hasEmittedRole = true
-      // Emit role chunk WITH empty content to ensure client processes it
       const roleChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
         created: info.created,
         model: info.model,
-        choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
-      // Then emit content chunk separately
-      const contentChunk: OpenAIChatCompletionStreamResponse = {
-        id: `chatcmpl-${state.responseMessageId}`,
-        object: 'chat.completion.chunk',
-        created: info.created,
-        model: info.model,
-        choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-      }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(contentChunk)))
-      return
     }
+
     const chunk: OpenAIChatCompletionStreamResponse = {
       id: `chatcmpl-${state.responseMessageId}`,
       object: 'chat.completion.chunk',
       created: info.created,
       model: info.model,
-      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+      choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
     }
     controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
   }
@@ -135,6 +303,8 @@ function createParser(
       const fragments = v?.response?.fragments;
       if (Array.isArray(fragments) && fragments.length > 0) {
         const frag = fragments[0];
+        const fragType = frag?.type === 'THINK' ? 'THINK' : 'RESPONSE'
+        state.currentFragmentType = fragType
         if (typeof frag?.content === 'string' && frag.content !== '') {
           emitContent(frag.content)
         }
@@ -177,6 +347,7 @@ function createParser(
       if (state.currentPath === 'response/fragments' && state.currentOp === 'APPEND') {
         if (Array.isArray(parsed.v) && parsed.v.length > 0) {
           const newFragment = parsed.v[0] as { type?: string; content?: string }
+          state.currentFragmentType = newFragment?.type === 'THINK' ? 'THINK' : 'RESPONSE'
           // We are now appending to this new fragment
           state.isAppending = true
           // Emit the initial content if present
@@ -270,6 +441,10 @@ export function translateDeepSeekStreamToSSE(
         parser.processLine(trimmed)
         buffer = ''
       }
+      // Flush any pending lookahead before finalizing
+      if (parser.state.pendingLookahead) {
+        parser.emitContent('')
+      }
       parser.emitFinal()
     },
   })
@@ -302,6 +477,8 @@ export async function translateDeepSeekStreamToJSON(
   let currentPath: string | null = null
   let currentOp: string | null = null
   let isAppending = false
+  let accumulatedReasoning = ''
+  let currentFragmentType: 'THINK' | 'RESPONSE' = 'RESPONSE'
 
   const reader = deepSeekStream.getReader()
   try {
@@ -338,8 +515,13 @@ export async function translateDeepSeekStreamToJSON(
           const fragments = v?.response?.fragments;
           if (Array.isArray(fragments) && fragments.length > 0) {
             const frag = fragments[0];
+            currentFragmentType = frag?.type === 'THINK' ? 'THINK' : 'RESPONSE'
             if (typeof frag?.content === 'string' && frag.content !== '') {
-              accumulatedContent += frag.content
+              if (currentFragmentType === 'THINK') {
+                accumulatedReasoning += frag.content
+              } else {
+                accumulatedContent += frag.content
+              }
             }
           }
           continue;
@@ -355,10 +537,19 @@ export async function translateDeepSeekStreamToJSON(
 
         // 2. update_session: capture initial fragment content
         if (currentEvent === 'update_session') {
-          const v = parsed.v as { response?: { fragments?: Array<{ content?: string }> } } | undefined
-          const initial = v?.response?.fragments?.[0]?.content
-          if (initial != null && initial !== '') {
-            accumulatedContent += initial
+          const v = parsed.v as { response?: { fragments?: Array<{ type?: string; content?: string }> } } | undefined
+          const fragments = v?.response?.fragments
+          if (Array.isArray(fragments) && fragments.length > 0) {
+            const frag = fragments[0]
+            currentFragmentType = frag?.type === 'THINK' ? 'THINK' : 'RESPONSE'
+            const initial = frag?.content
+            if (initial != null && initial !== '') {
+              if (currentFragmentType === 'THINK') {
+                accumulatedReasoning += initial
+              } else {
+                accumulatedContent += initial
+              }
+            }
           }
           continue
         }
@@ -374,17 +565,26 @@ export async function translateDeepSeekStreamToJSON(
           if (currentPath === 'response/fragments' && currentOp === 'APPEND') {
             if (Array.isArray(parsed.v) && parsed.v.length > 0) {
               const newFragment = parsed.v[0] as { type?: string; content?: string }
+              currentFragmentType = newFragment?.type === 'THINK' ? 'THINK' : 'RESPONSE'
               // We are now appending to this new fragment
               isAppending = true
               // Emit the initial content if present
               if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
-                accumulatedContent += newFragment.content
+                if (currentFragmentType === 'THINK') {
+                  accumulatedReasoning += newFragment.content
+                } else {
+                  accumulatedContent += newFragment.content
+                }
               }
             }
           }
           
           if (isAppending && typeof parsed.v === 'string') {
-            accumulatedContent += parsed.v
+            if (currentFragmentType === 'THINK') {
+              accumulatedReasoning += parsed.v
+            } else {
+              accumulatedContent += parsed.v
+            }
           }
           // capture token usage from BATCH
           if (currentPath === 'response' && currentOp === 'BATCH' && Array.isArray(parsed.v)) {
@@ -402,14 +602,22 @@ export async function translateDeepSeekStreamToJSON(
         // Example: {"p":"response/fragments/-1/content","v":" **"}
         if (parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
           if (parsed.p === 'response/fragments/-1/content' && isAppending) {
-            accumulatedContent += parsed.v
+            if (currentFragmentType === 'THINK') {
+              accumulatedReasoning += parsed.v
+            } else {
+              accumulatedContent += parsed.v
+            }
           }
           continue
         }
 
         // 4. v-only lines: append ONLY while isAppending
         if (parsed.v !== undefined && isAppending && typeof parsed.v === 'string') {
-          accumulatedContent += parsed.v
+          if (currentFragmentType === 'THINK') {
+            accumulatedReasoning += parsed.v
+          } else {
+            accumulatedContent += parsed.v
+          }
           continue
         }
       }
@@ -438,14 +646,23 @@ export async function translateDeepSeekStreamToJSON(
         if (path === 'response/fragments' && op === 'APPEND') {
           if (Array.isArray(parsed.v) && parsed.v.length > 0) {
             const newFragment = parsed.v[0] as { type?: string; content?: string }
+            currentFragmentType = newFragment?.type === 'THINK' ? 'THINK' : 'RESPONSE'
             if (typeof newFragment?.content === 'string' && newFragment.content !== '') {
-              accumulatedContent += newFragment.content
+              if (currentFragmentType === 'THINK') {
+                accumulatedReasoning += newFragment.content
+              } else {
+                accumulatedContent += newFragment.content
+              }
             }
           }
         }
         
         if (appending && typeof parsed.v === 'string') {
-          accumulatedContent += parsed.v
+          if (currentFragmentType === 'THINK') {
+            accumulatedReasoning += parsed.v
+          } else {
+            accumulatedContent += parsed.v
+          }
         }
         if (path === 'response' && op === 'BATCH' && Array.isArray(parsed.v)) {
           for (const item of parsed.v) {
@@ -457,10 +674,18 @@ export async function translateDeepSeekStreamToJSON(
         }
       } else if (parsed && parsed.p !== undefined && parsed.o === undefined && typeof parsed.v === 'string') {
         if (parsed.p === 'response/fragments/-1/content' && isAppending) {
-          accumulatedContent += parsed.v
+          if (currentFragmentType === 'THINK') {
+            accumulatedReasoning += parsed.v
+          } else {
+            accumulatedContent += parsed.v
+          }
         }
       } else if (parsed && parsed.v !== undefined && isAppending && typeof parsed.v === 'string') {
-        accumulatedContent += parsed.v
+        if (currentFragmentType === 'THINK') {
+          accumulatedReasoning += parsed.v
+        } else {
+          accumulatedContent += parsed.v
+        }
       }
     }
   }
@@ -473,7 +698,7 @@ export async function translateDeepSeekStreamToJSON(
     choices: [
       {
         index: 0,
-        message: { role: 'assistant', content: accumulatedContent },
+        message: { role: 'assistant', content: accumulatedContent, reasoning_content: accumulatedReasoning || undefined },
         finish_reason: 'stop',
       },
     ],
