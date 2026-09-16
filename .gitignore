@@ -1,1 +1,91 @@
-Nothing should be ignored based on the provided file changes. The only modified file is `s1_definition_trace.md`, which is a markdown source file and should not be ignored.
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.ENV
+.python-version
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# Project specific
+deepseek_response.txt
+DeepSeek-API.md
+plan_browser.md
+README.md
+road_map.md
+skills.md
+.wrangler/
+test2.txt
+analyze_dliq_deep.py
+analyze_dliq.py
+analyze.py
+analyze2.py
+analyze3.py
+final_report.py
+make_report.py
+new.har
+old.har
+test.txt
