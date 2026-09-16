@@ -17,6 +17,7 @@ import { PROTOCOL_STATE_KEYS } from "./state-store.js";
 import type { ProtocolSessionStore, ProxySessionState } from "./session-store.js";
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
+import { editMessage, type EditMessageOptions } from "./edit-message.js";
 
 /** Parse response_message_id from a single SSE line (ready event data payload). */
 function extractResponseMessageId(line: string): number | null {
@@ -426,5 +427,94 @@ export class DeepSeekWebClient {
   async complete(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
     // Delegate to completeWithAutoSession which handles session resolution and persistence
     return this.completeWithAutoSession(input, logger);
+  }
+
+  /**
+   * Edit a message in an existing chat session using the native /api/v0/chat/edit_message endpoint.
+   * 
+   * Flow:
+   * 1. Retrieve session state from sessionStore
+   * 2. Fetch fresh PoW challenge (session-aware)
+   * 3. POST /api/v0/chat/edit_message with messageId and edited prompt
+   * 4. Parse response to extract request_message_id and response_message_id
+   * 5. Update session state with new response_message_id as parent for next turn
+   */
+  async editMessage(
+    xSessionId: string,
+    messageId: number,
+    prompt: string,
+    options?: EditMessageOptions,
+    logger?: RequestLogger
+  ): Promise<CompletionResult> {
+    // Retrieve existing session state
+    const existingState = await this.sessionStore.get(xSessionId);
+    if (!existingState) {
+      throw new DeepSeekProtocolError(
+        "Session not found for edit_message",
+        { kind: "edit_message", status: 404 }
+      );
+    }
+
+    const credentials = await this.getCredentials();
+    const chatSessionId = existingState.chat_session_id;
+
+    // Execute edit_message flow
+    const editResult = await editMessage(
+      credentials,
+      chatSessionId,
+      messageId,
+      prompt,
+      options ?? {},
+      this.origin
+    );
+
+    // Update session state with new response_message_id as parent for next turn
+    const persistPromise = (async () => {
+      try {
+        const newTurnCount = (existingState.turn_count || 0) + 1;
+        // After edit, update parent_message_id to the new response_message_id
+        await this.sessionStore.set(xSessionId, {
+          x_session_id: xSessionId,
+          chat_session_id: chatSessionId,
+          parent_message_id: editResult.response_message_id,
+          turn_count: newTurnCount,
+          created_at: existingState.created_at || Date.now(),
+          updated_at: Date.now(),
+        });
+        console.log(
+          "[DeepSeekWebClient] Stored session after edit",
+          xSessionId,
+          "parent_message_id:",
+          editResult.response_message_id,
+          "turn_count:",
+          newTurnCount
+        );
+      } catch (error) {
+        console.error("[DeepSeekWebClient] Failed to store session info after edit:", error);
+      }
+    })();
+
+    // Create a mock response for compatibility with CompletionResult
+    // The actual edit response is SSE stream, but we've already parsed it
+    // For now, return an empty readable stream since the data was consumed
+    const mockBody = new ReadableStream({
+      start(controller) {
+        controller.close();
+      }
+    });
+
+    const response = new Response(mockBody, {
+      status: 200,
+      headers: {
+        "X-Chat-Session-Id": chatSessionId,
+        "X-Request-Message-Id": String(editResult.request_message_id),
+        "X-Response-Message-Id": String(editResult.response_message_id),
+      },
+    });
+
+    return {
+      response,
+      sessionUpdatePromise: persistPromise,
+    };
   }
 }

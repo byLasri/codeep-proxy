@@ -8,6 +8,7 @@ export const DEEPSEEK = {
     CREATE_SESSION: "/api/v0/chat_session/create",
     CREATE_POW: "/api/v0/chat/create_pow_challenge",
     COMPLETION: "/api/v0/chat/completion",
+    EDIT_MESSAGE: "/api/v0/chat/edit_message",
   },
 
   CLIENT: {

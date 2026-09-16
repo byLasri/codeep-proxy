@@ -60,6 +60,15 @@ export { createSession } from "./session.js";
 // Completion
 export { buildCompletionRequest } from "./completion.js";
 
+// Edit Message
+export {
+  editMessage,
+  buildEditMessageRequest,
+  type DeepSeekEditMessageRequest,
+  type DeepSeekEditMessageResult,
+  type EditMessageOptions,
+} from "./edit-message.js";
+
 // Client
 export { DeepSeekWebClient, createDefaultCredentialsReader } from "./client.js";
 export type { DeepSeekWebClientConfig, CompletionResult } from "./client.js";
