@@ -207,11 +207,11 @@ export default {
                 return json({ error: { message: 'X-Session-Id header is required for edit_message', type: 'invalid_request_error' } }, 400)
               }
               
-              // Parse and validate X-DeepSeek-Edit-Message-Id as positive integer
-              const messageId = parseInt(editMessageIdHeader, 10)
-              if (!Number.isInteger(messageId) || messageId <= 0) {
+              // Parse and validate X-DeepSeek-Edit-Message-Id as positive integer (digits only, no leading zeros except for "0" which is rejected)
+              if (!/^[1-9]\d*$/.test(editMessageIdHeader)) {
                 return json({ error: { message: 'X-DeepSeek-Edit-Message-Id must be a positive integer', type: 'invalid_request_error' } }, 400)
               }
+              const messageId = Number(editMessageIdHeader)
               
               // Extract the latest user message from the OpenAI messages array
               const latestUserMessage = [...openaiReq.messages].reverse().find((m) => m.role === 'user')
