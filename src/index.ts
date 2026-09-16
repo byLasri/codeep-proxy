@@ -2,7 +2,7 @@ import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
-import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders } from './translator/index.js'
+import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders, mapOpenAIModelToDeepSeek } from './translator/index.js'
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
@@ -195,6 +195,76 @@ export default {
               return json({ error: { message: 'Invalid request: messages must be an array', type: 'invalid_request_error' } }, 400)
             }
 
+            // Check for edit_message trigger header
+            const editMessageIdHeader = request.headers.get('X-DeepSeek-Edit-Message-Id')
+            
+            if (editMessageIdHeader !== null) {
+              // EDIT FLOW: Native DeepSeek edit_message
+              const xSessionId = getXSessionIdFromHeaders(request.headers)
+              
+              // Require X-Session-Id for edit flow
+              if (!xSessionId) {
+                return json({ error: { message: 'X-Session-Id header is required for edit_message', type: 'invalid_request_error' } }, 400)
+              }
+              
+              // Parse and validate X-DeepSeek-Edit-Message-Id as positive integer
+              const messageId = parseInt(editMessageIdHeader, 10)
+              if (!Number.isInteger(messageId) || messageId <= 0) {
+                return json({ error: { message: 'X-DeepSeek-Edit-Message-Id must be a positive integer', type: 'invalid_request_error' } }, 400)
+              }
+              
+              // Extract the latest user message from the OpenAI messages array
+              const latestUserMessage = [...openaiReq.messages].reverse().find((m) => m.role === 'user')
+              if (!latestUserMessage || latestUserMessage.content == null) {
+                return json({ error: { message: 'No user message found for edit', type: 'invalid_request_error' } }, 400)
+              }
+              const prompt = latestUserMessage.content
+              
+              // Preserve thinking_enabled and search_enabled settings from model mapping
+              const config = mapOpenAIModelToDeepSeek(openaiReq.model)
+              const options = {
+                model_type: config.model_type,
+                thinking_enabled: config.thinking,
+                search_enabled: config.search,
+              }
+              
+              const client = createDeepSeekClient(env)
+              const { response, sessionUpdatePromise } = await client.editMessage(
+                xSessionId,
+                messageId,
+                prompt,
+                options,
+                logger
+              )
+              
+              // MUST run before returning, otherwise attachSessionPersistence may be cancelled
+              ctx.waitUntil(sessionUpdatePromise)
+              
+              if (!response.ok) {
+                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+              }
+              if (!response.body) {
+                return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+              }
+              
+              const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
+              
+              if (openaiReq.stream === true) {
+                const stream = translateDeepSeekStreamToSSE(response.body, info, logger)
+                return new Response(stream, {
+                  headers: {
+                    'Content-Type': 'text/event-stream; charset=utf-8',
+                    'Cache-Control': 'no-cache, no-transform',
+                    'Connection': 'keep-alive',
+                  },
+                })
+              }
+              
+              const jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
+              return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
+            }
+            
+            // NORMAL FLOW: Continue with existing completion logic
             // Check turn_count to determine if we should send system prompt (turns 1 and 2 only)
             const xSessionId = getXSessionIdFromHeaders(request.headers)
             let sendSystemPrompt = true
