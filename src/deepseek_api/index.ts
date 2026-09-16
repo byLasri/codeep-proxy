@@ -65,7 +65,6 @@ export {
   editMessage,
   buildEditMessageRequest,
   type DeepSeekEditMessageRequest,
-  type DeepSeekEditMessageResult,
   type EditMessageOptions,
 } from "./edit-message.js";
 
