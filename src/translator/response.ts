@@ -107,17 +107,17 @@ function createParser(
         }]
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
+    } else {
+      // Emit final stop chunk (empty delta) only if no tool calls
+      const finalChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
     }
-    
-    // Emit final stop chunk (empty delta)
-    const finalChunk: OpenAIChatCompletionStreamResponse = {
-      id: `chatcmpl-${state.responseMessageId}`,
-      object: 'chat.completion.chunk',
-      created: info.created,
-      model: info.model,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-    }
-    controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
     
     // Emit usage if available
     if (state.accumulatedTokens > 0) {
