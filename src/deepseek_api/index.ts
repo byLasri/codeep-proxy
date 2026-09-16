@@ -19,7 +19,7 @@ export type {
 export type { StoredDeepSeekCredentials } from "./client.js";
 
 // Constants
-export { DEEPSEEK, DEFAULT_TIMEZONE_OFFSET } from "./constants.js";
+export { DEEPSEEK, getClientTimezoneOffset } from "./constants.js";
 
 // Errors
 export { DeepSeekProtocolError, type DeepSeekErrorKind, toDeepSeekError } from "./errors.js";

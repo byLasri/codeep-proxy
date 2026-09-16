@@ -67,6 +67,8 @@ export interface DeepSeekClientHeaders {
   "x-client-version": string;
   "x-client-locale": string;
   "x-client-timezone-offset": string;
+  "x-device-id": string;
+  "x-device-model": string;
 
   "x-hif-leim"?: string;
   "x-ds-pow-response"?: string;

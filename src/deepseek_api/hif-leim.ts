@@ -2,9 +2,10 @@
 // Fetches and caches the x-hif-leim value from the side-channel endpoint
 // Uses platform-independent ProtocolStateStore for storage
 
-import { DEEPSEEK } from "./constants.js";
+import { DEEPSEEK, getClientTimezoneOffset } from "./constants.js";
 import type { ProtocolStateStore } from "./state-store.js";
 import { PROTOCOL_STATE_KEYS } from './state-store.js';
+import { getBrowserIdentity, type BrowserIdentity } from "./headers.js";
 
 function logHif(message: string, meta?: Record<string, unknown>) {
   const timestamp = new Date().toISOString();
@@ -39,13 +40,16 @@ export interface HifLeimResponse {
  * Per the wire contract, this request does NOT include Authorization, Cookie, Origin, or Referer.
  */
 export function buildHifLeimHeaders(): Record<string, string> {
+  const identity = getBrowserIdentity();
   return {
     "accept": "*/*",
     "x-client-bundle-id": DEEPSEEK.CLIENT.BUNDLE_ID,
     "x-client-platform": DEEPSEEK.CLIENT.PLATFORM,
     "x-client-version": DEEPSEEK.CLIENT.VERSION,
     "x-client-locale": DEEPSEEK.CLIENT.LOCALE,
-    "x-client-timezone-offset": DEEPSEEK.CLIENT.LOCALE === "en_US" ? "3600" : "3600",
+    "x-client-timezone-offset": getClientTimezoneOffset(),
+    "x-device-id": identity.deviceId,
+    "x-device-model": identity.deviceModel,
   };
 }
 
