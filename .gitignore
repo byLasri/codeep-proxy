@@ -181,3 +181,9 @@ analyze_dliq.py
 analyze.py
 analyze2.py
 analyze3.py
+check_completion_headers.py
+check_deepseek_post.py
+check_har.py
+debug.cjs
+fixed.cjs
+list_post.py
