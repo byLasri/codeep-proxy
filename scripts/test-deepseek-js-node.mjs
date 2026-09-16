@@ -67,6 +67,9 @@ const logInterceptor = (...args) => {
 // globalThis already exists in Node.js 12+
 shimUsage.globalThis.used = true;
 
+// self is an alias for globalThis in browser contexts
+global.self = globalThis;
+
 // localStorage shim - stores hif_leim_cached and hif_dliq_cached
 const localStorageData = new Map();
 global.localStorage = {
@@ -285,6 +288,10 @@ try {
   successMarkers.push('bundle_executed');
   console.error('Bundle executed successfully');
   
+  // List all global properties added by the bundle
+  const newGlobals = Object.keys(context).filter(k => !['global', 'globalThis', 'self', 'console', 'process', 'require', 'module', 'exports'].includes(k));
+  console.error('New globals from bundle:', newGlobals.slice(0, 50).join(', '));
+  
   // Try to access wr object if exposed
   if (context.wr) {
     console.error('wr object found');
@@ -305,13 +312,32 @@ try {
     try {
       const leimVal = context.ws().leim.get();
       const dliqVal = context.ws().dliq.get();
-      console.error('ws().leim.get():', leimVal);
-      console.error('ws().dliq.get():', dliqVal);
+      console.error('ws().leim.get():', leimVal ? '[TOKEN_PRESENT]' : '[NULL]');
+      console.error('ws().dliq.get():', dliqVal ? '[TOKEN_PRESENT]' : '[NULL]');
       successMarkers.push('storage_accessed');
     } catch (e) {
       errors.push({ source: 'ws', message: e.message });
     }
   }
+  
+  // Look for common webpack module patterns
+  const possibleModuleExports = ['wt', 'EF', 'cM', 'en', 'wr', 'ws', 'createPowChallenge', 'getHeaders', 'sendChatCompletion', 'sendEditMessage'];
+  for (const sym of possibleModuleExports) {
+    if (context[sym]) {
+      console.error(`Found symbol: ${sym} (${typeof context[sym]})`);
+      if (typeof context[sym] === 'function') {
+        try {
+          const result = context[sym]();
+          console.error(`  ${sym}() returned: ${JSON.stringify(result)?.substring(0, 100)}`);
+        } catch (e) {
+          // Function may require arguments
+        }
+      }
+    }
+  }
+  
+  // Wait briefly for any async protocol flows (pollers may start on load)
+  await new Promise(resolve => setTimeout(resolve, 3000));
   
 } catch (e) {
   errors.push({ source: 'execution', message: e.message, stack: e.stack });
