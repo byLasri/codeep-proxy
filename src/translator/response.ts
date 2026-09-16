@@ -32,8 +32,8 @@ interface SSEParserState {
 function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
   
-  const invokeRegex = /<｜｜DSML｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜\s+invoke>/g
-  const paramRegex = /<｜｜DSML｜\s+parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜\s+parameter>/g
+  const invokeRegex = /<｜｜DSML｜｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+invoke>/g
+  const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+parameter>/g
   
   let invokeMatch
   while ((invokeMatch = invokeRegex.exec(xml)) !== null) {
@@ -140,12 +140,12 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
-    const DSML_START = '<｜｜DSML｜ calls>'
+    const DSML_START = '<｜｜DSML｜｜ calls>'
     
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      if (state.toolCallBuffer.includes('</｜｜DSML｜ calls>')) {
+      if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
         const toolCalls = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = toolCalls
         state.isToolCallInProgress = false
