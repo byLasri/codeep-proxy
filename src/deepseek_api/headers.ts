@@ -92,8 +92,9 @@ export function buildCompletionHeaders(
   credentials: DeepSeekCredentials,
   powResponse: string,
   hifLeim?: string,
+  sessionId?: string,
 ): Headers {
-  const headers = new Headers(buildAuthenticationHeaders(credentials));
+  const headers = new Headers(buildAuthenticationHeaders(credentials, sessionId));
   headers.set("accept", "text/event-stream");
   headers.set("x-ds-pow-response", powResponse);
 

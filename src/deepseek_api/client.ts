@@ -269,8 +269,8 @@ export class DeepSeekWebClient {
     // Encode PoW response
     const powHeader = encodePowResponse(solution);
 
-    // Build completion headers with HIF-LEIM
-    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
+    // Build completion headers with HIF-LEIM and session ID for Referer
+    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, session.chat_session_id);
 
     // Log upstream request
     if (logger) {
