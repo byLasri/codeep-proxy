@@ -541,6 +541,22 @@ export class DeepSeekWebClient {
           } catch { /* ignore */ }
         }
       }
+      
+      // Process remaining buffer after stream ends (final unterminated line)
+      if (sseBuffer.trim()) {
+        const trimmed = sseBuffer.trim();
+        const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+        if (payload.startsWith("{")) {
+          try {
+            const data = JSON.parse(payload) as { request_message_id?: unknown; response_message_id?: unknown };
+            const requestId = typeof data.request_message_id === "number" ? data.request_message_id : null;
+            const responseId = typeof data.response_message_id === "number" ? data.response_message_id : null;
+            if (requestId !== null && responseId !== null) {
+              result = { request_message_id: requestId, response_message_id: responseId };
+            }
+          } catch { /* ignore */ }
+        }
+      }
     } finally {
       reader.releaseLock();
     }
