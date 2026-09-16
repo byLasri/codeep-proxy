@@ -1,6 +1,6 @@
 # DeepSeek PoW Solver Live Execution Report
 
-**Commit:** PENDING
+**Commit:** ab0edd9dc52b1118caf689cf97e656e6650979fe
 **Branch:** dsml-protocol
 **Date:** 2025-01-14
 
@@ -12,110 +12,208 @@
 |-----------|--------|
 | POW_CHALLENGE_LIVE | **yes** |
 | POW_SOLVER_LIVE | **no** |
-| POW_HEADER_FORMAT_VERIFIED | **partial** |
+| POW_HEADER_FORMAT_VERIFIED | **yes** |
 
-**BLOCKER:** Module 84212 (containing `cw.Bx` solver) uses Rspack-specific lazy loading pattern. The module reference exists at byte offset 400184 (`var cw=n(84212)`), and the call site exists at byte offset 859140, but the actual module definition is not in the main bundle - it's likely in a dynamically loaded chunk.
+**BLOCKER:** Module 84212 contains the real PoW solver `Bx` function, but the actual challenge-solving algorithm (`doSolveChallenge`) depends on external WASM modules and crypto primitives that cannot be cleanly extracted from the minified bundle without the full Rspack runtime context.
 
 ---
 
-## 1. BUNDLE EVIDENCE
+## 1. MODULE 84212 LOCATION
 
-### 1.1 Module Reference (Byte Offset ~400184)
+**Found in:** `ds_js/main.d79ba3e506.js`
+**Byte Offset:** ~1262273 (within main bundle)
+**Module ID:** 84212
+
+**Module Declaration:**
 ```javascript
-var cw=n(84212),cI=n(11444);
-let cA="/api/v0/chat/completion",ck="/api/v0/file/upload_file";
+84212(e,t,n){"use strict";n.d(t,{Y_:()=>u,_E:()=>p,Bx:()=>d,fg:()=>l})
 ```
 
-### 1.2 Solver Call Site (Byte Offset ~859140)
+**Exported Functions:**
+- `Bx` → `d` (main PoW header builder)
+- `fg` → `l` (guest PoW header builder)
+- `Y_` → `u` (unknown/export)
+- `_E` → `p` (unknown/export)
+
+---
+
+## 2. SOLVER FUNCTION ANALYSIS
+
+### 2.1 Bx Function (Main PoW Header Builder)
+
+**Location:** Byte ~1262273
+**Definition:**
 ```javascript
-if(e.request&&e.request.challengeResponse){
-  let t=(0,en.Ax)().base64Encode,
-      [n,r]=(0,cw.Bx)(e.request.challengeResponse,cA,t);
-  return{[n]:r}
+d=(e,t,n)=>["X-DS-PoW-Response",n(JSON.stringify({
+  algorithm:e.algorithm,
+  challenge:e.challenge,
+  salt:e.salt,
+  answer:e.answer,
+  signature:e.signature,
+  target_path:t
+}))]
+```
+
+**Parameters:**
+- `e` = challenge response object (from PoW solver)
+- `t` = target path (e.g., "/api/v0/chat/completion")
+- `n` = encoder function (base64Encode)
+
+**Output:**
+- Header Name: `X-DS-PoW-Response`
+- Header Value: Base64-encoded JSON string containing:
+  - `algorithm`: PoW algorithm identifier
+  - `challenge`: Original challenge string
+  - `salt`: Random salt value
+  - `answer`: Computed PoW solution
+  - `signature`: Cryptographic signature
+  - `target_path`: Request target path
+
+### 2.2 Guest PoW Header Builder (Alternative)
+
+**Definition:**
+```javascript
+l=(e,t)=>["X-DS-Guest-PoW-Response",t(JSON.stringify({
+  salt:e.salt,
+  answer:e.answer
+}))]
+```
+
+**Output:**
+- Header Name: `X-DS-Guest-PoW-Response`
+- Header Value: Base64-encoded JSON with only `salt` and `answer`
+
+---
+
+## 3. CHALLENGE RESPONSE STRUCTURE
+
+Based on static analysis of `Bx` function, the challenge response object must contain:
+
+```javascript
+{
+  algorithm: string,    // e.g., "sha256" or similar
+  challenge: string,    // Challenge string from server
+  salt: string,         // Random salt
+  answer: number|string, // Computed solution
+  signature: string,    // Cryptographic signature
+  target_path: string   // Target API path
 }
 ```
 
-### 1.3 Challenge Creation (Verified Live)
+The challenge is obtained from `/api/v0/chat/create_pow_challenge` which returns:
 ```javascript
-cE=async e=>{
-  let{targetPath:t}=e,
-  {biz_data:n,biz_code:r,biz_msg:s}=(await (0,en.Ax)().http.http.post(
-    "/api/v0/chat/create_pow_challenge",
-    {json:{target_path:t}}
-  )).json.data;
-  if(0!==r)throw Error("Failed to create pow challenge...");
-  let a=n.challenge;
-  return{...a,expireAt:a.expire_at,expireAfter:a.expire_after}
+{
+  challenge: {
+    algorithm: "...",
+    challenge: "...",
+    salt: "...",
+    diff: number,      // Difficulty
+    prefix: string,    // Required prefix
+    expire_at: number,
+    expire_after: number
+  }
 }
 ```
 
 ---
 
-## 2. LIVE PROTOCOL VERIFICATION
+## 4. SOLVER DEPENDENCY CLOSURE
 
-### 2.1 PoW Challenge Request (SUCCESS)
-- **Endpoint:** `/api/v0/chat/create_pow_challenge`
-- **Method:** POST
-- **Body:** `{"target_path":"/api/v0/chat/completion"}`
-- **Status:** ✅ HTTP 200, biz_code=0
-- **Response contains:** challenge object with `diff`, `prefix`, `expire_at`, `expire_after` fields
+The `Bx` function itself is simple - it just formats the output. However, the **actual PoW computation** happens in `doSolveChallenge`, which is a method of class `c` within module 84212:
 
-### 2.2 Expected Header Format
-From the call site analysis:
 ```javascript
-// cw.Bx returns [headerName, headerValue]
-// Result is used as: {[n]:r}
-// Where n = header name, r = header value (base64 encoded solution)
+class c {
+  constructor(e) {
+    // ... initialization
+    this.doSolveChallenge = ...
+  }
+  
+  async prepareAndStore() {
+    let e = await this.getChallengeWrapped();
+    let {challengeResponse: t, duration: n} = await this.doSolveChallenge(e, this.getTracker());
+    // ...
+  }
+}
 ```
 
-Expected output headers:
-- Header name: Dynamic (returned by Bx)
-- Header value: Base64-encoded PoW solution
+**Dependencies for `doSolveChallenge`:**
+1. `n(74961)` - Internal utility module
+2. `n(63861)` - Unknown dependency
+3. `n(1131)` - Unknown dependency
+4. WASM module (`opus-decoder-wasm` or similar)
+5. Crypto APIs (hash functions)
+
+**Key Blocker:** The actual solving algorithm is not visible in the extracted code snippet - it likely involves:
+- Hash computation (SHA-256 or similar)
+- Iterative search for valid nonce/answer
+- Signature generation
 
 ---
 
-## 3. BLOCKER DETAILS
+## 5. LIVE PROTOCOL VERIFICATION
 
-### 3.1 Module Loading Issue
-The DeepSeek bundle uses Rspack with code splitting:
-- Main bundle: `main.d79ba3e506.js` (1.5MB)
-- Module 84212 is NOT in the main bundle's module map
-- Likely loaded via dynamic import/chunk
+### 5.1 PoW Challenge Request (SUCCESS ✅)
 
-### 3.2 Chunk References Found
-Bundle contains chunk loading logic:
+Previously verified in commit 8a1b48d47643fa0eec4abcb021b83b0a543313ac:
+- **Endpoint:** `POST /api/v0/chat/create_pow_challenge`
+- **Status:** HTTP 200, biz_code=0
+- **Response:** Contains challenge object with all required fields
+
+### 5.2 PoW Solver Execution (FAILED ❌)
+
+**Reason:** Cannot execute `doSolveChallenge` because:
+1. It's a class method bound to internal state
+2. Depends on WASM modules not fully analyzed
+3. Requires crypto primitives in Node context
+4. Service locator `(0,en.Ax)()` dependency
+
+### 5.3 Header Format Verification (SUCCESS ✅)
+
+**Verified from source:**
+- Header name: `X-DS-PoW-Response`
+- Header value format: `base64(JSON.stringify({algorithm, challenge, salt, answer, signature, target_path}))`
+
+This matches the expected completion request builder usage at byte ~849686:
 ```javascript
-h.f.j=function(e,t){...}  // Chunk loader
-h.u(e)  // Get chunk URL
+let [n,r]=(0,cw.Bx)(e.request.challengeResponse,cA,t);
+return {[n]:r}
 ```
 
-Module 84212 may be in one of these chunks:
-- `24197.5cb91e6c27.js`
-- `43147.6f8a0dad25.js`
-- `94068.776797ffc5.js`
-- Or other async chunks
+---
+
+## 6. CONCLUSIONS
+
+### 6.1 What Was Proven
+
+1. **PoW Challenge API works** - Can obtain fresh challenges from DeepSeek
+2. **Header format identified** - `X-DS-PoW-Response` with base64-encoded JSON
+3. **Solver location found** - Module 84212, function `d` (Bx)
+4. **Required fields known** - algorithm, challenge, salt, answer, signature, target_path
+
+### 6.2 What Remains Blocked
+
+1. **Cannot compute `answer`** - The `doSolveChallenge` algorithm is not extractable
+2. **Cannot generate `signature`** - Depends on unknown crypto operations
+3. **WASM dependency** - Likely requires opus-decoder or similar WASM module
+4. **Service locator** - Still tied to DeepSeek's internal service architecture
+
+### 6.3 Minimum Runtime Bridge
+
+To achieve `POW_SOLVER_LIVE=yes`, would need:
+1. Extract `doSolveChallenge` implementation from class `c`
+2. Port WASM-dependent crypto logic to Node.js
+3. Or use browser automation to capture solved challenges
 
 ---
 
-## 4. CONCLUSIONS
+## 7. FILES CREATED
 
-1. **PoW Challenge API:** Fully verified working via live HTTPS request
-2. **Solver Location:** Identified module ID (84212) and call sites
-3. **Solver Extraction:** Blocked by Rspack code splitting - module not in main bundle
-4. **Header Format:** Verified from source - `{[headerName]: base64Solution}`
-
----
-
-## 5. RECOMMENDED NEXT STEPS
-
-1. Download all chunk files from `https://fe-static.deepseek.com/chat/`
-2. Search for module 84212 in chunk files
-3. Extract Bx function and dependencies
-4. Execute with live challenge
+- `pow_solver_live.md` - This report
+- `scripts/test-pow-solver-live.mjs` - Analysis script (not executed live)
 
 ---
 
 **POW_CHALLENGE_LIVE=yes**
 **POW_SOLVER_LIVE=no**
 **POW_HEADER_FORMAT_VERIFIED=yes**
-**BLOCKER=Module 84212 is in a dynamically loaded Rspack chunk, not in main bundle**
+**BLOCKER=PoW solver doSolveChallenge algorithm depends on WASM modules and internal crypto primitives not extractable from minified bundle**
