@@ -259,9 +259,9 @@ export class DeepSeekWebClient {
     // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
     const hifLeim = await this.hifLeimCache.getValue();
 
-    // Create PoW challenge
+    // Create PoW challenge with session ID for session-aware Referer
     const credentials = await this.getCredentials();
-    const challenge = await createPowChallenge(credentials, this.origin);
+    const challenge = await createPowChallenge(credentials, this.origin, session.chat_session_id);
 
     // Solve PoW
     const solution = solvePow(challenge);

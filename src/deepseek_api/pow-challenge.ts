@@ -8,10 +8,16 @@ import { getBrowserIdentity } from "./headers.js";
 
 export async function createPowChallenge(
   credentials: DeepSeekCredentials,
-  origin?: string
+  origin?: string,
+  sessionId?: string
 ): Promise<DeepSeekPowChallenge> {
   const baseOrigin = origin || DEEPSEEK.ORIGIN;
   const identity = getBrowserIdentity();
+
+  // Construct session-aware Referer
+  const referer = sessionId
+    ? `${DEEPSEEK.ORIGIN}/a/chat/s/${sessionId}`
+    : `${DEEPSEEK.ORIGIN}/a/chat`;
 
   const headers: Record<string, string> = {
     "x-client-bundle-id": DEEPSEEK.CLIENT.BUNDLE_ID,
@@ -24,7 +30,7 @@ export async function createPowChallenge(
     "content-type": "application/json",
     accept: "*/*",
     origin: DEEPSEEK.ORIGIN,
-    referer: `${DEEPSEEK.ORIGIN}/a/chat`,
+    referer,
   };
 
   if (credentials.authorization) {
