@@ -60,18 +60,19 @@ export function buildDeepSeekPrompt(
     parts.push(userMsg.content)
     return parts.join('\n\n')
   } else {
-    // For continuation turns, check if we have tool result messages
-    // If the latest message is a tool result, use its content as the prompt
-    const reversedMessages = [...messages].reverse()
+    // For continuation turns, check if the LAST message is a tool result
+    // If so, use its content as the prompt. Otherwise, find the latest user message.
+    const lastMessage = messages[messages.length - 1]
     
-    // First, look for a tool result message (role: 'tool')
-    const toolResultMsg = reversedMessages.find((m) => m.role === 'tool')
-    if (toolResultMsg && toolResultMsg.content != null) {
-      return toolResultMsg.content
+    if (
+      lastMessage?.role === 'tool' &&
+      lastMessage.content != null
+    ) {
+      return lastMessage.content
     }
     
     // Fallback to finding the latest user message
-    const userMsg = reversedMessages.find((m) => m.role === 'user')
+    const userMsg = [...messages].reverse().find((m) => m.role === 'user')
     if (!userMsg || userMsg.content == null) {
       throw new Error('No user message found')
     }
