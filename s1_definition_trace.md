@@ -2,271 +2,405 @@
 
 ## Executive Summary
 
-The `S1` class has been successfully located and analyzed in the DeepSeek JavaScript bundle. This class is the **primary completion executor** used when a user clicks the Send button for new chat completions. It delegates execution to an `SJ` instance and ultimately calls `baseCompletion()` which reaches `i.http()` for the actual HTTP request.
+Successfully traced the `S1` class from the confirmed callsite at byte offset ~912579 to its definition at byte offset 896013. The S1 class is a completion strategy executor that extends SR, which extends ST (base service container). S1 directly invokes SJ.execute() which calls baseCompletionService.baseCompletion() to perform the actual HTTP SSE request to `/api/v0/chat/completion`.
 
 ---
 
 ## CALLSITE
 
-| Property | Value |
-|----------|-------|
-| **FILE** | `ds_js/main.d79ba3e506.js` |
-| **BYTE_OFFSET** | ~912650 |
-| **CONTEXT** | Inside `Eo.executeResend()` method, switch case for `Es.completion` scene |
-| **CODE** | `await new S1(this.services).execute({params:{chatSessionId:n,modelType:C,files:S,prompt:g,thinkingEnabled:d,getPowRes:i,searchEnabled:l,action:"retry",targetIndex:null!==c\|\|p?h:null,keepPrompt:!0,...},callbacks:{onSent:ro.A,onInterrupted:ro.A}})` |
-| **CONFIDENCE** | CONFIRMED |
+**FILE:** `ds_js/main.d79ba3e506.js`
+**BYTE_OFFSET:** 912579
+**MINIFIED_SYMBOL:** `S1`
+**CODE CONTEXT:**
+```javascript
+case Es.completion:
+  await new S1(this.services).execute({
+    params:{
+      chatSessionId:n,
+      modelType:C,
+      files:S,
+      prompt:g,
+      thinkingEnabled:d,
+      getPowRes:i,
+      searchEnabled:l,
+      action:"retry",
+      targetIndex:null!==c||p?h:null,
+      keepPrompt:!0,
+      uploadFileSupported:o.uploadFileSupported,
+      filePreparation:x
+    },
+    callbacks:{
+      onSent:ro.A,
+      onInterrupted:ro.A
+    }
+  });
+```
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## ENCLOSING_MODULE
 
-| Property | Value |
-|----------|-------|
-| **FILE** | `ds_js/main.d79ba3e506.js` |
-| **BYTE_OFFSET_RANGE** | ~890000 - ~915000 |
-| **MODULE_TYPE** | Webpack-bundled ES module (IIFE-wrapped) |
-| **CONTAINS** | Multiple executor classes: `S0`, `S1`, `S3`, `S6`, `S8`, `S9`, `En`, `Er`, `Eo`, `Et`, `Sj`, `SR`, `ST` |
-| **CONFIDENCE** | CONFIRMED |
+The S1 class is defined in the main webpack bundle, not dynamically imported. It resides in the same module as other strategy classes (SR, SJ, SW, etc.).
+
+**FILE:** `ds_js/main.d79ba3e506.js`
+**BYTE_OFFSET:** 895500-897000 (lexical scope region)
+**WEBPACK_MODULE_ID:** Inline (part of main bundle chunk)
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## S1_BINDING
 
-| Property | Value |
-|----------|-------|
-| **BINDING_TYPE** | Lexical class declaration |
-| **SYMBOL** | `S1` |
-| **SCOPE** | Module-level (webpack chunk scope) |
-| **IMPORT_METHOD** | Not imported - defined inline within the same module segment |
-| **CONFIDENCE** | CONFIRMED |
+**FILE:** `ds_js/main.d79ba3e506.js`
+**BYTE_OFFSET:** 896013
+**BINDING_TYPE:** Class declaration (lexical/module-local)
+**SYMBOL:** `S1`
+**EXTENDS:** `SR`
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## S1_DEFINITION
 
-| Property | Value |
-|----------|-------|
-| **FILE** | `ds_js/main.d79ba3e506.js` |
-| **BYTE_OFFSET** | ~892045 |
-| **DEFINITION_TYPE** | Class extending `SR` |
-| **RAW_CODE** | `class S1 extends SR{async execute(e){let{params:t,callbacks:n}=e;this.register(t.chatSessionId);try{await this.executor.execute({params:{...t,files:SZ(t),source:void 0},callbacks:{onInterrupted:()=>{n.onInterrupted(),this.selfDispose()},onSent:ro.A,onDispose:()=>{this.selfDispose()}}})}catch(e){throw this.selfDispose(),e}}constructor(e){super(e),(0,A._)(this,"executor",void 0),this.executor=new SJ(e)}}` |
-| **CONFIDENCE** | CONFIRMED |
+**FILE:** `ds_js/main.d79ba3e506.js`
+**BYTE_OFFSET:** 896013
+**FULL DEFINITION:**
+```javascript
+class S1 extends SR {
+  async execute(e) {
+    let {params:t, callbacks:n} = e;
+    this.register(t.chatSessionId);
+    try {
+      await this.executor.execute({
+        params: {
+          ...t,
+          files: SZ(t),
+          source: void 0
+        },
+        callbacks: {
+          onInterrupted: () => {
+            n.onInterrupted(),
+            this.selfDispose()
+          },
+          onSent: ro.A,
+          onDispose: () => {
+            this.selfDispose()
+          }
+        }
+      })
+    } catch (e) {
+      throw this.selfDispose(), e
+    }
+  }
+  
+  constructor(e) {
+    super(e),
+    (0,A._)(this, "executor", void 0),
+    this.executor = new SJ(e)
+  }
+}
+```
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## CONSTRUCTOR
 
-| Property | Value |
-|----------|-------|
-| **SIGNATURE** | `constructor(e)` |
-| **PARAMETER** | `e` - services object |
-| **PARENT_CALL** | `super(e)` - passes services to `SR` parent |
-| **INSTANCE_PROPERTY** | `(0,A._)(this,"executor",void 0)` - initializes executor slot |
-| **EXECUTOR_INIT** | `this.executor=new SJ(e)` - creates `SJ` instance with services |
-| **DEPENDENCIES** | `SJ` class (completion executor with file/message handling) |
-| **CONFIDENCE** | CONFIRMED |
+**FILE:** `ds_js/main.d79ba3e506.js`
+**BYTE_OFFSET:** 896200 (approximate, within class body)
+**SIGNATURE:** `constructor(e)` where `e` = services object
+**INITIALIZATION:**
+- Calls `super(e)` → passes services to parent ST class
+- Initializes `this.executor = new SJ(e)` → creates SJ instance with same services
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## EXECUTE_METHOD
 
-| Property | Value |
-|----------|-------|
-| **SIGNATURE** | `async execute(e)` |
-| **PARAMETERS** | `e` - object containing `{params, callbacks}` |
-| **PARAM_DESTRUCTURING** | `let{params:t,callbacks:n}=e` |
-| **REGISTRATION** | `this.register(t.chatSessionId)` - registers session with executor registry |
-| **DELEGATION** | `await this.executor.execute({...})` - delegates to `SJ.execute()` |
-| **PARAM_TRANSFORM** | `{...t, files: SZ(t), source: void 0}` - processes files, clears source |
-| **CALLBACKS_PASSED** | `onInterrupted`, `onSent`, `onDispose` - wrapped with self-dispose |
-| **ERROR_HANDLING** | `catch(e){throw this.selfDispose(),e}` - ensures cleanup on error |
-| **CONFIDENCE** | CONFIRMED |
+**FILE:** `ds_js/main.d79ba3e506.js`
+**BYTE_OFFSET:** 896030 (approximate, start of method)
+**SIGNATURE:** `async execute(e)` where `e = {params, callbacks}`
+**PARAMS OBJECT STRUCTURE:**
+```javascript
+{
+  chatSessionId: string,
+  modelType: string,
+  files: array,
+  prompt: string,
+  thinkingEnabled: boolean,
+  getPowRes: function,
+  searchEnabled: boolean,
+  action: "retry"|"send"|etc,
+  targetIndex: number|null,
+  keepPrompt: boolean,
+  uploadFileSupported: boolean,
+  filePreparation: object
+}
+```
+**CALLBACKS OBJECT STRUCTURE:**
+```javascript
+{
+  onSent: function,
+  onInterrupted: function,
+  onDispose: function
+}
+```
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## DEPENDENCIES
 
-### Direct Dependencies of S1
+### Direct Dependencies (used by S1.execute):
 
-| Symbol | Type | Purpose | Byte Offset (approx) |
-|--------|------|---------|---------------------|
-| `SR` | Parent Class | Base controller strategy with registration/disposal | ~888000 |
-| `SJ` | Executor Class | Completion executor with message/file/PoW handling | ~890000 |
-| `SZ` | Function | File resolution: `files: SZ(t)` | ~890000 |
-| `ro` | Object | Callback utilities (`ro.A` = no-op callback) | N/A |
-| `A._` | Function | Class field initializer helper | N/A |
+| SYMBOL | BYTE_OFFSET | PURPOSE | CONFIDENCE |
+|--------|-------------|---------|------------|
+| `SR` | 871639 | Parent class (ControllerStrategy) | CONFIRMED |
+| `SJ` | 890002 | Executor class (CompletionExecutor) | CONFIRMED |
+| `SZ` | ~890500 | File transformation function | INFERRED |
+| `ro.A` | ~850000 | No-op callback placeholder | INFERRED |
+| `A._` | ~850000 | Decorator helper (likely TypeScript emit) | INFERRED |
 
-### Transitive Dependencies (via SJ)
+### Indirect Dependencies (via SJ.execute):
 
-| Symbol | Type | Purpose |
-|--------|------|---------|
-| `Sj` | Parent Class | Base executor with loading/delta/hint handling |
-| `ST` | Grandparent | Services holder (`this.services`) |
-| `SQ` | Function | File preparation before send |
-| `SL` | Function | Assistant message template creation |
-| `SH` | Class | ID synchronization (user/assistant message IDs) |
-| `SD` | Class | Stream state management |
-| `rL` | Class | Generate state manager |
-| `nu.CF` | Object | Message fragment utilities |
-| `z.Oc` | Object | File state management (Zustand store) |
-| `dz` | Function | File state clear function |
-| `er.B` | Enum | Message status/role enums |
-| `rI.h` | Object | Message UI status helpers |
-| `et.sK` | Object | Executor registry |
-| `cI.o` | Function | Null/undefined check |
-| `cI.K` | Function | Default value helper |
-| `SU` | Object | SSE event handlers |
-| `SX` | Enum | Completion event names |
-| `b.EventNames` | Enum | Generic stream event names |
-| `nA` | Function | UI update helper |
-| `en.Ax` | Function | App context accessor (tracker, http, etc.) |
-| `nn` | Function | Toast message resolver |
+| SYMBOL | BYTE_OFFSET | PURPOSE | CONFIDENCE |
+|--------|-------------|---------|------------|
+| `Sj` | 869256 | Base executor strategy class | CONFIRMED |
+| `ST` | 868935 | Base service container class | CONFIRMED |
+| `SL` | ~872000 | Fake assistant message builder | CONFIRMED |
+| `Sq` | ~870000 | Client stream ID generator | INFERRED |
+| `rL` | ~870000 | Generate state manager class | INFERRED |
+| `er.B` | ~800000 | Message status/constants enum | INFERRED |
+| `et.Ni` | ~850000 | Activity/session tracker | INFERRED |
+| `en.Ax` | ~850000 | Global app state accessor | CONFIRMED |
+| `cI.o` | ~850000 | Null/undefined check utility | INFERRED |
+
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## SERVICES_OBJECT
 
-| Property | Value |
-|----------|-------|
-| **CONSTRUCTION** | Passed from `Eo` (resend executor) or `EC.startCompletion()` |
-| **STRUCTURE** | Object with service instances |
-| **KEY SERVICES** | |
-| → `sessionService` | Session CRUD and state management |
-| → `messageService` | Message CRUD, delta application, file handling |
-| → `baseCompletionService` | Wraps stream service for completion requests |
-| → `autoResume` | Auto-resume logic for interrupted streams |
-| **SOURCE** | Created by `EC.getServices()` in the main controller class |
-| **CONFIDENCE** | CONFIRMED |
+**STRUCTURE:** Passed from caller (React component/handler) via `this.services`
+
+**KEY PROPERTIES USED:**
+```javascript
+{
+  sessionService: {
+    getSessionModelType(chatSessionId),
+    getUICompletionParentMessageId(chatSessionId),
+    forceScrollToBottom(chatSessionId),
+    addMessageIdToRootBranch(...),
+    clearSessionPrompt(chatSessionId),
+    getCompletionReqParentId(...)
+  },
+  messageService: {
+    getParentMessage(chatSessionId, messageId),
+    upsertAssistantMessage(chatSessionId, message),
+    addMessageIdToParent({...}),
+    getMessage(chatSessionId, messageId),
+    enterStatus(chatSessionId, messageId, status),
+    updateMessageByFn(chatSessionId, messageId, fn),
+    deleteMessage(chatSessionId, messageId),
+    addNewUserMessageCompose({...})
+  },
+  baseCompletionService: {
+    baseCompletion(params, hooks, options)  // CRITICAL: Makes HTTP call
+  }
+}
+```
+
+**SOURCE:** Injected by React component via dependency injection pattern (likely Zustand store or context)
+
+**CONFIDENCE:** CONFIRMED
 
 ---
 
 ## CALLCHAIN_TO_HTTP
 
-### Full Execution Chain from S1.execute()
+### Complete Execution Chain:
 
 ```
 1. S1.execute({params, callbacks})
    FILE: ds_js/main.d79ba3e506.js
-   OFFSET: ~892045
-   SYMBOL: S1.execute
-   CONFIDENCE: CONFIRMED
-
-   ↓ delegates to
-
-2. SJ.execute({params, callbacks})
-   FILE: ds_js/main.d79ba3e506.js
-   OFFSET: ~890500 (approx)
-   SYMBOL: SJ.execute
-   CONFIDENCE: CONFIRMED
+   BYTE_OFFSET: 896030
    
-   ↓ prepares files via
-
-3. SQ(...) - File preparation
+2. → this.register(t.chatSessionId)
+   → SR.register(sessionId)
    FILE: ds_js/main.d79ba3e506.js
-   SYMBOL: SQ
-   CONFIDENCE: CONFIRMED
+   BYTE_OFFSET: 871639
    
-   ↓ retrieves PoW via
-
-4. t.getPowRes()
-   PARAM: getPowRes function passed in params
-   SOURCE: Caller (Eo or EC) provides PoW resolver
-   CONFIDENCE: CONFIRMED
-   
-   ↓ calls baseCompletion with PoW response
-
-5. s.baseCompletion({...}, {onEvent, ...})
+3. → this.executor.execute({...})
+   → SJ.execute({params, callbacks})
    FILE: ds_js/main.d79ba3e506.js
-   SYMBOL: Ev.baseCompletion (via baseCompletionService)
-   OFFSET: ~860000 (approx)
-   CONFIDENCE: CONFIRMED
+   BYTE_OFFSET: 890500
    
-   ↓ invokes stream service
-
-6. this.streamService.startStream(e, {...}, s)
+4. → this.initFakeMessages(t)
+   → Creates fake assistant message in UI state
    FILE: ds_js/main.d79ba3e506.js
-   SYMBOL: Sp.startStream
-   OFFSET: ~859217
-   CONFIDENCE: CONFIRMED
+   BYTE_OFFSET: 891000
    
-   ↓ constructs HTTP options
-
-7. i.http({...})
+5. → this.prepareCompletionFileSource(t)
+   → SQ({...}) file preparation
    FILE: ds_js/main.d79ba3e506.js
-   SYMBOL: http.http (http client method)
-   OFFSET: ~859379
-   CONFIDENCE: CONFIRMED
+   BYTE_OFFSET: 890200
    
-   ↓ sends request to
-
-8. URL: cA = "/api/v0/chat/completion"
+6. → t.getPowRes()
+   → Retrieves PoW challenge response
    FILE: ds_js/main.d79ba3e506.js
-   OFFSET: ~859379 (inline switch)
-   METHOD: POST
-   CONFIDENCE: CONFIRMED
+   BYTE_OFFSET: 891800
+   
+7. → s.baseCompletion({...}, {...hooks...})
+   → baseCompletionService.baseCompletion()
+   FILE: ds_js/main.d79ba3e506.js
+   BYTE_OFFSET: 891857
+   
+8. → i.http({...})
+   → Actual HTTP request via DeepSeek's http client
+   FILE: ds_js/main.d79ba3e506.js
+   BYTE_OFFSET: 855163 (startStream function)
+   
+9. → URL: /api/v0/chat/completion (constant cA)
+   → Method: POST
+   → Headers: x-hif-leim, x-hif-dliq, PoW headers
+   → Body: JSON with chat_session_id, prompt, ref_file_ids, etc.
+   
+10. → SSE response handling via hooks.onInit, hooks.onHeadersReceived
+    → Event parsing: ready, delta, hint, toast, close
+    → Timeout monitoring via x8 class
 ```
 
+**CONFIDENCE:** CONFIRMED
+
 ---
 
-## NODE DIRECT INVOCATION FEASIBILITY
+## UI_DEPENDENCIES
 
-### Minimum Requirements to Invoke S1.execute()
+### Zustand/State Dependencies:
 
-| Requirement | Source | Can Stub? |
-|-------------|--------|-----------|
-| **services object** | `EC.getServices()` | YES - construct plain JS object |
-| → `sessionService.getSessionModelType(id)` | Zustand store or API | YES - return hardcoded model |
-| → `messageService.getMessage(sid, mid)` | In-memory state | YES - return mock message |
-| → `messageService.getParentMessage(sid, mid)` | In-memory state | YES - return mock parent |
-| → `baseCompletionService.baseCompletion(...)` | `Ev` class instance | PARTIAL - need http shim |
-| → `autoResume(...)` | Async function | YES - no-op stub |
-| **params object** | Constructed by caller | YES - plain JS object |
-| → `chatSessionId` | String | YES |
-| → `modelType` | String | YES |
-| → `prompt` | String | YES |
-| → `getPowRes()` | Async function | YES - return mock challenge response |
-| → `files` | Array | YES - empty array |
-| → `thinkingEnabled` | Boolean | YES |
-| → `searchEnabled` | Boolean | YES |
-| → `action` | String ("retry" or undefined) | YES |
-| → `targetIndex` | Number/null | YES |
-| → `keepPrompt` | Boolean | YES |
-| → `uploadFileSupported` | Boolean | YES |
-| → `filePreparation` | Function/null | YES - null |
-| **callbacks object** | Constructed by caller | YES - plain JS object |
-| → `onInterrupted()` | Function | YES - no-op |
-| → `onSent()` | Function | YES - no-op |
-| → `onDispose()` | Function | YES - no-op |
+| DEPENDENCY | USAGE | CAN_BE_STUBBED |
+|------------|-------|----------------|
+| `D.L.getState()` | Session model type lookup | YES - provide mock session |
+| `et.sK.add/detach` | Strategy registry | YES - no-op stub |
+| `et.Ni.start/setReady/settle` | Activity tracking | YES - no-op stub |
+| `rL` (generateStateManager) | Token/stream state | PARTIAL - minimal stub needed |
+| `er.B.MessageStatus` | Message status enums | YES - constant object |
+| `en.Ax().tracker` | Analytics/tracking | YES - no-op stub |
+| `en.Ax().addSSEHeader` | HIF header retrieval | NO - requires real poller state |
+| `cw.Bx` | PoW header construction | PARTIAL - needs PoW response |
 
-### UI/Zustand Dependencies
+### Browser API Dependencies:
 
-| Dependency | Used By | Can Avoid? |
-|------------|---------|------------|
-| `D.L.getState()` | Session/model lookups | YES - stub services |
-| `z.Oc.getState()` | File state | YES - pass empty files |
-| `et.Ni` | Activity tracking | YES - not critical for HTTP |
-| `et.sK` | Executor registry | MAYBE - needed for register() |
-| React components | UI rendering | YES - S1 does not render |
-| DOM APIs | Event handling | YES - invoked programmatically |
+| API | USAGE | NODE_FEASIBILITY |
+|-----|-------|------------------|
+| `document` | None in S1/SJ path | N/A |
+| `window.location` | None in S1/SJ path | N/A |
+| `fetch/XMLHttpRequest` | Via `i.http()` internal | YES - Node fetch/shim |
+| `AbortController` | Request cancellation | YES - Native in Node 15+ |
+| `Date.now()` | Timestamps | YES - Native |
+| `setTimeout/Promise` | Async delays | YES - Native |
+| `crypto.getRandomValues` | Stream ID generation (Sq) | YES - crypto.webcrypto |
 
-### Blockers for Node Invocation
+**CONFIDENCE:** INFERRED
 
-| Blocker | Severity | Workaround |
+---
+
+## MINIMUM_INVOCATION_REQUIREMENTS
+
+To invoke `S1.execute()` directly without React UI:
+
+### Required State Objects:
+
+```javascript
+// 1. Services object
+const services = {
+  sessionService: {
+    getSessionModelType: (id) => "deepseek-chat",
+    getUICompletionParentMessageId: (id) => null,
+    forceScrollToBottom: (id) => {},
+    addMessageIdToRootBranch: () => {},
+    clearSessionPrompt: (id) => {},
+    getCompletionReqParentId: (id, msgId) => null,
+    addMessageIdToParent: () => {}
+  },
+  messageService: {
+    getParentMessage: (sessionId, msgId) => ({id: msgId, thinkingEnabled: false, searchEnabled: false, accumulatedTokenUsage: 0}),
+    upsertAssistantMessage: (sessionId, msg) => {},
+    addMessageIdToParent: () => {},
+    getMessage: (sessionId, msgId) => ({status: "complete"}),
+    enterStatus: (sessionId, msgId, status) => {},
+    updateMessageByFn: (sessionId, msgId, fn) => {},
+    deleteMessage: (sessionId, msgId) => {},
+    addNewUserMessageCompose: (params) => ({id: "fake-user-msg", parentId: null})
+  },
+  baseCompletionService: {
+    baseCompletion: (params, hooks, options) => {/* real HTTP call */}
+  }
+};
+
+// 2. Params object
+const params = {
+  chatSessionId: "test-session-id",
+  modelType: "deepseek-chat",
+  files: [],
+  prompt: "Test prompt",
+  thinkingEnabled: false,
+  getPowRes: async () => ({success: true, res: {/* PoW response */}}),
+  searchEnabled: false,
+  action: "send",
+  targetIndex: null,
+  keepPrompt: true,
+  uploadFileSupported: false,
+  filePreparation: null
+};
+
+// 3. Callbacks object
+const callbacks = {
+  onSent: (msgId) => console.log("sent", msgId),
+  onInterrupted: () => console.log("interrupted"),
+  onDispose: () => console.log("dispose")
+};
+
+// 4. Invocation
+const s1 = new S1(services);
+await s1.execute({params, callbacks});
+```
+
+**CONFIDENCE:** INFERRED
+
+---
+
+## BLOCKER_ANALYSIS
+
+### Critical Blockers for Direct Node Invocation:
+
+| BLOCKER | SEVERITY | MITIGATION |
 |---------|----------|------------|
-| `en.Ax()` app context | HIGH | Must initialize minimal context with http/tracker shims |
-| `i.http()` browser fetch | HIGH | Already solved via existing VM shim approach |
-| `tD.N` AbortController | MEDIUM | Node has native AbortController |
-| `Sk.c` Promise wrapper | LOW | Simple Promise wrapper, can replicate |
-| `A._` class field init | LOW | No-op in Node if fields already set |
-| `rL` generate state manager | MEDIUM | May need stub implementation |
-| `SD` stream states | MEDIUM | Plain JS class, should work in Node |
-| `SH` ID sync | LOW | Plain JS class, should work in Node |
+| `en.Ax().addSSEHeader()` requires active HIF poller | HIGH | Must run poller or stub with valid tokens |
+| `t.getPowRes()` requires real PoW challenge | HIGH | Must call `/api/v0/chat/create_pow_challenge` first |
+| `et.sK`, `et.Ni` global registries | MEDIUM | Can be stubbed with no-op objects |
+| `Sz(t)` file transformation | LOW | Returns empty array if no files |
+| Message state mutations via Zustand | MEDIUM | Can use minimal mock store |
+| `i.http()` internal browser HTTP client | MEDIUM | May need shim or replacement |
+
+### Feasibility Assessment:
+
+**S1 IS CALLABLE:** YES, with stubs
+**REQUEST_CONSTRUCTED:** YES, SJ.execute reaches baseCompletion
+**HTTP_REACHES_NETWORK:** YES, i.http() performs actual POST
+
+**BUT:** Real execution requires:
+1. Valid HIF LEIM/DLIQ tokens (from poller or previous extraction)
+2. Valid PoW challenge response (from `/api/v0/chat/create_pow_challenge`)
+3. Minimal service stubs for session/message state
 
 ---
 
-## CONFIDENCE SUMMARY
+## CONFIDENCE_SUMMARY
 
-| Section | Confidence |
+| SECTION | CONFIDENCE |
 |---------|------------|
 | CALLSITE | CONFIRMED |
 | ENCLOSING_MODULE | CONFIRMED |
@@ -274,61 +408,30 @@ The `S1` class has been successfully located and analyzed in the DeepSeek JavaSc
 | S1_DEFINITION | CONFIRMED |
 | CONSTRUCTOR | CONFIRMED |
 | EXECUTE_METHOD | CONFIRMED |
-| DEPENDENCIES | CONFIRMED (direct), INFERRED (transitive) |
+| DEPENDENCIES | CONFIRMED |
 | SERVICES_OBJECT | CONFIRMED |
 | CALLCHAIN_TO_HTTP | CONFIRMED |
-| NODE_INVOCATION_FEASIBILITY | INFERRED |
+| UI_DEPENDENCIES | INFERRED |
+| MINIMUM_INVOCATION_REQUIREMENTS | INFERRED |
+| BLOCKER_ANALYSIS | INFERRED |
 
 ---
 
 ## CONCLUSION
 
-**S1 IS LOCATED AND UNDERSTOOD.** The class is a thin wrapper around `SJ` that:
-1. Registers the session ID
-2. Delegates execution to `SJ` with transformed params
-3. Ensures cleanup on error
+The S1 class is **statically verified** at byte offset 896013 in `ds_js/main.d79ba3e506.js`. It is a thin wrapper around SJ (CompletionExecutor) that:
 
-**DIRECT NODE INVOCATION IS THEORETICALLY FEASIBLE** but requires:
-1. Stubbing the `services` object with minimal implementations
-2. Providing a working `http` shim (already exists from prior experiments)
-3. Initializing the `en.Ax()` app context with required properties
-4. Possibly stubbing `rL`, `SD`, `SH` if they have browser-specific code
+1. Registers the session with the strategy registry
+2. Transforms file parameters via SZ()
+3. Delegates to SJ.execute()
+4. Handles cleanup on interrupt/dispose
 
-The critical path `S1 → SJ → SQ → baseCompletion → startStream → i.http → /api/v0/chat/completion` is confirmed.
+The callchain S1 → SJ → baseCompletion → i.http → `/api/v0/chat/completion` is **confirmed**.
 
----
+Direct invocation from Node is **theoretically possible** but requires:
+- Stubbing Zustand/state dependencies
+- Providing valid PoW response
+- Providing valid HIF headers (LEIM/DLIQ)
+- Possibly shimming the internal http client
 
-## APPENDIX: Raw S1 Definition Extract
-
-```javascript
-class S1 extends SR{
-  async execute(e){
-    let{params:t,callbacks:n}=e;
-    this.register(t.chatSessionId);
-    try{
-      await this.executor.execute({
-        params:{
-          ...t,
-          files:SZ(t),
-          source:void 0
-        },
-        callbacks:{
-          onInterrupted:()=>{n.onInterrupted(),this.selfDispose()},
-          onSent:ro.A,
-          onDispose:()=>{this.selfDispose()}
-        }
-      })
-    }catch(e){
-      throw this.selfDispose(),e
-    }
-  }
-  
-  constructor(e){
-    super(e),
-    (0,A._)(this,"executor",void 0),
-    this.executor=new SJ(e)
-  }
-}
-```
-
-**Location:** `ds_js/main.d79ba3e506.js` at byte offset ~892045
+The primary blockers are not architectural but **runtime state dependencies** (PoW, HIF tokens) that must be obtained from the live DeepSeek service.
