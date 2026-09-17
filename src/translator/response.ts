@@ -635,61 +635,84 @@ export { parseDSMLToolCalls, CORRECTIVE_MESSAGE }
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
-  getParseError: () => { message: string; syntaxRules: string } | null
+  parseError: { message: string; syntaxRules: string } | null
 }
 
-export function translateDeepSeekStreamToSSE(
+export async function translateDeepSeekStreamToSSE(
   deepSeekStream: ReadableStream<Uint8Array>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): SSEParseResult {
+): Promise<SSEParseResult> {
   const decoder = new TextDecoder()
   let buffer = ''
-  let parser: ReturnType<typeof createParser> | null = null
+  const outputChunks: Uint8Array[] = []
   let parseError: { message: string; syntaxRules: string } | null = null
 
-  const transform = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      if (parser === null) parser = createParser(controller, info)
-      buffer += decoder.decode(chunk, { stream: true })
+  const reader = deepSeekStream.getReader()
+  const controller = {
+    enqueue(chunk: Uint8Array) {
+      outputChunks.push(chunk)
+    },
+  } as TransformStreamDefaultController<Uint8Array>
+
+  const parser = createParser(controller, info)
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
       for (const line of lines) {
         const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
         parser.processLine(trimmed)
       }
-    },
-    flush(controller) {
-      if (parser === null) parser = createParser(controller, info)
-      if (buffer.length > 0) {
-        const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
-        parser.processLine(trimmed)
-        buffer = ''
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  if (buffer.length > 0) {
+    const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
+    parser.processLine(trimmed)
+    buffer = ''
+  }
+
+  if (parser.state.pendingLookahead) {
+    parser.emitContent('')
+  }
+
+  // Check for unclosed DSML at EOF
+  if (parser.state.isToolCallInProgress && !parser.state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
+    const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
+    parser.state.parsedToolCalls = result.toolCalls
+    if (result.isMalformed && result.error) {
+      parser.state.parseError = result.error
+    }
+    parser.state.isToolCallInProgress = false
+    parser.state.toolCallBuffer = ''
+  }
+
+  parseError = parser.state.parseError
+  parser.emitFinal()
+
+  if (logger) {
+    logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of outputChunks) {
+        controller.enqueue(chunk)
       }
-      // Flush any pending lookahead before finalizing
-      if (parser.state.pendingLookahead) {
-        parser.emitContent('')
-      }
-      // Capture parse error before emitting final
-      parseError = parser.state.parseError
-      parser.emitFinal()
+      controller.close()
     },
   })
-  const stream = deepSeekStream.pipeThrough(transform)
-  const resultStream = logger
-    ? stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          controller.enqueue(chunk)
-        },
-        flush(controller) {
-          logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
-        },
-      }))
-    : stream
-  
+
   return {
-    stream: resultStream,
-    getParseError: () => parseError
+    stream,
+    parseError,
   }
 }
 

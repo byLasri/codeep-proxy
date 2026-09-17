@@ -256,7 +256,7 @@ export default {
               const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
               
               if (openaiReq.stream === true) {
-                const sseResult: SSEParseResult = translateDeepSeekStreamToSSE(response.body, info, logger)
+                const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
                 return new Response(sseResult.stream, {
                   headers: {
                     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -316,10 +316,10 @@ export default {
               if (openaiReq.stream === true) {
                 // For streaming, we need to consume the entire stream first to detect malformed DSML
                 // This is necessary because we can't retry after starting to stream to the client
-                const sseResult: SSEParseResult = translateDeepSeekStreamToSSE(response.body, info, logger)
+                const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
                 
                 // Check if DSML parsing failed (malformed DSML detected)
-                const parseError = sseResult.getParseError()
+                const parseError = sseResult.parseError
                 if (parseError) {
                   lastMalformedError = parseError
                   malformedRetryCount++
