@@ -6,7 +6,7 @@ import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeek
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
-// Global FIFO queue for strict 5-second delay between requests
+// Global FIFO queue for strict 10-second delay between requests
 let globalQueue: Promise<void> = Promise.resolve();
 
 async function enqueueGlobalRequest(): Promise<void> {
@@ -15,7 +15,7 @@ async function enqueueGlobalRequest(): Promise<void> {
   const myTurn = new Promise<void>(resolve => { resolveMyTurn = resolve; });
 
   globalQueue = previousQueue.then(async () => {
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 10000));
     resolveMyTurn!();
   });
 
