@@ -243,7 +243,7 @@ function createParser(
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
     
-    // Emit parse error as a message to the client if present
+    // Emit parse error as a tool call to preserve the agent loop
     if (state.parseError) {
       // First emit role if not already emitted
       if (!state.hasEmittedRole && state.responseMessageId !== 'null') {
@@ -258,8 +258,22 @@ function createParser(
         controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
       }
       
-      // Emit the error message as content (not as a tool call)
-      // This preserves the agent loop by sending a normal text response
+      // Emit the error as a tool call to preserve the agent loop
+      // The special tool name '__malformed_dsml_error__' signals to the client
+      // that this is a recovery response, not a real tool call
+      const errorToolCall = {
+        index: 0,
+        id: `call_${Date.now()}_error`,
+        type: 'function' as const,
+        function: {
+          name: '__malformed_dsml_error__',
+          arguments: JSON.stringify({
+            error: state.parseError.message,
+            syntax_rules: state.parseError.syntaxRules
+          })
+        }
+      }
+      
       const errorChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -268,9 +282,9 @@ function createParser(
         choices: [{
           index: 0,
           delta: {
-            content: state.parseError.message
+            tool_calls: [errorToolCall]
           },
-          finish_reason: 'stop'
+          finish_reason: 'tool_calls'
         }]
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(errorChunk)))
@@ -909,7 +923,9 @@ export async function translateDeepSeekStreamToJSON(
   
   // Handle parse errors in non-streaming mode
   if (dsmlResult.error) {
-    // Return the error message as content to preserve the agent loop
+    // Return the error as a tool call to preserve the agent loop
+    // The special tool name '__malformed_dsml_error__' signals to the client
+    // that this is a recovery response, not a real tool call
     const result: OpenAIChatCompletionResponse = {
       id: `chatcmpl-${responseMessageId}`,
       object: 'chat.completion',
@@ -920,10 +936,23 @@ export async function translateDeepSeekStreamToJSON(
           index: 0,
           message: { 
             role: 'assistant', 
-            content: dsmlResult.error.message,
-            reasoning_content: accumulatedReasoning || undefined
+            content: null,
+            reasoning_content: accumulatedReasoning || undefined,
+            tool_calls: [
+              {
+                id: `call_${Date.now()}_error`,
+                type: 'function',
+                function: {
+                  name: '__malformed_dsml_error__',
+                  arguments: JSON.stringify({
+                    error: dsmlResult.error.message,
+                    syntax_rules: dsmlResult.error.syntaxRules
+                  })
+                }
+              }
+            ]
           },
-          finish_reason: 'stop',
+          finish_reason: 'tool_calls',
         },
       ],
       usage: {
