@@ -33,7 +33,34 @@ interface SSEParserState {
 interface DSMLParseResult {
   toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   isMalformed?: boolean
+  error?: { message: string; syntaxRules: string }
 }
+
+const CORRECTIVE_MESSAGE = `Your previous response contained a malformed tool call that could not be parsed.
+The tool call was NOT executed.
+
+Here is the EXACT format you must follow:
+
+<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="tool_name">
+<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+<｜｜DSML｜｜ invoke name="another_tool">
+<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>
+
+Rules:
+1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
+2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
+3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
+4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
+5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
+6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
+7. Do not add extra text or tags outside the DSML structure.
+
+Please retry the tool call now using exactly this syntax. Do not add any text outside the DSML structure.`
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
@@ -47,36 +74,92 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
     return { toolCalls: [] }
   }
   
-  // For malformed DSML, we still try to extract what we can
-  // and forward partial results instead of returning an error
-  // This allows the upstream client (OpenCode) to see the malformed tool call
-  // and generate its own native error
+  // Validate DSML structure strictly
+  // Check for missing closing </｜｜DSML｜｜ calls> tag
+  if (hasCallsStart && !hasCallsEnd) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: 'Missing closing </｜｜DSML｜｜ calls> tag',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
   
-  // Try to extract invokes even from malformed XML
-  // Use a more lenient regex that can handle missing closing tags
-  const invokeRegex = /<｜｜DSML｜｜\s+invoke\s+name="([^"]+)"[^>]*>/g
-  const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)(?:<|<\/)/g
+  // Extract content between calls tags
+  const callsMatch = xml.match(/<｜｜DSML｜｜\s+calls>([\s\S]*?)<\/｜｜DSML｜｜\s+calls>/)
+  if (!callsMatch) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: 'Invalid DSML calls structure',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
   
+  const callsContent = callsMatch[1]
+  
+  // Check for parameters directly under <calls> (outside any <invoke>)
+  // First, remove all invoke blocks to see if any parameters remain
+  const withoutInvokes = callsContent.replace(/<｜｜DSML｜｜\s+invoke[\s\S]*?<\/｜｜DSML｜｜\s+invoke>/g, '')
+  const orphanParamMatch = withoutInvokes.match(/<｜｜DSML｜｜\s+parameter\s/)
+  if (orphanParamMatch) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: 'Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  // Check for unknown/invalid elements directly under <calls>
+  // Valid elements under <calls> are only <invoke> blocks
+  const directChildrenRegex = /<｜｜DSML｜｜\s+(?!invoke\b|parameter\b)[a-zA-Z]+/g
+  const invalidElementMatch = callsContent.match(directChildrenRegex)
+  if (invalidElementMatch) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: `Invalid DSML element found: ${invalidElementMatch[0]}. Only <invoke> elements are allowed inside <calls>.`,
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  // Extract and validate each invoke block
+  const invokeRegex = /<｜｜DSML｜｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+invoke>/g
   let invokeMatch
-  let invokeIndex = 0
-  while ((invokeMatch = invokeRegex.exec(xml)) !== null) {
+  
+  while ((invokeMatch = invokeRegex.exec(callsContent)) !== null) {
     const toolName = invokeMatch[1]
+    const invokeContent = invokeMatch[2]
     
     // Skip if tool name is empty
     if (!toolName || toolName.trim() === '') {
-      continue
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: 'Tool name is empty or missing in <invoke> tag',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
     }
     
-    // Extract parameters for this invoke by looking ahead in the content
+    // Extract parameters from this invoke block
     const params: Record<string, string> = {}
-    const remainingContent = xml.substring(invokeMatch.index!)
+    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([^<]*)<\/｜｜DSML｜｜\s+parameter>/g
+    let paramMatch
     
-    // Find all parameters until next invoke or end of calls
-    const paramMatches = [...remainingContent.matchAll(/<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"[^>]*>([^<]*)/g)]
-    
-    for (const paramMatch of paramMatches) {
+    while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
       const paramName = paramMatch[1]
-      const paramValue = paramMatch[2]?.trim() || ''
+      const paramValue = paramMatch[3]?.trim() || ''
       
       // Only include valid parameter names
       if (paramName && paramName.trim() !== '') {
@@ -84,8 +167,22 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       }
     }
     
-    // Add the tool call even if it might be malformed
-    // OpenCode will validate and generate native errors
+    // Check for malformed parameter tags within this invoke
+    // Look for parameters without proper closing tags
+    const malformedParamRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![^<]*<\/｜｜DSML｜｜\s+parameter>)/g
+    const hasMalformedParam = invokeContent.match(malformedParamRegex)
+    if (hasMalformedParam) {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: 'Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
+    }
+    
+    // Add the tool call
     toolCalls.push({
       id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       type: 'function',
@@ -94,13 +191,35 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         arguments: JSON.stringify(params)
       }
     })
-    invokeIndex++
   }
   
-  // Mark as malformed if DSML structure is incomplete
-  const isMalformed = (hasCallsStart && !hasCallsEnd) || toolCalls.length === 0
+  // Check for unclosed invoke tags
+  const openInvokeCount = (callsContent.match(/<｜｜DSML｜｜\s+invoke\s/g) || []).length
+  const closedInvokeCount = (callsContent.match(/<\/｜｜DSML｜｜\s+invoke>/g) || []).length
+  if (openInvokeCount !== closedInvokeCount) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: `Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`,
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
   
-  return { toolCalls, isMalformed }
+  // If no tool calls were found but DSML structure exists, it's malformed
+  if (toolCalls.length === 0 && hasCallsStart) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: '<calls> block must contain at least one <invoke> element',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  return { toolCalls }
 }
 
 function createParser(
@@ -131,8 +250,37 @@ function createParser(
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
     
-    // Emit tool calls if we have any (including malformed ones - they will be forwarded to OpenCode)
-    if (state.parsedToolCalls.length > 0) {
+    // If there was a parse error (malformed DSML), emit the corrective message as content
+    // This notifies the user and sends the corrective message back to the model
+    if (state.parseError) {
+      // First emit role if not already emitted
+      if (!state.hasEmittedRole) {
+        state.hasEmittedRole = true
+        const roleChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+        }
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+      }
+      
+      // Emit the corrective message as content
+      const errorChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ 
+          index: 0, 
+          delta: { content: state.parseError.syntaxRules }, 
+          finish_reason: 'stop' 
+        }],
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(errorChunk)))
+    } else if (state.parsedToolCalls.length > 0) {
+      // Emit tool calls if we have any
       const toolCallChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -193,6 +341,10 @@ function createParser(
       if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
         const result = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
+        // Store parse error if present for handling in emitFinal
+        if (result.isMalformed && result.error) {
+          state.parseError = result.error
+        }
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
       }
@@ -738,8 +890,36 @@ export async function translateDeepSeekStreamToJSON(
   // Parse DSML tool calls from accumulated content
   const dsmlResult = parseDSMLToolCalls(accumulatedContent)
   
-  // If tool calls are found (including malformed ones), return them with finish_reason: "tool_calls"
-  // Malformed tool calls will be forwarded to OpenCode which will generate native errors
+  // If DSML is malformed, return the corrective message as content instead of tool calls
+  // This notifies the user and sends the corrective message back to the model for retry
+  if (dsmlResult.isMalformed && dsmlResult.error) {
+    const result: OpenAIChatCompletionResponse = {
+      id: `chatcmpl-${responseMessageId}`,
+      object: 'chat.completion',
+      created: info.created,
+      model: info.model,
+      choices: [
+        {
+          index: 0,
+          message: { 
+            role: 'assistant', 
+            content: dsmlResult.error.syntaxRules,
+            reasoning_content: accumulatedReasoning || undefined,
+          },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: accumulatedTokens,
+        total_tokens: accumulatedTokens,
+      },
+    }
+    logger?.logOutgoingToClient(result)
+    return result
+  }
+  
+  // If tool calls are found (valid DSML), return them with finish_reason: "tool_calls"
   if (dsmlResult.toolCalls.length > 0) {
     const result: OpenAIChatCompletionResponse = {
       id: `chatcmpl-${responseMessageId}`,
