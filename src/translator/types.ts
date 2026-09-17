@@ -18,7 +18,7 @@ export interface OpenAIChatCompletionRequest {
 
 export interface OpenAIChatCompletionChoice {
   index: number
-  message: { role: 'assistant'; content: string; reasoning_content?: string }
+  message: { role: 'assistant'; content: string | null; reasoning_content?: string; tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> }
   finish_reason: string
 }
 

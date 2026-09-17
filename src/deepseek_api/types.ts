@@ -93,6 +93,7 @@ export interface DeepSeekCompletionInput {
   model_type: DeepSeekModelType;  // required - no fallback
   thinking_enabled: boolean;
   search_enabled: boolean;
+  timeout?: number;  // optional timeout in milliseconds, defaults to 10000 if not provided
   // ref_file_ids: [] (FIXED - protocol constant, enforced in deepseek_api)
   // action: null (FIXED - protocol constant, enforced in deepseek_api)
   // preempt: false (FIXED - protocol constant, enforced in deepseek_api)

@@ -6,16 +6,16 @@ import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeek
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
-// Global FIFO queue for strict 10-second delay between requests
+// Global FIFO queue for request delay between requests
 let globalQueue: Promise<void> = Promise.resolve();
 
-async function enqueueGlobalRequest(): Promise<void> {
+async function enqueueGlobalRequest(delayMs: number = 10000): Promise<void> {
   const previousQueue = globalQueue;
   let resolveMyTurn: () => void;
   const myTurn = new Promise<void>(resolve => { resolveMyTurn = resolve; });
 
   globalQueue = previousQueue.then(async () => {
-    await new Promise(r => setTimeout(r, 10000));
+    await new Promise(r => setTimeout(r, delayMs));
     resolveMyTurn!();
   });
 
@@ -220,12 +220,17 @@ export default {
               }
               const prompt = latestUserMessage.content
               
+              // Extract timeout from request or use default (10 seconds)
+              const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 10000
+              await enqueueGlobalRequest(timeoutMs)
+              
               // Preserve thinking_enabled and search_enabled settings from model mapping
               const config = mapOpenAIModelToDeepSeek(openaiReq.model)
               const options = {
                 model_type: config.model_type,
                 thinking_enabled: config.thinking,
                 search_enabled: config.search,
+                timeout: timeoutMs,
               }
               
               const client = createDeepSeekClient(env)
@@ -278,7 +283,12 @@ export default {
               }
             }
 
+            // Extract timeout from request or use default (10 seconds)
+            const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 10000
+            await enqueueGlobalRequest(timeoutMs)
+
             const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt, logger)
+            input.timeout = timeoutMs
             const client = createDeepSeekClient(env)
             const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input, logger)
 
