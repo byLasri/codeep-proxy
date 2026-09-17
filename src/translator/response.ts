@@ -303,7 +303,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
     while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
       const paramName = paramMatch[1]
       const stringAttr = paramMatch[2]
-      const paramValue = paramMatch[3]?.trim() || ''
+      const rawValue = paramMatch[3] || ''
       
       // Parameter name must be non-empty
       if (!paramName || paramName.trim() === '') {
@@ -318,12 +318,12 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       }
       
       if (stringAttr === 'true') {
-        // string="true" - store as raw string
-        params[paramName] = paramValue
+        // string="true" - store as raw string, preserving all whitespace exactly
+        params[paramName] = rawValue
       } else {
-        // string="false" - parse as JSON
+        // string="false" - parse as JSON (trim whitespace before parsing since JSON whitespace is insignificant)
         try {
-          params[paramName] = JSON.parse(paramValue)
+          params[paramName] = JSON.parse(rawValue.trim())
         } catch {
           return {
             toolCalls: [],

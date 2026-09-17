@@ -634,6 +634,81 @@ line3</｜｜DSML｜｜ parameter>
       expect(args.text).toBe('line1\nline2\nline3')
     }},
 
+    // string="true" whitespace preservation tests
+    { name: 'string="true" - preserves leading spaces', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="message" string="true">  hello</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.message).toBe('  hello')
+    }},
+    { name: 'string="true" - preserves trailing spaces', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="message" string="true">hello  </｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.message).toBe('hello  ')
+    }},
+    { name: 'string="true" - preserves leading and trailing spaces', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="message" string="true">  hello  </｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.message).toBe('  hello  ')
+    }},
+    { name: 'string="true" - preserves whitespace-only value', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="message" string="true">   </｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.message).toBe('   ')
+    }},
+    { name: 'string="true" - preserves newlines exactly', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="text" string="true">\nhello\n</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.text).toBe('\nhello\n')
+    }},
+    { name: 'string="false" trims whitespace before JSON parse', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="count" string="false"> 5 </｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.count).toBe(5)
+      expect(typeof args.count).toBe('number')
+    }},
+
     // string="false" tests
     { name: 'string="false" - integer', fn: async () => {
       const xml = `<｜｜DSML｜｜ calls>
