@@ -665,7 +665,7 @@ export async function translateDeepSeekStreamToJSON(
   deepSeekStream: ReadableStream<Uint8Array>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): Promise<OpenAIChatCompletionResponse> {
+): Promise<OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } }> {
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulatedContent = ''
@@ -891,11 +891,10 @@ export async function translateDeepSeekStreamToJSON(
   // Parse DSML tool calls from accumulated content
   const dsmlResult = parseDSMLToolCalls(accumulatedContent)
   
-  // If DSML is malformed, return the corrective message as content instead of tool calls
-  // This notifies the user and sends the corrective message back to the model for retry
-  // Use finish_reason: 'length' to signal an abnormal termination that allows retry
+  // If DSML is malformed, return error info WITHOUT sending to client
+  // The caller (index.ts) will handle the internal retry loop
   if (dsmlResult.isMalformed && dsmlResult.error) {
-    const result: OpenAIChatCompletionResponse = {
+    const result: OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } } = {
       id: `chatcmpl-${responseMessageId}`,
       object: 'chat.completion',
       created: info.created,
@@ -905,10 +904,10 @@ export async function translateDeepSeekStreamToJSON(
           index: 0,
           message: { 
             role: 'assistant', 
-            content: dsmlResult.error.syntaxRules,
+            content: '',
             reasoning_content: accumulatedReasoning || undefined,
           },
-          finish_reason: 'length',
+          finish_reason: 'stop',
         },
       ],
       usage: {
@@ -916,6 +915,7 @@ export async function translateDeepSeekStreamToJSON(
         completion_tokens: accumulatedTokens,
         total_tokens: accumulatedTokens,
       },
+      _malformedError: dsmlResult.error,
     }
     logger?.logOutgoingToClient(result)
     return result
