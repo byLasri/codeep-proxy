@@ -176,9 +176,13 @@ export class DeepSeekWebClient {
     this.getCredentials = () => credentialsReader.getCredentials();
   }
 
-  async createSession(): Promise<DeepSeekSession> {
+  async createSession(): Promise<{ conversationId: string; serverSessionId: string | null }> {
     const credentials = await this.getCredentials();
-    return createSession(credentials, this.origin);
+    const result = await createSession(credentials, this.origin);
+    return {
+      conversationId: result.conversationId,
+      serverSessionId: result.serverSessionId,
+    };
   }
 
   /**
@@ -208,7 +212,7 @@ export class DeepSeekWebClient {
         resolvedParentMessageId = null;
       } else {
         const newSession = await this.createSession();
-        resolvedChatSessionId = newSession.id;
+        resolvedChatSessionId = newSession.conversationId;
         resolvedParentMessageId = null;
       }
 
