@@ -28,12 +28,94 @@ interface SSEParserState {
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   parseError: { message: string; syntaxRules: string } | null
   pendingLookahead: string
+  detectedDialect: DSMLDialect | null
 }
 
 export interface DSMLParseResult {
   toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   isMalformed?: boolean
   error?: { message: string; syntaxRules: string }
+}
+
+type DSMLDelimiter = 'single' | 'double' | 'mixed' | 'ascii'
+type DSMLWrapper = 'function_calls' | 'tool_calls' | 'calls' | 'toolcalls' | 'tool'
+
+interface DSMLDialect {
+  delimiter: DSMLDelimiter
+  wrapper: DSMLWrapper
+  openCalls: string
+  closeCalls: string
+  openInvoke: string
+  closeInvoke: string
+  openParameter: string
+  closeParameter: string
+}
+
+const DELIMITER_PATTERNS: Record<DSMLDelimiter, { prefix: string }> = {
+  single: { prefix: '<｜DSML｜' },
+  double: { prefix: '<｜｜DSML｜｜' },
+  mixed: { prefix: '<｜DSML｜｜' },
+  ascii: { prefix: '<||DSML||' },
+}
+
+const WRAPPER_NAMES: DSMLWrapper[] = ['function_calls', 'tool_calls', 'calls', 'toolcalls', 'tool']
+
+function detectDialect(xml: string): DSMLDialect | null {
+  for (const [delimiterKey, { prefix }] of Object.entries(DELIMITER_PATTERNS) as [DSMLDelimiter, { prefix: string }][]) {
+    for (const wrapper of WRAPPER_NAMES) {
+      // Try with space first (full-width forms), then without space (ASCII form)
+      const openCallsWithSpace = `${prefix} ${wrapper}>`
+      const openCallsNoSpace = `${prefix}${wrapper}>`
+      const closeCallsWithSpace = `</${prefix.slice(1)} ${wrapper}>`
+      const closeCallsNoSpace = `</${prefix.slice(1)}${wrapper}>`
+      const openInvokeWithSpace = `${prefix} invoke`
+      const openInvokeNoSpace = `${prefix}invoke`
+      const closeInvokeWithSpace = `</${prefix.slice(1)} invoke>`
+      const closeInvokeNoSpace = `</${prefix.slice(1)}invoke>`
+      const openParameterWithSpace = `${prefix} parameter`
+      const openParameterNoSpace = `${prefix}parameter`
+      const closeParameterWithSpace = `</${prefix.slice(1)} parameter>`
+      const closeParameterNoSpace = `</${prefix.slice(1)}parameter>`
+      
+      // Check both variants
+      if (xml.includes(openCallsWithSpace) || xml.includes(openCallsNoSpace)) {
+        const hasSpace = xml.includes(openCallsWithSpace)
+        return {
+          delimiter: delimiterKey,
+          wrapper,
+          openCalls: hasSpace ? openCallsWithSpace : openCallsNoSpace,
+          closeCalls: hasSpace ? closeCallsWithSpace : closeCallsNoSpace,
+          openInvoke: hasSpace ? openInvokeWithSpace : openInvokeNoSpace,
+          closeInvoke: hasSpace ? closeInvokeWithSpace : closeInvokeNoSpace,
+          openParameter: hasSpace ? openParameterWithSpace : openParameterNoSpace,
+          closeParameter: hasSpace ? closeParameterWithSpace : closeParameterNoSpace,
+        }
+      }
+    }
+  }
+  return null
+}
+
+function normalizeToCanonical(xml: string, dialect: DSMLDialect): string {
+  let normalized = xml
+  
+  // Replace calls tags
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.openCalls), 'g'), '<｜｜DSML｜｜ calls>')
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.closeCalls), 'g'), '</｜｜DSML｜｜ calls>')
+  
+  // Replace invoke tags
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.openInvoke), 'g'), '<｜｜DSML｜｜ invoke')
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.closeInvoke), 'g'), '</｜｜DSML｜｜ invoke>')
+  
+  // Replace parameter tags
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.openParameter), 'g'), '<｜｜DSML｜｜ parameter')
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.closeParameter), 'g'), '</｜｜DSML｜｜ parameter>')
+  
+  return normalized
+}
+
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 const CORRECTIVE_MESSAGE = `Your previous response contained a malformed tool call that could not be parsed.
@@ -65,12 +147,21 @@ Please retry the tool call now using exactly this syntax. Do not add any text ou
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
   
-  // Check for basic DSML structure
-  const hasCallsStart = xml.includes('<｜｜DSML｜｜ calls>')
-  const hasCallsEnd = xml.includes('</｜｜DSML｜｜ calls>')
+  // Detect dialect
+  const dialect = detectDialect(xml)
+  if (!dialect) {
+    // No supported DSML dialect detected - this is normal for text responses
+    return { toolCalls: [] }
+  }
+  
+  // Normalize to canonical form for structural validation
+  const normalizedXml = normalizeToCanonical(xml, dialect)
+  
+  // Check for basic DSML structure in normalized form
+  const hasCallsStart = normalizedXml.includes('<｜｜DSML｜｜ calls>')
+  const hasCallsEnd = normalizedXml.includes('</｜｜DSML｜｜ calls>')
   
   if (!hasCallsStart && !hasCallsEnd) {
-    // No DSML tool calls present - this is normal for text responses
     return { toolCalls: [] }
   }
   
@@ -88,7 +179,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
   }
   
   // Extract content between calls tags
-  const callsMatch = xml.match(/<｜｜DSML｜｜\s+calls>([\s\S]*?)<\/｜｜DSML｜｜\s+calls>/)
+  const callsMatch = normalizedXml.match(/<｜｜DSML｜｜\s+calls>([\s\S]*?)<\/｜｜DSML｜｜\s+calls>/)
   if (!callsMatch) {
     return {
       toolCalls: [],
@@ -258,6 +349,7 @@ function createParser(
     parsedToolCalls: [],
     parseError: null,
     pendingLookahead: '',
+    detectedDialect: null,
   }
 
   const emitFinal = () => {
@@ -353,12 +445,37 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
-    const DSML_START = '<｜｜DSML｜｜ calls>'
+    const DSML_START_PATTERNS = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜DSML｜｜ calls>',
+      '<｜DSML｜ calls>',
+      '<｜DSML｜ tool_calls>',
+      '<｜DSML｜ function_calls>',
+      '<｜DSML｜ toolcalls>',
+      '<｜DSML｜ tool>',
+      '<||DSML||tool_calls>',
+      '<||DSML||function_calls>',
+      '<||DSML||calls>',
+      '<||DSML||toolcalls>',
+      '<||DSML||tool>',
+    ]
     
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
+      // Check for any closing calls tag
+      if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>') || 
+          state.toolCallBuffer.includes('</｜DSML｜｜ calls>') ||
+          state.toolCallBuffer.includes('</｜DSML｜ calls>') ||
+          state.toolCallBuffer.includes('</｜DSML｜ tool_calls>') ||
+          state.toolCallBuffer.includes('</｜DSML｜ function_calls>') ||
+          state.toolCallBuffer.includes('</｜DSML｜ toolcalls>') ||
+          state.toolCallBuffer.includes('</｜DSML｜ tool>') ||
+          state.toolCallBuffer.includes('</||DSML||tool_calls>') ||
+          state.toolCallBuffer.includes('</||DSML||function_calls>') ||
+          state.toolCallBuffer.includes('</||DSML||calls>') ||
+          state.toolCallBuffer.includes('</||DSML||toolcalls>') ||
+          state.toolCallBuffer.includes('</||DSML||tool>')) {
         const result = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
         // Store parse error in state for malformed DSML detection
@@ -378,10 +495,18 @@ function createParser(
     // Build full prospective content
     const fullContent = state.accumulatedContent + combined
 
-    // Check for full DSML start pattern
-    if (fullContent.includes(DSML_START)) {
-      const dsmlIdx = fullContent.indexOf(DSML_START)
-      
+    // Check for full DSML start pattern (any supported dialect)
+    let dsmlIdx = -1
+    let matchedStartPattern = ''
+    for (const pattern of DSML_START_PATTERNS) {
+      const idx = fullContent.indexOf(pattern)
+      if (idx !== -1 && (dsmlIdx === -1 || idx < dsmlIdx)) {
+        dsmlIdx = idx
+        matchedStartPattern = pattern
+      }
+    }
+
+    if (dsmlIdx !== -1) {
       // Emit everything before DSML that hasn't been emitted yet
       const beforeDSML = fullContent.substring(0, dsmlIdx)
       const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
@@ -410,6 +535,7 @@ function createParser(
       
       // Start tool call buffering
       state.isToolCallInProgress = true
+      state.detectedDialect = detectDialect(matchedStartPattern + '>') // Add > to make it a complete tag for detection
       state.toolCallBuffer = fullContent.substring(dsmlIdx)
       state.accumulatedContent = beforeDSML
       return
@@ -417,9 +543,11 @@ function createParser(
 
     // Check for partial DSML prefix at the end - HOLD BACK these characters
     let holdbackLength = 0
-    for (let i = 1; i < DSML_START.length; i++) {
-      if (fullContent.endsWith(DSML_START.substring(0, i))) {
-        holdbackLength = i
+    for (const pattern of DSML_START_PATTERNS) {
+      for (let i = 1; i < pattern.length; i++) {
+        if (fullContent.endsWith(pattern.substring(0, i))) {
+          holdbackLength = Math.max(holdbackLength, i)
+        }
       }
     }
 
@@ -685,7 +813,21 @@ export async function translateDeepSeekStreamToSSE(
   }
 
   // Check for unclosed DSML at EOF
-  if (parser.state.isToolCallInProgress && !parser.state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
+  const closingTags = [
+    '</｜｜DSML｜｜ calls>',
+    '</｜DSML｜｜ calls>',
+    '</｜DSML｜ calls>',
+    '</｜DSML｜ tool_calls>',
+    '</｜DSML｜ function_calls>',
+    '</｜DSML｜ toolcalls>',
+    '</｜DSML｜ tool>',
+    '</||DSML||tool_calls>',
+    '</||DSML||function_calls>',
+    '</||DSML||calls>',
+    '</||DSML||toolcalls>',
+    '</||DSML||tool>',
+  ]
+  if (parser.state.isToolCallInProgress && !closingTags.some(tag => parser.state.toolCallBuffer.includes(tag))) {
     const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
     parser.state.parsedToolCalls = result.toolCalls
     if (result.isMalformed && result.error) {
