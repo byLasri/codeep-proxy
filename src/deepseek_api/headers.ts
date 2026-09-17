@@ -95,7 +95,7 @@ export function buildCompletionHeaders(
   sessionId?: string,
 ): Headers {
   const headers = new Headers(buildAuthenticationHeaders(credentials, sessionId));
-  headers.set("accept", "text/event-stream");
+  headers.set("accept", "*/*");
   headers.set("x-ds-pow-response", powResponse);
 
   // HIF-LEIM is now required for all completion requests per the wire contract

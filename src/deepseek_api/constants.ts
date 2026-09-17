@@ -15,7 +15,7 @@ export const DEEPSEEK = {
     BUNDLE_ID: "com.deepseek.chat",
     PLATFORM: "web",
     VERSION: "2.5.0",
-    LOCALE: "en_GB",
+    LOCALE: "en_US",
   },
 
   POW: {
