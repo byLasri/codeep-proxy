@@ -50,40 +50,10 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
     return { toolCalls: [] }
   }
   
-  // Check for malformed structure
-  if (hasCallsStart && !hasCallsEnd) {
-    return {
-      toolCalls: [],
-      error: {
-        message: `Your previous response contained a malformed tool call that could not be parsed.
-The tool call was NOT executed.
+  // For malformed DSML, we will still try to extract what we can
+  // and forward partial results instead of returning an error immediately
+  // This allows the upstream client to see the malformed tool call and handle it
 
-Here is the EXACT format you must follow:
-
-<｜｜DSML｜｜ calls>
-<｜｜DSML｜｜ invoke name="tool_name">
-<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
-<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-<｜｜DSML｜｜ invoke name="another_tool">
-<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>
-
-Rules:
-1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
-2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
-3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
-4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
-5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
-6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
-7. Do not add extra text or tags outside the DSML structure.
-
-Please retry the tool call with correct syntax.`,
-        syntaxRules: 'Correct DSML syntax:\\n<｜｜DSML｜｜ calls>\\n  <｜｜DSML｜｜ invoke name="toolName">\\n    <｜｜DSML｜｜ parameter name="paramName" string="true">value</｜｜DSML｜｜ parameter>\\n  </｜｜DSML｜｜ invoke>\\n</｜｜DSML｜｜ calls>'
-      }
-    }
-  }
   
   
   const invokeRegex = /<｜｜DSML｜｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+invoke>/g
@@ -138,79 +108,6 @@ Please retry the tool call with correct syntax.`,
     })
     invokeIndex++
   }
-  
-  // Check if we have unclosed invoke tags
-  const unclosedInvoke = xml.match(/<｜｜DSML｜｜\s+invoke\s+name="[^"]*"[^>]*>(?![\s\S]*<\/｜｜DSML｜｜\s+invoke>)/)
-  if (unclosedInvoke) {
-    return {
-      toolCalls: [],
-      error: {
-        message: `Your previous response contained a malformed tool call that could not be parsed.
-The tool call was NOT executed.
-
-Here is the EXACT format you must follow:
-
-<｜｜DSML｜｜ calls>
-<｜｜DSML｜｜ invoke name="tool_name">
-<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
-<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-<｜｜DSML｜｜ invoke name="another_tool">
-<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>
-
-Rules:
-1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
-2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
-3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
-4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
-5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
-6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
-7. Do not add extra text or tags outside the DSML structure.
-
-Please retry the tool call with correct syntax.`,
-        syntaxRules: 'Correct DSML syntax:\\n<｜｜DSML｜｜ invoke name="toolName">\\n  <｜｜DSML｜｜ parameter name="paramName" string="true">value</｜｜DSML｜｜ parameter>\\n</｜｜DSML｜｜ invoke>'
-      }
-    }
-  }
-  
-  // Check for unclosed parameter tags
-  const unclosedParam = xml.match(/<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![\s\S]*<\/｜｜DSML｜｜\s+parameter>)/)
-  if (unclosedParam) {
-    return {
-      toolCalls: [],
-      error: {
-        message: `Your previous response contained a malformed tool call that could not be parsed.
-The tool call was NOT executed.
-
-Here is the EXACT format you must follow:
-
-<｜｜DSML｜｜ calls>
-<｜｜DSML｜｜ invoke name="tool_name">
-<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
-<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-<｜｜DSML｜｜ invoke name="another_tool">
-<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>
-
-Rules:
-1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
-2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
-3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
-4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
-5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
-6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
-7. Do not add extra text or tags outside the DSML structure.
-
-Please retry the tool call with correct syntax.`,
-        syntaxRules: 'Correct DSML parameter syntax:\\n<｜｜DSML｜｜ parameter name="paramName" string="true">value</｜｜DSML｜｜ parameter>'
-      }
-    }
-  }
-  
   
   return { toolCalls }
 }
