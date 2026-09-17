@@ -60,7 +60,8 @@ const DELIMITER_PATTERNS: Record<DSMLDelimiter, { prefix: string }> = {
 
 const WRAPPER_NAMES: DSMLWrapper[] = ['function_calls', 'tool_calls', 'calls', 'toolcalls', 'tool']
 
-function detectDialect(xml: string): DSMLDialect | null {
+function generateAllDialects(): DSMLDialect[] {
+  const dialects: DSMLDialect[] = []
   for (const [delimiterKey, { prefix }] of Object.entries(DELIMITER_PATTERNS) as [DSMLDelimiter, { prefix: string }][]) {
     for (const wrapper of WRAPPER_NAMES) {
       // Try with space first (full-width forms), then without space (ASCII form)
@@ -77,20 +78,57 @@ function detectDialect(xml: string): DSMLDialect | null {
       const closeParameterWithSpace = `</${prefix.slice(1)} parameter>`
       const closeParameterNoSpace = `</${prefix.slice(1)}parameter>`
       
-      // Check both variants
-      if (xml.includes(openCallsWithSpace) || xml.includes(openCallsNoSpace)) {
-        const hasSpace = xml.includes(openCallsWithSpace)
-        return {
-          delimiter: delimiterKey,
-          wrapper,
-          openCalls: hasSpace ? openCallsWithSpace : openCallsNoSpace,
-          closeCalls: hasSpace ? closeCallsWithSpace : closeCallsNoSpace,
-          openInvoke: hasSpace ? openInvokeWithSpace : openInvokeNoSpace,
-          closeInvoke: hasSpace ? closeInvokeWithSpace : closeInvokeNoSpace,
-          openParameter: hasSpace ? openParameterWithSpace : openParameterNoSpace,
-          closeParameter: hasSpace ? closeParameterWithSpace : closeParameterNoSpace,
-        }
-      }
+      dialects.push({
+        delimiter: delimiterKey,
+        wrapper,
+        openCalls: openCallsWithSpace,
+        closeCalls: closeCallsWithSpace,
+        openInvoke: openInvokeWithSpace,
+        closeInvoke: closeInvokeWithSpace,
+        openParameter: openParameterWithSpace,
+        closeParameter: closeParameterWithSpace,
+      })
+      dialects.push({
+        delimiter: delimiterKey,
+        wrapper,
+        openCalls: openCallsNoSpace,
+        closeCalls: closeCallsNoSpace,
+        openInvoke: openInvokeNoSpace,
+        closeInvoke: closeInvokeNoSpace,
+        openParameter: openParameterNoSpace,
+        closeParameter: closeParameterNoSpace,
+      })
+    }
+  }
+  return dialects
+}
+
+const ALL_DIALECTS = generateAllDialects()
+
+function getAllOpenCallsPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.openCalls)
+}
+
+function getAllCloseCallsPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.closeCalls)
+}
+
+function getAllCloseInvokePatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.closeInvoke)
+}
+
+function getAllCloseParameterPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.closeParameter)
+}
+
+function getHoldbackPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.openCalls)
+}
+
+function detectDialect(xml: string): DSMLDialect | null {
+  for (const dialect of ALL_DIALECTS) {
+    if (xml.includes(dialect.openCalls)) {
+      return dialect
     }
   }
   return null
@@ -445,37 +483,11 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
-    const DSML_START_PATTERNS = [
-      '<｜｜DSML｜｜ calls>',
-      '<｜DSML｜｜ calls>',
-      '<｜DSML｜ calls>',
-      '<｜DSML｜ tool_calls>',
-      '<｜DSML｜ function_calls>',
-      '<｜DSML｜ toolcalls>',
-      '<｜DSML｜ tool>',
-      '<||DSML||tool_calls>',
-      '<||DSML||function_calls>',
-      '<||DSML||calls>',
-      '<||DSML||toolcalls>',
-      '<||DSML||tool>',
-    ]
-    
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      // Check for any closing calls tag
-      if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>') || 
-          state.toolCallBuffer.includes('</｜DSML｜｜ calls>') ||
-          state.toolCallBuffer.includes('</｜DSML｜ calls>') ||
-          state.toolCallBuffer.includes('</｜DSML｜ tool_calls>') ||
-          state.toolCallBuffer.includes('</｜DSML｜ function_calls>') ||
-          state.toolCallBuffer.includes('</｜DSML｜ toolcalls>') ||
-          state.toolCallBuffer.includes('</｜DSML｜ tool>') ||
-          state.toolCallBuffer.includes('</||DSML||tool_calls>') ||
-          state.toolCallBuffer.includes('</||DSML||function_calls>') ||
-          state.toolCallBuffer.includes('</||DSML||calls>') ||
-          state.toolCallBuffer.includes('</||DSML||toolcalls>') ||
-          state.toolCallBuffer.includes('</||DSML||tool>')) {
+      // Check for closing calls tag using the detected dialect
+      if (state.detectedDialect && state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
         const result = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
         // Store parse error in state for malformed DSML detection
@@ -497,16 +509,16 @@ function createParser(
 
     // Check for full DSML start pattern (any supported dialect)
     let dsmlIdx = -1
-    let matchedStartPattern = ''
-    for (const pattern of DSML_START_PATTERNS) {
-      const idx = fullContent.indexOf(pattern)
+    let matchedDialect: DSMLDialect | null = null
+    for (const dialect of ALL_DIALECTS) {
+      const idx = fullContent.indexOf(dialect.openCalls)
       if (idx !== -1 && (dsmlIdx === -1 || idx < dsmlIdx)) {
         dsmlIdx = idx
-        matchedStartPattern = pattern
+        matchedDialect = dialect
       }
     }
 
-    if (dsmlIdx !== -1) {
+    if (dsmlIdx !== -1 && matchedDialect) {
       // Emit everything before DSML that hasn't been emitted yet
       const beforeDSML = fullContent.substring(0, dsmlIdx)
       const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
@@ -535,7 +547,7 @@ function createParser(
       
       // Start tool call buffering
       state.isToolCallInProgress = true
-      state.detectedDialect = detectDialect(matchedStartPattern + '>') // Add > to make it a complete tag for detection
+      state.detectedDialect = matchedDialect
       state.toolCallBuffer = fullContent.substring(dsmlIdx)
       state.accumulatedContent = beforeDSML
       return
@@ -543,7 +555,7 @@ function createParser(
 
     // Check for partial DSML prefix at the end - HOLD BACK these characters
     let holdbackLength = 0
-    for (const pattern of DSML_START_PATTERNS) {
+    for (const pattern of getHoldbackPatterns()) {
       for (let i = 1; i < pattern.length; i++) {
         if (fullContent.endsWith(pattern.substring(0, i))) {
           holdbackLength = Math.max(holdbackLength, i)
@@ -759,7 +771,7 @@ function createParser(
   return { state, emitFinal, emitContent, processLine }
 }
 
-export { parseDSMLToolCalls, CORRECTIVE_MESSAGE }
+export { parseDSMLToolCalls, CORRECTIVE_MESSAGE, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper }
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
@@ -812,29 +824,17 @@ export async function translateDeepSeekStreamToSSE(
     parser.emitContent('')
   }
 
-  // Check for unclosed DSML at EOF
-  const closingTags = [
-    '</｜｜DSML｜｜ calls>',
-    '</｜DSML｜｜ calls>',
-    '</｜DSML｜ calls>',
-    '</｜DSML｜ tool_calls>',
-    '</｜DSML｜ function_calls>',
-    '</｜DSML｜ toolcalls>',
-    '</｜DSML｜ tool>',
-    '</||DSML||tool_calls>',
-    '</||DSML||function_calls>',
-    '</||DSML||calls>',
-    '</||DSML||toolcalls>',
-    '</||DSML||tool>',
-  ]
-  if (parser.state.isToolCallInProgress && !closingTags.some(tag => parser.state.toolCallBuffer.includes(tag))) {
-    const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
-    parser.state.parsedToolCalls = result.toolCalls
-    if (result.isMalformed && result.error) {
-      parser.state.parseError = result.error
+  // Check for unclosed DSML at EOF using the detected dialect
+  if (parser.state.isToolCallInProgress && parser.state.detectedDialect) {
+    if (!parser.state.toolCallBuffer.includes(parser.state.detectedDialect.closeCalls)) {
+      const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
+      parser.state.parsedToolCalls = result.toolCalls
+      if (result.isMalformed && result.error) {
+        parser.state.parseError = result.error
+      }
+      parser.state.isToolCallInProgress = false
+      parser.state.toolCallBuffer = ''
     }
-    parser.state.isToolCallInProgress = false
-    parser.state.toolCallBuffer = ''
   }
 
   parseError = parser.state.parseError

@@ -1,4 +1,4 @@
-import { parseDSMLToolCalls, CORRECTIVE_MESSAGE, type DSMLParseResult, translateDeepSeekStreamToSSE } from '../src/translator/response.js'
+import { parseDSMLToolCalls, CORRECTIVE_MESSAGE, type DSMLParseResult, translateDeepSeekStreamToSSE, ALL_DIALECTS } from '../src/translator/response.js'
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -558,7 +558,28 @@ Some text after`
     }},
   ]
 
-  failed += await runTestsSequentially(parserTests)
+  // Matrix tests: all 20 dialect/wrapper combinations
+  console.log('\n--- DSML Dialect Matrix Tests (4 delimiters × 5 wrappers = 20) ---\n')
+  
+  const matrixTests = ALL_DIALECTS.map(dialect => ({
+    name: `matrix: ${dialect.delimiter} delimiter + ${dialect.wrapper} wrapper`,
+    fn: async () => {
+      const xml = `${dialect.openCalls}
+${dialect.openInvoke} name="read">
+${dialect.openParameter} name="filePath" string="true">README.md${dialect.closeParameter}
+${dialect.closeInvoke}
+${dialect.closeCalls}`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+    }
+  }))
+
+  failed += await runTestsSequentially(matrixTests)
 
   console.log('\n--- Streaming DSML Tests ---\n')
 
@@ -992,6 +1013,37 @@ Some text after`
       expect(output).toContain('[DONE]')
     }},
   ]
+
+  // Streaming matrix tests: all 20 dialect/wrapper combinations
+  console.log('\n--- Streaming DSML Dialect Matrix Tests (4 delimiters × 5 wrappers = 20) ---\n')
+
+  const streamingMatrixTests = ALL_DIALECTS.map(dialect => ({
+    name: `streaming matrix: ${dialect.delimiter} delimiter + ${dialect.wrapper} wrapper`,
+    fn: async () => {
+      const sseInput = [
+        makeSSEEvent('ready', { response_message_id: 123 }),
+        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: dialect.openCalls }] } } }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: `${dialect.openInvoke} name="read">` }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: `${dialect.openParameter} name="filePath" string="true">README.md${dialect.closeParameter}` }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: dialect.closeInvoke }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: dialect.closeCalls }),
+        makeSSEEvent('close', {}),
+      ]
+      const stream = createSSEStream(sseInput)
+      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
+      
+      const result = await translateDeepSeekStreamToSSE(stream, info)
+      
+      expect(result.parseError).toBeNull()
+      const output = await decodeStream(result.stream)
+      expect(output).toContain('tool_calls')
+      expect(output).toContain('read')
+      expect(output).toContain('README.md')
+      expect(output).toContain('[DONE]')
+    }
+  }))
+
+  failed += await runTestsSequentially(streamingMatrixTests)
 
   failed += await runTestsSequentially(streamingTests)
 
