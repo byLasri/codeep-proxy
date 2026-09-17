@@ -75,7 +75,7 @@ test('invalid/unknown DSML element should be detected as malformed', () => {
   expect(result.error!.message).toContain('Invalid DSML element')
 })
 
-test('missing closing invoke tag should be detected as malformed (parameter outside invoke)', () => {
+test('missing closing invoke tag should be detected as malformed', () => {
   const xml = `<｜｜DSML｜｜ calls>
 <｜｜DSML｜｜ invoke name="read">
 <｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
@@ -86,7 +86,7 @@ test('missing closing invoke tag should be detected as malformed (parameter outs
   expect(result.isMalformed).toBe(true)
   expect(result.toolCalls).toHaveLength(0)
   expect(result.error).toBeDefined()
-  expect(result.error!.message).toContain('Parameter found outside')
+  expect(result.error!.message).toContain('Mismatched <invoke> tags')
 })
 
 test('missing closing calls tag should be detected as malformed', () => {
@@ -327,7 +327,7 @@ test('parameter with string="false" should be parsed', () => {
   expect(args.count).toBe('42')
 })
 
-test('parameter without string attribute defaults to string', () => {
+test('parameter without string attribute should be detected as malformed', () => {
   const xml = `<｜｜DSML｜｜ calls>
 <｜｜DSML｜｜ invoke name="test">
 <｜｜DSML｜｜ parameter name="value">test</｜｜DSML｜｜ parameter>
@@ -336,10 +336,25 @@ test('parameter without string attribute defaults to string', () => {
 
   const result = parseDSMLToolCalls(xml)
 
-  expect(result.isMalformed).toBeFalsy()
-  expect(result.toolCalls).toHaveLength(1)
-  const args = JSON.parse(result.toolCalls[0].function.arguments)
-  expect(args.value).toBe('test')
+  expect(result.isMalformed).toBe(true)
+  expect(result.toolCalls).toHaveLength(0)
+  expect(result.error).toBeDefined()
+  expect(result.error!.message).toContain('string=')
+})
+
+test('parameter with invalid string attribute value should be detected as malformed', () => {
+  const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="value" string="yes">test</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+
+  const result = parseDSMLToolCalls(xml)
+
+  expect(result.isMalformed).toBe(true)
+  expect(result.toolCalls).toHaveLength(0)
+  expect(result.error).toBeDefined()
+  expect(result.error!.message).toContain('string=')
 })
 
 console.log('\nAll tests passed!')

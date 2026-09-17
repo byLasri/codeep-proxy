@@ -102,6 +102,20 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
   
   const callsContent = callsMatch[1]
   
+  // Check for unclosed invoke tags first (before orphan parameter check)
+  const openInvokeCount = (callsContent.match(/<｜｜DSML｜｜\s+invoke\s/g) || []).length
+  const closedInvokeCount = (callsContent.match(/<\/｜｜DSML｜｜\s+invoke>/g) || []).length
+  if (openInvokeCount !== closedInvokeCount) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: `Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`,
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
   // Check for parameters directly under <calls> (outside any <invoke>)
   // First, remove all invoke blocks to see if any parameters remain
   const withoutInvokes = callsContent.replace(/<｜｜DSML｜｜\s+invoke[\s\S]*?<\/｜｜DSML｜｜\s+invoke>/g, '')
@@ -154,7 +168,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
     
     // Extract parameters from this invoke block
     const params: Record<string, string> = {}
-    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([^<]*)<\/｜｜DSML｜｜\s+parameter>/g
+    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>([^<]*)<\/｜｜DSML｜｜\s+parameter>/g
     let paramMatch
     
     while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
@@ -181,6 +195,20 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         }
       }
     }
+
+    // Check for parameters missing required string attribute
+    const paramWithoutStringRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"(?![^>]*\s+string="(true|false)")[^>]*>/g
+    const hasParamWithoutString = invokeContent.match(paramWithoutStringRegex)
+    if (hasParamWithoutString) {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: 'Parameter tag missing required string="true|false" attribute',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
+    }
     
     // Add the tool call
     toolCalls.push({
@@ -191,20 +219,6 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         arguments: JSON.stringify(params)
       }
     })
-  }
-  
-  // Check for unclosed invoke tags
-  const openInvokeCount = (callsContent.match(/<｜｜DSML｜｜\s+invoke\s/g) || []).length
-  const closedInvokeCount = (callsContent.match(/<\/｜｜DSML｜｜\s+invoke>/g) || []).length
-  if (openInvokeCount !== closedInvokeCount) {
-    return {
-      toolCalls: [],
-      isMalformed: true,
-      error: {
-        message: `Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`,
-        syntaxRules: CORRECTIVE_MESSAGE
-      }
-    }
   }
   
   // If no tool calls were found but DSML structure exists, it's malformed
