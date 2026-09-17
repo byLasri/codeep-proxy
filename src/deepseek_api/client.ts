@@ -17,6 +17,7 @@ import { PROTOCOL_STATE_KEYS } from "./state-store.js";
 import type { ProtocolSessionStore, ProxySessionState } from "./session-store.js";
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
+import { editMessage, type EditMessageOptions } from "./edit-message.js";
 
 /** Parse response_message_id from a single SSE line (ready event data payload). */
 function extractResponseMessageId(line: string): number | null {
@@ -259,9 +260,9 @@ export class DeepSeekWebClient {
     // Fetch HIF-LEIM value (cached with automatic refresh and concurrency deduplication)
     const hifLeim = await this.hifLeimCache.getValue();
 
-    // Create PoW challenge
+    // Create PoW challenge with session ID for session-aware Referer
     const credentials = await this.getCredentials();
-    const challenge = await createPowChallenge(credentials, this.origin);
+    const challenge = await createPowChallenge(credentials, this.origin, session.chat_session_id);
 
     // Solve PoW
     const solution = solvePow(challenge);
@@ -269,8 +270,8 @@ export class DeepSeekWebClient {
     // Encode PoW response
     const powHeader = encodePowResponse(solution);
 
-    // Build completion headers with HIF-LEIM
-    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim);
+    // Build completion headers with HIF-LEIM and session ID for Referer
+    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, session.chat_session_id);
 
     // Log upstream request
     if (logger) {
@@ -426,5 +427,143 @@ export class DeepSeekWebClient {
   async complete(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
     // Delegate to completeWithAutoSession which handles session resolution and persistence
     return this.completeWithAutoSession(input, logger);
+  }
+
+  /**
+   * Edit a message in an existing chat session using the native /api/v0/chat/edit_message endpoint.
+   * 
+   * Flow:
+   * 1. Retrieve session state from sessionStore
+   * 2. Fetch fresh PoW challenge (session-aware)
+   * 3. POST /api/v0/chat/edit_message with messageId and edited prompt
+   * 4. Parse response to extract request_message_id and response_message_id
+   * 5. Update session state with new response_message_id as parent for next turn
+   */
+  async editMessage(
+    xSessionId: string,
+    messageId: number,
+    prompt: string,
+    options?: EditMessageOptions,
+    logger?: RequestLogger
+  ): Promise<CompletionResult> {
+    const existingState = await this.sessionStore.get(xSessionId);
+    if (!existingState) {
+      throw new DeepSeekProtocolError(
+        "Session not found for edit_message",
+        { kind: "edit_message", status: 404 }
+      );
+    }
+
+    const credentials = await this.getCredentials();
+    const chatSessionId = existingState.chat_session_id;
+
+    const hifLeim = await this.hifLeimCache.getValue();
+    const challenge = await createPowChallenge(credentials, this.origin, chatSessionId);
+    const solution = solvePow(challenge);
+    const powHeader = encodePowResponse(solution);
+    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, chatSessionId);
+
+    const response = await editMessage(
+      headers,
+      chatSessionId,
+      messageId,
+      prompt,
+      this.origin,
+      options ?? {}
+    );
+
+    const [stream1, stream2] = response.body!.tee();
+    const idsPromise = this.parseEditMessageIds(stream1);
+    const instrumentedBody = stream2;
+
+    const persistPromise = (async () => {
+      try {
+        const { response_message_id } = await idsPromise;
+        const newTurnCount = (existingState.turn_count || 0) + 1;
+        await this.sessionStore.set(xSessionId, {
+          x_session_id: xSessionId,
+          chat_session_id: chatSessionId,
+          parent_message_id: response_message_id,
+          turn_count: newTurnCount,
+          created_at: existingState.created_at || Date.now(),
+          updated_at: Date.now(),
+        });
+      } catch (error) {
+        console.error("[DeepSeekWebClient] Failed to store session info after edit:", error);
+      }
+    })();
+
+    let finalStream = instrumentedBody;
+    if (logger) {
+      finalStream = teeAndLogStream(instrumentedBody, logger, "upstream_response");
+    }
+
+    const outboundHeaders = new Headers(response.headers);
+    outboundHeaders.set("X-Chat-Session-Id", chatSessionId);
+
+    return {
+      response: new Response(finalStream, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: outboundHeaders,
+      }),
+      sessionUpdatePromise: persistPromise,
+    };
+  }
+
+  private async parseEditMessageIds(
+    body: ReadableStream<Uint8Array>
+  ): Promise<{ request_message_id: number; response_message_id: number }> {
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    let result: { request_message_id: number; response_message_id: number } | null = null;
+    const reader = body.getReader();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+          if (!payload.startsWith("{")) continue;
+          try {
+            const data = JSON.parse(payload) as { request_message_id?: unknown; response_message_id?: unknown };
+            const requestId = typeof data.request_message_id === "number" ? data.request_message_id : null;
+            const responseId = typeof data.response_message_id === "number" ? data.response_message_id : null;
+            if (requestId !== null && responseId !== null) {
+              result = { request_message_id: requestId, response_message_id: responseId };
+            }
+          } catch { /* ignore */ }
+        }
+      }
+      
+      // Process remaining buffer after stream ends (final unterminated line)
+      if (sseBuffer.trim()) {
+        const trimmed = sseBuffer.trim();
+        const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+        if (payload.startsWith("{")) {
+          try {
+            const data = JSON.parse(payload) as { request_message_id?: unknown; response_message_id?: unknown };
+            const requestId = typeof data.request_message_id === "number" ? data.request_message_id : null;
+            const responseId = typeof data.response_message_id === "number" ? data.response_message_id : null;
+            if (requestId !== null && responseId !== null) {
+              result = { request_message_id: requestId, response_message_id: responseId };
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!result) {
+      throw new DeepSeekProtocolError("DeepSeek edit_message returned no valid response", { kind: "edit_message", raw: "No response_message_id found" });
+    }
+    return result;
   }
 }

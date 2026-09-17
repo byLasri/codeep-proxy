@@ -7,6 +7,7 @@ export type DeepSeekErrorKind =
   | "session"
   | "pow"
   | "completion"
+  | "edit_message"
   | "sse"
   | "protocol"
   | "unknown";

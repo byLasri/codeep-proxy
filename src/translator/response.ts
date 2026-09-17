@@ -26,26 +26,191 @@ interface SSEParserState {
   toolCallBuffer: string
   isToolCallInProgress: boolean
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  parseError: { message: string; syntaxRules: string } | null
   pendingLookahead: string
 }
 
-function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> {
+export interface DSMLParseResult {
+  toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  isMalformed?: boolean
+  error?: { message: string; syntaxRules: string }
+}
+
+const CORRECTIVE_MESSAGE = `Your previous response contained a malformed tool call that could not be parsed.
+The tool call was NOT executed.
+
+Here is the EXACT format you must follow:
+
+<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="tool_name">
+<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+<｜｜DSML｜｜ invoke name="another_tool">
+<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>
+
+Rules:
+1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
+2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
+3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
+4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
+5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
+6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
+7. Do not add extra text or tags outside the DSML structure.
+
+Please retry the tool call now using exactly this syntax. Do not add any text outside the DSML structure.`
+
+function parseDSMLToolCalls(xml: string): DSMLParseResult {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
   
-  const invokeRegex = /<｜｜DSML｜｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+invoke>/g
-  const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+parameter>/g
+  // Check for basic DSML structure
+  const hasCallsStart = xml.includes('<｜｜DSML｜｜ calls>')
+  const hasCallsEnd = xml.includes('</｜｜DSML｜｜ calls>')
   
+  if (!hasCallsStart && !hasCallsEnd) {
+    // No DSML tool calls present - this is normal for text responses
+    return { toolCalls: [] }
+  }
+  
+  // Validate DSML structure strictly
+  // Check for missing closing </｜｜DSML｜｜ calls> tag
+  if (hasCallsStart && !hasCallsEnd) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: 'Missing closing </｜｜DSML｜｜ calls> tag',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  // Extract content between calls tags
+  const callsMatch = xml.match(/<｜｜DSML｜｜\s+calls>([\s\S]*?)<\/｜｜DSML｜｜\s+calls>/)
+  if (!callsMatch) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: 'Invalid DSML calls structure',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  const callsContent = callsMatch[1]
+  
+  // Check for unclosed invoke tags first (before orphan parameter check)
+  const openInvokeCount = (callsContent.match(/<｜｜DSML｜｜\s+invoke\s/g) || []).length
+  const closedInvokeCount = (callsContent.match(/<\/｜｜DSML｜｜\s+invoke>/g) || []).length
+  if (openInvokeCount !== closedInvokeCount) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: `Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`,
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  // Check for parameters directly under <calls> (outside any <invoke>)
+  // First, remove all invoke blocks to see if any parameters remain
+  const withoutInvokes = callsContent.replace(/<｜｜DSML｜｜\s+invoke[\s\S]*?<\/｜｜DSML｜｜\s+invoke>/g, '')
+  const orphanParamMatch = withoutInvokes.match(/<｜｜DSML｜｜\s+parameter\s/)
+  if (orphanParamMatch) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: 'Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  // Check for unknown/invalid elements directly under <calls>
+  // Valid elements under <calls> are only <invoke> blocks
+  const directChildrenRegex = /<｜｜DSML｜｜\s+(?!invoke\b|parameter\b)[a-zA-Z]+/g
+  const invalidElementMatch = callsContent.match(directChildrenRegex)
+  if (invalidElementMatch) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: `Invalid DSML element found: ${invalidElementMatch[0]}. Only <invoke> elements are allowed inside <calls>.`,
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  // Extract and validate each invoke block
+  const invokeRegex = /<｜｜DSML｜｜\s+invoke\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/｜｜DSML｜｜\s+invoke>/g
   let invokeMatch
-  while ((invokeMatch = invokeRegex.exec(xml)) !== null) {
+  
+  while ((invokeMatch = invokeRegex.exec(callsContent)) !== null) {
     const toolName = invokeMatch[1]
     const invokeContent = invokeMatch[2]
     
-    const params: Record<string, string> = {}
-    let paramMatch
-    while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
-      params[paramMatch[1]] = paramMatch[2]
+    // Skip if tool name is empty
+    if (!toolName || toolName.trim() === '') {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: 'Tool name is empty or missing in <invoke> tag',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
     }
     
+    // Extract parameters from this invoke block
+    const params: Record<string, string> = {}
+    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>([^<]*)<\/｜｜DSML｜｜\s+parameter>/g
+    let paramMatch
+    
+    while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
+      const paramName = paramMatch[1]
+      const paramValue = paramMatch[3]?.trim() || ''
+      
+      // Only include valid parameter names
+      if (paramName && paramName.trim() !== '') {
+        params[paramName] = paramValue
+      }
+    }
+    
+    // Check for malformed parameter tags within this invoke
+    // Look for parameters without proper closing tags
+    const malformedParamRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![^<]*<\/｜｜DSML｜｜\s+parameter>)/g
+    const hasMalformedParam = invokeContent.match(malformedParamRegex)
+    if (hasMalformedParam) {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: 'Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
+    }
+
+    // Check for parameters missing required string attribute
+    const paramWithoutStringRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"(?![^>]*\s+string="(true|false)")[^>]*>/g
+    const hasParamWithoutString = invokeContent.match(paramWithoutStringRegex)
+    if (hasParamWithoutString) {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: 'Parameter tag missing required string="true|false" attribute',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
+    }
+    
+    // Add the tool call
     toolCalls.push({
       id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       type: 'function',
@@ -56,11 +221,23 @@ function parseDSMLToolCalls(xml: string): Array<{ id: string; type: 'function'; 
     })
   }
   
-  return toolCalls
+  // If no tool calls were found but DSML structure exists, it's malformed
+  if (toolCalls.length === 0 && hasCallsStart) {
+    return {
+      toolCalls: [],
+      isMalformed: true,
+      error: {
+        message: '<calls> block must contain at least one <invoke> element',
+        syntaxRules: CORRECTIVE_MESSAGE
+      }
+    }
+  }
+  
+  return { toolCalls }
 }
 
 function createParser(
-  controller: TransformStreamDefaultController<Uint8Array>,
+  enqueue: (chunk: Uint8Array) => void,
   info: { model: string; id: string; created: number }
 ) {
   const state: SSEParserState = {
@@ -79,6 +256,7 @@ function createParser(
     toolCallBuffer: '',
     isToolCallInProgress: false,
     parsedToolCalls: [],
+    parseError: null,
     pendingLookahead: '',
   }
 
@@ -86,8 +264,43 @@ function createParser(
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
     
-    // Emit tool calls if we have any
+    // Check if DSML parsing failed (malformed DSML detected)
+    if (state.parseError) {
+      // Malformed DSML detected - emit empty response with no tool calls
+      // The caller will detect this and perform internal retry
+      // Do NOT emit the corrective message to client - it's for internal retry only
+      const finalChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+      
+      // Emit usage if available
+      if (state.accumulatedTokens > 0) {
+        const usageChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [],
+          usage: {
+            prompt_tokens: 0,
+            completion_tokens: state.accumulatedTokens,
+            total_tokens: state.accumulatedTokens,
+          },
+        }
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
+      }
+      
+      enqueue(new TextEncoder().encode(formatOpenAIDone()))
+      return
+    }
+    
     if (state.parsedToolCalls.length > 0) {
+      // Emit tool calls if we have any (valid DSML)
       const toolCallChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -106,18 +319,18 @@ function createParser(
           finish_reason: 'tool_calls'
         }]
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
+    } else {
+      // No tool calls - emit final stop chunk (valid text response)
+      const finalChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
     }
-    
-    // Emit final stop chunk (empty delta)
-    const finalChunk: OpenAIChatCompletionStreamResponse = {
-      id: `chatcmpl-${state.responseMessageId}`,
-      object: 'chat.completion.chunk',
-      created: info.created,
-      model: info.model,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-    }
-    controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
     
     // Emit usage if available
     if (state.accumulatedTokens > 0) {
@@ -133,10 +346,10 @@ function createParser(
           total_tokens: state.accumulatedTokens,
         },
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
     }
     
-    controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
+    enqueue(new TextEncoder().encode(formatOpenAIDone()))
   }
 
   const emitContent = (text: string) => {
@@ -146,8 +359,12 @@ function createParser(
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
       if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
-        const toolCalls = parseDSMLToolCalls(state.toolCallBuffer)
-        state.parsedToolCalls = toolCalls
+        const result = parseDSMLToolCalls(state.toolCallBuffer)
+        state.parsedToolCalls = result.toolCalls
+        // Store parse error in state for malformed DSML detection
+        if (result.isMalformed && result.error) {
+          state.parseError = result.error
+        }
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
       }
@@ -179,7 +396,7 @@ function createParser(
             model: info.model,
             choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
           }
-          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
         }
         const safeChunk: OpenAIChatCompletionStreamResponse = {
           id: `chatcmpl-${state.responseMessageId}`,
@@ -188,7 +405,7 @@ function createParser(
           model: info.model,
           choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
         }
-        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
       }
       
       // Start tool call buffering
@@ -224,7 +441,7 @@ function createParser(
             model: info.model,
             choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
           }
-          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
         }
         const chunk: OpenAIChatCompletionStreamResponse = {
           id: `chatcmpl-${state.responseMessageId}`,
@@ -233,7 +450,7 @@ function createParser(
           model: info.model,
           choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
         }
-        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
       }
       
       state.accumulatedContent = safeContent
@@ -264,7 +481,7 @@ function createParser(
         model: info.model,
         choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
     }
 
     const chunk: OpenAIChatCompletionStreamResponse = {
@@ -274,7 +491,7 @@ function createParser(
       model: info.model,
       choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
     }
-    controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+    enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
   }
 
   const processLine = (line: string) => {
@@ -414,60 +631,97 @@ function createParser(
   return { state, emitFinal, emitContent, processLine }
 }
 
-export function translateDeepSeekStreamToSSE(
+export { parseDSMLToolCalls, CORRECTIVE_MESSAGE }
+
+export interface SSEParseResult {
+  stream: ReadableStream<Uint8Array>
+  parseError: { message: string; syntaxRules: string } | null
+}
+
+export async function translateDeepSeekStreamToSSE(
   deepSeekStream: ReadableStream<Uint8Array>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): ReadableStream<Uint8Array> {
+): Promise<SSEParseResult> {
   const decoder = new TextDecoder()
   let buffer = ''
-  let parser: ReturnType<typeof createParser> | null = null
+  const outputChunks: Uint8Array[] = []
+  let parseError: { message: string; syntaxRules: string } | null = null
 
-  const transform = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      if (parser === null) parser = createParser(controller, info)
-      buffer += decoder.decode(chunk, { stream: true })
+  const enqueue = (chunk: Uint8Array) => {
+    outputChunks.push(chunk)
+  }
+
+  const reader = deepSeekStream.getReader()
+  const parser = createParser(enqueue, info)
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
       for (const line of lines) {
         const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
         parser.processLine(trimmed)
       }
-    },
-    flush(controller) {
-      if (parser === null) parser = createParser(controller, info)
-      if (buffer.length > 0) {
-        const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
-        parser.processLine(trimmed)
-        buffer = ''
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  // Finalize decoder at EOF to handle any partial UTF-8 characters
+  buffer += decoder.decode()
+
+  if (buffer.length > 0) {
+    const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
+    parser.processLine(trimmed)
+    buffer = ''
+  }
+
+  if (parser.state.pendingLookahead) {
+    parser.emitContent('')
+  }
+
+  // Check for unclosed DSML at EOF
+  if (parser.state.isToolCallInProgress && !parser.state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
+    const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
+    parser.state.parsedToolCalls = result.toolCalls
+    if (result.isMalformed && result.error) {
+      parser.state.parseError = result.error
+    }
+    parser.state.isToolCallInProgress = false
+    parser.state.toolCallBuffer = ''
+  }
+
+  parseError = parser.state.parseError
+  parser.emitFinal()
+
+  if (logger) {
+    logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of outputChunks) {
+        controller.enqueue(chunk)
       }
-      // Flush any pending lookahead before finalizing
-      if (parser.state.pendingLookahead) {
-        parser.emitContent('')
-      }
-      parser.emitFinal()
+      controller.close()
     },
   })
-  const stream = deepSeekStream.pipeThrough(transform)
-  if (logger) {
-    const final = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        controller.enqueue(chunk)
-      },
-      flush(controller) {
-        logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
-      },
-    })
-    return stream.pipeThrough(final)
+
+  return {
+    stream,
+    parseError,
   }
-  return stream
 }
 
 export async function translateDeepSeekStreamToJSON(
   deepSeekStream: ReadableStream<Uint8Array>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): Promise<OpenAIChatCompletionResponse> {
+): Promise<OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } }> {
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulatedContent = ''
@@ -690,6 +944,69 @@ export async function translateDeepSeekStreamToJSON(
     }
   }
 
+  // Parse DSML tool calls from accumulated content
+  const dsmlResult = parseDSMLToolCalls(accumulatedContent)
+  
+  // If DSML is malformed, return error info WITHOUT sending to client
+  // The caller (index.ts) will handle the internal retry loop
+  if (dsmlResult.isMalformed && dsmlResult.error) {
+    const result: OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } } = {
+      id: `chatcmpl-${responseMessageId}`,
+      object: 'chat.completion',
+      created: info.created,
+      model: info.model,
+      choices: [
+        {
+          index: 0,
+          message: { 
+            role: 'assistant', 
+            content: '',
+            reasoning_content: accumulatedReasoning || undefined,
+          },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: accumulatedTokens,
+        total_tokens: accumulatedTokens,
+      },
+      _malformedError: dsmlResult.error,
+    }
+    logger?.logOutgoingToClient(result)
+    return result
+  }
+  
+  // If tool calls are found (valid DSML), return them with finish_reason: "tool_calls"
+  if (dsmlResult.toolCalls.length > 0) {
+    const result: OpenAIChatCompletionResponse = {
+      id: `chatcmpl-${responseMessageId}`,
+      object: 'chat.completion',
+      created: info.created,
+      model: info.model,
+      choices: [
+        {
+          index: 0,
+          message: { 
+            role: 'assistant', 
+            content: null,
+            reasoning_content: accumulatedReasoning || undefined,
+            tool_calls: dsmlResult.toolCalls
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: accumulatedTokens,
+        total_tokens: accumulatedTokens,
+      },
+    }
+    logger?.logOutgoingToClient(result)
+    return result
+  }
+
+  // No tool calls - return standard text response
   const result: OpenAIChatCompletionResponse = {
     id: `chatcmpl-${responseMessageId}`,
     object: 'chat.completion',

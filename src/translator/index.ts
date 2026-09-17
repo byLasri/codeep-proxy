@@ -7,6 +7,8 @@ export type {
   OpenAIChatCompletionStreamResponse,
 } from './types.js'
 
+export type { SSEParseResult, DSMLParseResult } from './response.js'
+
 export { mapOpenAIModelToDeepSeek } from './models.js'
 export { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt, translateOpenAIRequest } from './request.js'
 export type { RequestLogger } from '../observability/logger.js'
@@ -15,4 +17,6 @@ export {
   formatOpenAIDone,
   translateDeepSeekStreamToSSE,
   translateDeepSeekStreamToJSON,
+  parseDSMLToolCalls,
+  CORRECTIVE_MESSAGE,
 } from './response.js'

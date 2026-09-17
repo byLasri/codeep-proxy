@@ -19,7 +19,7 @@ export type {
 export type { StoredDeepSeekCredentials } from "./client.js";
 
 // Constants
-export { DEEPSEEK, DEFAULT_TIMEZONE_OFFSET } from "./constants.js";
+export { DEEPSEEK, getClientTimezoneOffset } from "./constants.js";
 
 // Errors
 export { DeepSeekProtocolError, type DeepSeekErrorKind, toDeepSeekError } from "./errors.js";
@@ -59,6 +59,14 @@ export { createSession } from "./session.js";
 
 // Completion
 export { buildCompletionRequest } from "./completion.js";
+
+// Edit Message
+export {
+  editMessage,
+  buildEditMessageRequest,
+  type DeepSeekEditMessageRequest,
+  type EditMessageOptions,
+} from "./edit-message.js";
 
 // Client
 export { DeepSeekWebClient, createDefaultCredentialsReader } from "./client.js";
