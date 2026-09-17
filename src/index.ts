@@ -3,6 +3,7 @@ import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
 import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders, mapOpenAIModelToDeepSeek } from './translator/index.js'
+import type { SSEParseResult } from './translator/index.js'
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 
@@ -255,8 +256,8 @@ export default {
               const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
               
               if (openaiReq.stream === true) {
-                const stream = translateDeepSeekStreamToSSE(response.body, info, logger)
-                return new Response(stream, {
+                const sseResult: SSEParseResult = translateDeepSeekStreamToSSE(response.body, info, logger)
+                return new Response(sseResult.stream, {
                   headers: {
                     'Content-Type': 'text/event-stream; charset=utf-8',
                     'Cache-Control': 'no-cache, no-transform',
@@ -313,8 +314,38 @@ export default {
               const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
 
               if (openaiReq.stream === true) {
-                const stream = translateDeepSeekStreamToSSE(response.body, info, logger)
-                return new Response(stream, {
+                // For streaming, we need to consume the entire stream first to detect malformed DSML
+                // This is necessary because we can't retry after starting to stream to the client
+                const sseResult: SSEParseResult = translateDeepSeekStreamToSSE(response.body, info, logger)
+                
+                // Check if DSML parsing failed (malformed DSML detected)
+                const parseError = sseResult.getParseError()
+                if (parseError) {
+                  lastMalformedError = parseError
+                  malformedRetryCount++
+                  
+                  if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
+                    // Max retries reached - return error to client
+                    return new Response(JSON.stringify({ 
+                      error: { 
+                        message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
+                        type: 'model_error' 
+                      } 
+                    }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                  }
+                  
+                  // Inject corrective feedback into messages for retry
+                  openaiReq.messages.push({
+                    role: 'user',
+                    content: lastMalformedError.syntaxRules
+                  })
+                  
+                  // Continue loop for retry
+                  continue
+                }
+                
+                // Valid DSML - stream to client
+                return new Response(sseResult.stream, {
                   headers: {
                     'Content-Type': 'text/event-stream; charset=utf-8',
                     'Cache-Control': 'no-cache, no-transform',

@@ -26,7 +26,7 @@ interface SSEParserState {
   toolCallBuffer: string
   isToolCallInProgress: boolean
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
-  parseError: null  // Always null - malformed DSML handled internally, never emitted to client
+  parseError: { message: string; syntaxRules: string } | null
   pendingLookahead: string
 }
 
@@ -250,9 +250,40 @@ function createParser(
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
     
-    // Malformed DSML is handled internally by the caller - never emit corrective message to client
-    // For streaming, we simply don't emit tool calls when DSML is malformed
-    // The caller will detect this and perform internal retry
+    // Check if DSML parsing failed (malformed DSML detected)
+    if (state.parseError) {
+      // Malformed DSML detected - emit empty response with no tool calls
+      // The caller will detect this and perform internal retry
+      // Do NOT emit the corrective message to client - it's for internal retry only
+      const finalChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+      
+      // Emit usage if available
+      if (state.accumulatedTokens > 0) {
+        const usageChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [],
+          usage: {
+            prompt_tokens: 0,
+            completion_tokens: state.accumulatedTokens,
+            total_tokens: state.accumulatedTokens,
+          },
+        }
+        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
+      }
+      
+      controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
+      return
+    }
     
     if (state.parsedToolCalls.length > 0) {
       // Emit tool calls if we have any (valid DSML)
@@ -276,7 +307,7 @@ function createParser(
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
     } else {
-      // No tool calls - emit final stop chunk (could be valid text response or malformed DSML)
+      // No tool calls - emit final stop chunk (valid text response)
       const finalChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -316,7 +347,10 @@ function createParser(
       if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
         const result = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
-        // Malformed DSML is handled internally by caller - don't store error in state
+        // Store parse error in state for malformed DSML detection
+        if (result.isMalformed && result.error) {
+          state.parseError = result.error
+        }
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
       }
@@ -583,14 +617,20 @@ function createParser(
   return { state, emitFinal, emitContent, processLine }
 }
 
+export interface SSEParseResult {
+  stream: ReadableStream<Uint8Array>
+  getParseError: () => { message: string; syntaxRules: string } | null
+}
+
 export function translateDeepSeekStreamToSSE(
   deepSeekStream: ReadableStream<Uint8Array>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): ReadableStream<Uint8Array> {
+): SSEParseResult {
   const decoder = new TextDecoder()
   let buffer = ''
   let parser: ReturnType<typeof createParser> | null = null
+  let parseError: { message: string; syntaxRules: string } | null = null
 
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -614,22 +654,27 @@ export function translateDeepSeekStreamToSSE(
       if (parser.state.pendingLookahead) {
         parser.emitContent('')
       }
+      // Capture parse error before emitting final
+      parseError = parser.state.parseError
       parser.emitFinal()
     },
   })
   const stream = deepSeekStream.pipeThrough(transform)
-  if (logger) {
-    const final = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        controller.enqueue(chunk)
-      },
-      flush(controller) {
-        logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
-      },
-    })
-    return stream.pipeThrough(final)
+  const resultStream = logger
+    ? stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          controller.enqueue(chunk)
+        },
+        flush(controller) {
+          logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
+        },
+      }))
+    : stream
+  
+  return {
+    stream: resultStream,
+    getParseError: () => parseError
   }
-  return stream
 }
 
 export async function translateDeepSeekStreamToJSON(
