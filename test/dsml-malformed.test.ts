@@ -22,6 +22,14 @@ function makeSSEData(data: object): string {
   return `data: ${JSON.stringify(data)}\n\n`
 }
 
+function makeSSEEventBytes(event: string, data: object): Uint8Array {
+  return new TextEncoder().encode(makeSSEEvent(event, data))
+}
+
+function makeSSEDataBytes(data: object): Uint8Array {
+  return new TextEncoder().encode(makeSSEData(data))
+}
+
 async function decodeStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader()
   const decoder = new TextDecoder()
@@ -699,6 +707,64 @@ Some text after`
       expect(chunksConsumed).toBe(sseInput.length)
       expect(result.parseError).toBeDefined()
       expect(result.parseError!.message).toContain('Parameter found outside')
+    }},
+{ name: 'split multibyte UTF-8 character across chunks should be reconstructed at EOF', fn: async () => {
+      // Build SSE events with the actual emoji character in the JS string
+      // JSON.stringify will escape it, but JSON.parse will unescape it correctly
+      const readyEvent = makeSSEEventBytes('ready', { response_message_id: 123 })
+      const updateEvent = makeSSEEventBytes('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } })
+      
+      // Use the actual emoji in the JS string
+      const text = 'Hello 🎉 world'
+      const pEvent1 = makeSSEEventBytes('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: text })
+      const closeEvent = makeSSEEventBytes('close', {})
+      
+      // Concatenate all bytes
+      const allBytes = new Uint8Array(
+        readyEvent.length + updateEvent.length + pEvent1.length + closeEvent.length
+      )
+      let offset = 0
+      for (const arr of [readyEvent, updateEvent, pEvent1, closeEvent]) {
+        allBytes.set(arr, offset)
+        offset += arr.length
+      }
+      
+      // Find the emoji in the combined byte stream (🎉 = F0 9F 8E 89)
+      let emojiPos = -1
+      for (let i = 0; i < allBytes.length - 3; i++) {
+        if (allBytes[i] === 0xF0 && allBytes[i+1] === 0x9F && allBytes[i+2] === 0x8E && allBytes[i+3] === 0x89) {
+          emojiPos = i
+          break
+        }
+      }
+      
+      if (emojiPos === -1) {
+        throw new Error('Emoji not found in combined stream')
+      }
+      
+      // Split after the first 2 bytes of the emoji
+      const splitPos = emojiPos + 2
+      const chunk1Combined = allBytes.slice(0, splitPos)
+      const chunk2Combined = allBytes.slice(splitPos)
+      
+      const stream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          controller.enqueue(chunk1Combined)
+          controller.enqueue(chunk2Combined)
+          controller.close()
+        },
+      })
+      
+      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
+      
+      const result = await translateDeepSeekStreamToSSE(stream, info)
+      
+      expect(result.parseError).toBeNull()
+      const output = await decodeStream(result.stream)
+      expect(output).toContain('🎉')
+      expect(output).toContain('Hello')
+      expect(output).toContain('world')
+      expect(output).toContain('[DONE]')
     }},
   ]
 

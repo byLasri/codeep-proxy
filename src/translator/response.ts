@@ -237,7 +237,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
 }
 
 function createParser(
-  controller: TransformStreamDefaultController<Uint8Array>,
+  enqueue: (chunk: Uint8Array) => void,
   info: { model: string; id: string; created: number }
 ) {
   const state: SSEParserState = {
@@ -276,7 +276,7 @@ function createParser(
         model: info.model,
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
       
       // Emit usage if available
       if (state.accumulatedTokens > 0) {
@@ -292,10 +292,10 @@ function createParser(
             total_tokens: state.accumulatedTokens,
           },
         }
-        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
       }
       
-      controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
+      enqueue(new TextEncoder().encode(formatOpenAIDone()))
       return
     }
     
@@ -319,7 +319,7 @@ function createParser(
           finish_reason: 'tool_calls'
         }]
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
     } else {
       // No tool calls - emit final stop chunk (valid text response)
       const finalChunk: OpenAIChatCompletionStreamResponse = {
@@ -329,7 +329,7 @@ function createParser(
         model: info.model,
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
     }
     
     // Emit usage if available
@@ -346,10 +346,10 @@ function createParser(
           total_tokens: state.accumulatedTokens,
         },
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
     }
     
-    controller.enqueue(new TextEncoder().encode(formatOpenAIDone()))
+    enqueue(new TextEncoder().encode(formatOpenAIDone()))
   }
 
   const emitContent = (text: string) => {
@@ -396,7 +396,7 @@ function createParser(
             model: info.model,
             choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
           }
-          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
         }
         const safeChunk: OpenAIChatCompletionStreamResponse = {
           id: `chatcmpl-${state.responseMessageId}`,
@@ -405,7 +405,7 @@ function createParser(
           model: info.model,
           choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
         }
-        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
       }
       
       // Start tool call buffering
@@ -441,7 +441,7 @@ function createParser(
             model: info.model,
             choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
           }
-          controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
         }
         const chunk: OpenAIChatCompletionStreamResponse = {
           id: `chatcmpl-${state.responseMessageId}`,
@@ -450,7 +450,7 @@ function createParser(
           model: info.model,
           choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
         }
-        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
       }
       
       state.accumulatedContent = safeContent
@@ -481,7 +481,7 @@ function createParser(
         model: info.model,
         choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
     }
 
     const chunk: OpenAIChatCompletionStreamResponse = {
@@ -491,7 +491,7 @@ function createParser(
       model: info.model,
       choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newContent } : { content: newContent }, finish_reason: null }],
     }
-    controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
+    enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
   }
 
   const processLine = (line: string) => {
@@ -648,14 +648,12 @@ export async function translateDeepSeekStreamToSSE(
   const outputChunks: Uint8Array[] = []
   let parseError: { message: string; syntaxRules: string } | null = null
 
-  const reader = deepSeekStream.getReader()
-  const controller = {
-    enqueue(chunk: Uint8Array) {
-      outputChunks.push(chunk)
-    },
-  } as TransformStreamDefaultController<Uint8Array>
+  const enqueue = (chunk: Uint8Array) => {
+    outputChunks.push(chunk)
+  }
 
-  const parser = createParser(controller, info)
+  const reader = deepSeekStream.getReader()
+  const parser = createParser(enqueue, info)
 
   try {
     while (true) {
@@ -672,6 +670,9 @@ export async function translateDeepSeekStreamToSSE(
   } finally {
     reader.releaseLock()
   }
+
+  // Finalize decoder at EOF to handle any partial UTF-8 characters
+  buffer += decoder.decode()
 
   if (buffer.length > 0) {
     const trimmed = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
