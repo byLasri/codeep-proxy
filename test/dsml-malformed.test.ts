@@ -100,6 +100,13 @@ function expect<T>(actual: T) {
       if (!Array.isArray(actual) || actual.length !== expected) {
         throw new Error(`Expected array length ${expected} but got ${actual?.length}`)
       }
+    },
+    toEqual(expected: unknown) {
+      const actualStr = JSON.stringify(actual)
+      const expectedStr = JSON.stringify(expected)
+      if (actualStr !== expectedStr) {
+        throw new Error(`Expected ${expectedStr} but got ${actualStr}`)
+      }
     }
   }
   return {
@@ -557,6 +564,323 @@ Some text after`
       expect(result.error!.message).toContain('string=')
     }},
   ]
+
+  // Phase 4: Parameter semantic tests
+  console.log('\n--- Phase 4: Parameter Semantic Tests ---\n')
+
+  const paramSemanticTests = [
+    // string="true" tests
+    { name: 'string="true" - ordinary string', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="message" string="true">hello world</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.message).toBe('hello world')
+      expect(typeof args.message).toBe('string')
+    }},
+    { name: 'string="true" - Windows path', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="path" string="true">C:\\Users\\Damas\\file.txt</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.path).toBe('C:\\Users\\Damas\\file.txt')
+    }},
+    { name: 'string="true" - empty string', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="empty" string="true"></｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.empty).toBe('')
+    }},
+    { name: 'string="true" - string containing <', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="code" string="true">if (a < b) return c;</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.code).toBe('if (a < b) return c;')
+    }},
+    { name: 'string="true" - multiline string', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="text" string="true">line1
+line2
+line3</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.text).toBe('line1\nline2\nline3')
+    }},
+
+    // string="false" tests
+    { name: 'string="false" - integer', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="count" string="false">5</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.count).toBe(5)
+      expect(typeof args.count).toBe('number')
+    }},
+    { name: 'string="false" - decimal', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="ratio" string="false">3.14</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.ratio).toBe(3.14)
+      expect(typeof args.ratio).toBe('number')
+    }},
+    { name: 'string="false" - boolean true', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="enabled" string="false">true</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.enabled).toBe(true)
+      expect(typeof args.enabled).toBe('boolean')
+    }},
+    { name: 'string="false" - boolean false', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="enabled" string="false">false</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.enabled).toBe(false)
+      expect(typeof args.enabled).toBe('boolean')
+    }},
+    { name: 'string="false" - null', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="value" string="false">null</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.value).toBeNull()
+    }},
+    { name: 'string="false" - object', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="config" string="false">{"a":1}</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.config).toEqual({a: 1})
+    }},
+    { name: 'string="false" - array', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="items" string="false">[1,2,3]</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.items).toEqual([1, 2, 3])
+    }},
+    { name: 'string="false" - JSON string', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="message" string="false">"json string"</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.message).toBe('json string')
+    }},
+    { name: 'string="false" - malformed JSON should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="count" string="false">not-json</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('not valid JSON')
+    }},
+    { name: 'string="false" - malformed JSON object should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="obj" string="false">{a:1}</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+    }},
+    { name: 'string="false" - incomplete JSON should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="arr" string="false">[1,2,</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+    }},
+
+    // Parameter name tests
+    { name: 'parameter with empty name should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="" string="true">value</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Parameter name is empty')
+    }},
+    { name: 'parameter with whitespace-only name should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="   " string="true">value</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Parameter name is empty')
+    }},
+
+    // Structural rejection tests
+    { name: 'malformed parameter with missing closing tag should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="value" string="true">unclosed
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Malformed parameter tag')
+    }},
+    { name: 'parameter missing string attribute should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="value">no string attr</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('string=')
+    }},
+    { name: 'unknown element inside invoke should be malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ unknown_element>bad</｜｜DSML｜｜ unknown_element>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Invalid DSML element')
+    }},
+    { name: 'malformed parameter should produce zero tool calls', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="count" string="false">not-json</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+    }},
+
+    // Zero-parameter tool call
+    { name: 'invoke with zero parameters should be valid', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="ping">
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('ping')
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args).toEqual({})
+    }},
+
+    // Multiple parameters with mixed string="true" and string="false"
+    { name: 'mixed string="true" and string="false" parameters', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="test">
+<｜｜DSML｜｜ parameter name="count" string="false">5</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="enabled" string="false">true</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="path" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      const args = JSON.parse(result.toolCalls[0].function.arguments)
+      expect(args.count).toBe(5)
+      expect(typeof args.count).toBe('number')
+      expect(args.enabled).toBe(true)
+      expect(typeof args.enabled).toBe('boolean')
+      expect(args.path).toBe('README.md')
+      expect(typeof args.path).toBe('string')
+    }},
+  ]
+
+  failed += await runTestsSequentially(paramSemanticTests)
 
   // Matrix tests: all 20 dialect/wrapper combinations
   console.log('\n--- DSML Dialect Matrix Tests (4 delimiters × 5 wrappers = 20) ---\n')

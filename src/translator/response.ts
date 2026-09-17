@@ -296,23 +296,50 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
     }
     
     // Extract parameters from this invoke block
-    const params: Record<string, string> = {}
-    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>([^<]*)<\/｜｜DSML｜｜\s+parameter>/g
+    const params: Record<string, unknown> = {}
+    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]*)"\s+string="(true|false)"\s*>([\s\S]*?)<\/｜｜DSML｜｜\s+parameter>/g
     let paramMatch
     
     while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
       const paramName = paramMatch[1]
+      const stringAttr = paramMatch[2]
       const paramValue = paramMatch[3]?.trim() || ''
       
-      // Only include valid parameter names
-      if (paramName && paramName.trim() !== '') {
+      // Parameter name must be non-empty
+      if (!paramName || paramName.trim() === '') {
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: 'Parameter name is empty or missing',
+            syntaxRules: CORRECTIVE_MESSAGE
+          }
+        }
+      }
+      
+      if (stringAttr === 'true') {
+        // string="true" - store as raw string
         params[paramName] = paramValue
+      } else {
+        // string="false" - parse as JSON
+        try {
+          params[paramName] = JSON.parse(paramValue)
+        } catch {
+          return {
+            toolCalls: [],
+            isMalformed: true,
+            error: {
+              message: `Parameter "${paramName}" has string="false" but value is not valid JSON`,
+              syntaxRules: CORRECTIVE_MESSAGE
+            }
+          }
+        }
       }
     }
     
     // Check for malformed parameter tags within this invoke
-    // Look for parameters without proper closing tags
-    const malformedParamRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![^<]*<\/｜｜DSML｜｜\s+parameter>)/g
+    // Look for parameter tags that don't match the expected format
+    const malformedParamRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![\s\S]*?<\/｜｜DSML｜｜\s+parameter>)/g
     const hasMalformedParam = invokeContent.match(malformedParamRegex)
     if (hasMalformedParam) {
       return {
@@ -334,6 +361,21 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         isMalformed: true,
         error: {
           message: 'Parameter tag missing required string="true|false" attribute',
+          syntaxRules: CORRECTIVE_MESSAGE
+        }
+      }
+    }
+    
+    // Check for any unknown elements inside invoke (not parameter or text)
+    // Valid children of invoke are only parameter tags
+    const validInvokeChildrenRegex = /<｜｜DSML｜｜\s+(?!parameter\b)[a-zA-Z]+/g
+    const invalidInvokeChildMatch = invokeContent.match(validInvokeChildrenRegex)
+    if (invalidInvokeChildMatch) {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: `Invalid DSML element found inside invoke: ${invalidInvokeChildMatch[0]}. Only <parameter> elements are allowed inside <invoke>.`,
           syntaxRules: CORRECTIVE_MESSAGE
         }
       }
