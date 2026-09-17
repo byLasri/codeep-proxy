@@ -184,16 +184,36 @@ function createParser(
         controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
       }
       
-      // Emit error message content
-      const errorMsg = `⚠️ Malformed tool call detected\n\n${state.parseError.message}\n\n${state.parseError.syntaxRules}`
-      const errorChunk: OpenAIChatCompletionStreamResponse = {
+      // Emit a tool call with error information in the arguments
+      // This preserves the agent loop by maintaining the tool_calls contract
+      const errorToolCall = {
+        index: 0,
+        id: `call_error_${Date.now()}`,
+        type: 'function' as const,
+        function: {
+          name: '__malformed_dsml_error__',
+          arguments: JSON.stringify({
+            error: state.parseError.message,
+            syntaxRules: state.parseError.syntaxRules,
+            originalBuffer: state.toolCallBuffer.substring(0, 500) // Include first 500 chars for debugging
+          })
+        }
+      }
+      
+      const toolCallChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
         created: info.created,
         model: info.model,
-        choices: [{ index: 0, delta: { content: errorMsg }, finish_reason: 'stop' }],
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [errorToolCall]
+          },
+          finish_reason: 'tool_calls'
+        }]
       }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(errorChunk)))
+      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
       
       // Emit usage if available
       if (state.accumulatedTokens > 0) {
@@ -829,6 +849,20 @@ export async function translateDeepSeekStreamToJSON(
   
   // Handle parse errors in non-streaming mode
   if (dsmlResult.error) {
+    // Return a tool call with error information to preserve the agent loop
+    const errorToolCall = {
+      id: `call_error_${Date.now()}`,
+      type: 'function' as const,
+      function: {
+        name: '__malformed_dsml_error__',
+        arguments: JSON.stringify({
+          error: dsmlResult.error.message,
+          syntaxRules: dsmlResult.error.syntaxRules,
+          originalContent: accumulatedContent.substring(0, 500) // Include first 500 chars for debugging
+        })
+      }
+    }
+    
     const result: OpenAIChatCompletionResponse = {
       id: `chatcmpl-${responseMessageId}`,
       object: 'chat.completion',
@@ -839,10 +873,11 @@ export async function translateDeepSeekStreamToJSON(
           index: 0,
           message: { 
             role: 'assistant', 
-            content: `⚠️ Malformed tool call detected\n\n${dsmlResult.error.message}\n\n${dsmlResult.error.syntaxRules}`,
-            reasoning_content: accumulatedReasoning || undefined
+            content: null,
+            reasoning_content: accumulatedReasoning || undefined,
+            tool_calls: [errorToolCall]
           },
-          finish_reason: 'stop',
+          finish_reason: 'tool_calls',
         },
       ],
       usage: {
