@@ -30,7 +30,7 @@ interface SSEParserState {
   pendingLookahead: string
 }
 
-interface DSMLParseResult {
+export interface DSMLParseResult {
   toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   isMalformed?: boolean
   error?: { message: string; syntaxRules: string }
@@ -616,6 +616,8 @@ function createParser(
 
   return { state, emitFinal, emitContent, processLine }
 }
+
+export { parseDSMLToolCalls, CORRECTIVE_MESSAGE }
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
