@@ -252,6 +252,7 @@ function createParser(
     
     // If there was a parse error (malformed DSML), emit the corrective message as content
     // This notifies the user and sends the corrective message back to the model
+    // Use finish_reason: 'length' to signal an abnormal termination that allows retry
     if (state.parseError) {
       // First emit role if not already emitted
       if (!state.hasEmittedRole) {
@@ -266,7 +267,7 @@ function createParser(
         controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
       }
       
-      // Emit the corrective message as content
+      // Emit the corrective message as content with finish_reason: 'length'
       const errorChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -275,7 +276,7 @@ function createParser(
         choices: [{ 
           index: 0, 
           delta: { content: state.parseError.syntaxRules }, 
-          finish_reason: 'stop' 
+          finish_reason: 'length' 
         }],
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(errorChunk)))
@@ -892,6 +893,7 @@ export async function translateDeepSeekStreamToJSON(
   
   // If DSML is malformed, return the corrective message as content instead of tool calls
   // This notifies the user and sends the corrective message back to the model for retry
+  // Use finish_reason: 'length' to signal an abnormal termination that allows retry
   if (dsmlResult.isMalformed && dsmlResult.error) {
     const result: OpenAIChatCompletionResponse = {
       id: `chatcmpl-${responseMessageId}`,
@@ -906,7 +908,7 @@ export async function translateDeepSeekStreamToJSON(
             content: dsmlResult.error.syntaxRules,
             reasoning_content: accumulatedReasoning || undefined,
           },
-          finish_reason: 'stop',
+          finish_reason: 'length',
         },
       ],
       usage: {
