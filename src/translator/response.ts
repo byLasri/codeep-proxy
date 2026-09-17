@@ -26,7 +26,7 @@ interface SSEParserState {
   toolCallBuffer: string
   isToolCallInProgress: boolean
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
-  parseError: { message: string; syntaxRules: string } | null
+  parseError: null  // Always null - malformed DSML handled internally, never emitted to client
   pendingLookahead: string
 }
 
@@ -250,38 +250,12 @@ function createParser(
     if (state.hasEmittedDone) return
     state.hasEmittedDone = true
     
-    // If there was a parse error (malformed DSML), emit the corrective message as content
-    // This notifies the user and sends the corrective message back to the model
-    // Use finish_reason: 'length' to signal an abnormal termination that allows retry
-    if (state.parseError) {
-      // First emit role if not already emitted
-      if (!state.hasEmittedRole) {
-        state.hasEmittedRole = true
-        const roleChunk: OpenAIChatCompletionStreamResponse = {
-          id: `chatcmpl-${state.responseMessageId}`,
-          object: 'chat.completion.chunk',
-          created: info.created,
-          model: info.model,
-          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-        }
-        controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
-      }
-      
-      // Emit the corrective message as content with finish_reason: 'length'
-      const errorChunk: OpenAIChatCompletionStreamResponse = {
-        id: `chatcmpl-${state.responseMessageId}`,
-        object: 'chat.completion.chunk',
-        created: info.created,
-        model: info.model,
-        choices: [{ 
-          index: 0, 
-          delta: { content: state.parseError.syntaxRules }, 
-          finish_reason: 'length' 
-        }],
-      }
-      controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(errorChunk)))
-    } else if (state.parsedToolCalls.length > 0) {
-      // Emit tool calls if we have any
+    // Malformed DSML is handled internally by the caller - never emit corrective message to client
+    // For streaming, we simply don't emit tool calls when DSML is malformed
+    // The caller will detect this and perform internal retry
+    
+    if (state.parsedToolCalls.length > 0) {
+      // Emit tool calls if we have any (valid DSML)
       const toolCallChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -302,7 +276,7 @@ function createParser(
       }
       controller.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
     } else {
-      // No tool calls - emit final stop chunk
+      // No tool calls - emit final stop chunk (could be valid text response or malformed DSML)
       const finalChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -342,10 +316,7 @@ function createParser(
       if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
         const result = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
-        // Store parse error if present for handling in emitFinal
-        if (result.isMalformed && result.error) {
-          state.parseError = result.error
-        }
+        // Malformed DSML is handled internally by caller - don't store error in state
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
       }
