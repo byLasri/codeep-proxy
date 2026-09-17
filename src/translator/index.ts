@@ -17,6 +17,5 @@ export {
   formatOpenAIDone,
   translateDeepSeekStreamToSSE,
   translateDeepSeekStreamToJSON,
-  parseDSMLToolCalls,
-  CORRECTIVE_MESSAGE,
+  buildCorrectiveMessage,
 } from './response.js'

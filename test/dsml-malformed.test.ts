@@ -1,4 +1,4 @@
-import { parseDSMLToolCalls, CORRECTIVE_MESSAGE, type DSMLParseResult, translateDeepSeekStreamToSSE, ALL_DIALECTS } from '../src/translator/response.js'
+import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, ALL_DIALECTS } from '../src/translator/response.js'
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -167,7 +167,7 @@ async function main() {
       expect(result.toolCalls).toHaveLength(0)
       expect(result.error).toBeDefined()
       expect(result.error!.message).toContain('Parameter found outside')
-      expect(result.error!.syntaxRules).toBe(CORRECTIVE_MESSAGE)
+      expect(result.error!.syntaxRules).toBe(buildCorrectiveMessage('Invalid DSML element found: invalid_element. Only <invoke> elements are allowed inside <calls>.'))
     }},
     { name: 'invalid/unknown DSML element should be detected as malformed', fn: async () => {
       const xml = `<｜｜DSML｜｜ calls>
@@ -957,6 +957,151 @@ line3</｜｜DSML｜｜ parameter>
 
   failed += await runTestsSequentially(paramSemanticTests)
 
+  // Phase 5: Dynamic Corrective Message Tests
+  console.log('\n--- Phase 5: Dynamic Corrective Message Tests ---\n')
+
+  const correctiveMessageTests = [
+    { name: 'corrective message contains the exact parser error', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      // The error message should be the specific parser error
+      const msg = result.error!.syntaxRules
+      expect(msg).toContain('Parsing error:')
+      expect(msg).toContain('Mismatched <invoke> tags')
+      // Should NOT contain the old phrase
+      expect(msg).not.toContain('Here is the EXACT format you must follow')
+      // Should NOT instruct specific delimiter
+      expect(msg).not.toContain('use exactly this syntax')
+    }},
+    { name: 'different malformed cases produce different corrective messages', fn: async () => {
+      const cases = [
+        { xml: `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read"><｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter></｜｜DSML｜｜ calls>`, // missing closing invoke
+          expectedError: 'Mismatched <invoke> tags' },
+        { xml: `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read"><｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>`, // missing closing calls
+          expectedError: 'Missing closing' },
+        { xml: `<｜｜DSML｜｜ calls><｜｜DSML｜｜ parameter name="filePath" string="true">test.txt</｜｜DSML｜｜ parameter></｜｜DSML｜｜ calls>`, // parameter outside invoke
+          expectedError: 'Parameter found outside' },
+        { xml: `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="test"><｜｜DSML｜｜ parameter name="value">no string attr</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>`, // missing string attribute
+          expectedError: 'string=' },
+        { xml: `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="test"><｜｜DSML｜｜ parameter name="count" string="false">not-json</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>`, // invalid JSON
+          expectedError: 'not valid JSON' },
+      ]
+
+      const messages = []
+      for (const c of cases) {
+        const result = parseDSMLToolCalls(c.xml)
+        expect(result.isMalformed).toBe(true)
+        expect(result.toolCalls).toHaveLength(0)
+        expect(result.error).toBeDefined()
+        const msg = result.error!.syntaxRules
+        expect(msg).toContain('Parsing error:')
+        expect(msg).toContain(c.expectedError)
+        messages.push(msg)
+      }
+
+      // All messages should be different (each contains its specific parser error)
+      for (let i = 0; i < messages.length; i++) {
+        for (let j = i + 1; j < messages.length; j++) {
+          expect(messages[i]).not.toBe(messages[j])
+        }
+      }
+    }},
+    { name: 'corrective message starts with expected prefix', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg.startsWith('Your previous response contained a malformed tool call.')).toBe(true)
+    }},
+    { name: 'corrective message contains "The tool call was NOT executed"', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg).toContain('The tool call was NOT executed.')
+    }},
+    { name: 'corrective message contains "Parsing error:"', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg).toContain('Parsing error:')
+    }},
+    { name: 'corrective message contains structural examples for read and list', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg).toContain('<calls>')
+      expect(msg).toContain('<invoke name="read">')
+      expect(msg).toContain('<parameter name="filePath" string="true">')
+      expect(msg).toContain('README.md')
+      expect(msg).toContain('<invoke name="list">')
+      expect(msg).toContain('<parameter name="path" string="true">')
+      expect(msg).toContain('.')
+    }},
+    { name: 'corrective message states delimiter itself is not the error', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg).toContain('The delimiter itself is not the error')
+    }},
+    { name: 'corrective message does not contain old EXACT format phrase', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg).not.toContain('Here is the EXACT format you must follow')
+    }},
+    { name: 'corrective message does not instruct specific delimiter', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ calls>`
+      const result = parseDSMLToolCalls(xml)
+      const msg = result.error!.syntaxRules
+      expect(msg).not.toContain('use exactly this syntax')
+      expect(msg).not.toContain('<｜｜DSML｜｜')
+      expect(msg).not.toContain('||DSML||')
+    }},
+    { name: 'malformed cases still produce zero tool calls', fn: async () => {
+      const malformedCases = [
+        `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read"><｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter></｜｜DSML｜｜ calls>`, // missing closing invoke
+        `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read"><｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>`, // missing closing calls
+        `<｜｜DSML｜｜ calls><｜｜DSML｜｜ parameter name="filePath" string="true">test.txt</｜｜DSML｜｜ parameter></｜｜DSML｜｜ calls>`, // parameter outside invoke
+        `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="test"><｜｜DSML｜｜ parameter name="value">no string attr</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>`, // missing string attribute
+        `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="test"><｜｜DSML｜｜ parameter name="count" string="false">not-json</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>`, // invalid JSON
+      ]
+
+      for (const xml of malformedCases) {
+        const result = parseDSMLToolCalls(xml)
+        expect(result.isMalformed).toBe(true)
+        expect(result.toolCalls).toHaveLength(0)
+      }
+    }},
+  ]
+
+  failed += await runTestsSequentially(correctiveMessageTests)
+
   // Matrix tests: all 20 dialect/wrapper combinations
   console.log('\n--- DSML Dialect Matrix Tests (4 delimiters × 5 wrappers = 20) ---\n')
   
@@ -1181,7 +1326,7 @@ ${dialect.closeCalls}`
       
       expect(result.parseError).toBeDefined()
       expect(result.parseError!.message).toContain('Parameter found outside')
-      expect(result.parseError!.syntaxRules).toBe(CORRECTIVE_MESSAGE)
+      expect(result.parseError!.syntaxRules).toBe(buildCorrectiveMessage('Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.'))
     }},
     { name: 'malformed response produces no client-facing DSML/tool-call output', fn: async () => {
       const sseInput = [

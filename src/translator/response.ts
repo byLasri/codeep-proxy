@@ -156,31 +156,31 @@ function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-const CORRECTIVE_MESSAGE = `Your previous response contained a malformed tool call that could not be parsed.
-The tool call was NOT executed.
-
-Here is the EXACT format you must follow:
-
-<｜｜DSML｜｜ calls>
-<｜｜DSML｜｜ invoke name="tool_name">
-<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
-<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-<｜｜DSML｜｜ invoke name="another_tool">
-<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>
-
-Rules:
-1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
-2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
-3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
-4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
-5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
-6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
-7. Do not add extra text or tags outside the DSML structure.
-
-Please retry the tool call now using exactly this syntax. Do not add any text outside the DSML structure.`
+function buildCorrectiveMessage(parserError: string): string {
+  return 'Your previous response contained a malformed tool call.\n' +
+    'The tool call was NOT executed.\n\n' +
+    'Parsing error:\n' + parserError + '\n\n' +
+    'Please correct the structural error and retry the tool call.\n\n' +
+    'A valid tool call has this structure:\n\n' +
+    '<calls>\n' +
+    '<invoke name="read">\n' +
+    '<parameter name="filePath" string="true">README.md\n' +
+    '<parameter name="path" string="true">.\n' +
+    '</invoke>\n' +
+    '<invoke name="list">\n' +
+    '<parameter name="path" string="true">.\n' +
+    '</invoke>\n' +
+    '</calls>\n\n' +
+    'Rules:\n' +
+    '1. Structure: <calls> contains one or more <invoke> blocks. Each <invoke> contains one or more <parameter> blocks.\n' +
+    '2. Parameters MUST be inside an <invoke> block. Never place a parameter outside an invoke.\n' +
+    '3. Every opening tag must have exactly ONE matching closing tag with a forward slash: </tag>\n' +
+    '4. Closing tags must NOT contain attributes. Write </invoke>, not <invoke>.\n' +
+    '5. Each separate tool call needs its own <invoke name="..."> block.\n' +
+    '6. Do not add extra text or tags outside the DSML structure.\n\n' +
+    'The delimiter itself is not the error.\n' +
+    'Please correct the structural error and retry the tool call now.'
+}
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
@@ -211,7 +211,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: 'Missing closing </｜｜DSML｜｜ calls> tag',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('Missing closing </｜｜DSML｜｜ calls> tag')
       }
     }
   }
@@ -224,7 +224,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: 'Invalid DSML calls structure',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('Invalid DSML calls structure')
       }
     }
   }
@@ -240,7 +240,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: `Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`,
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage(`Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`)
       }
     }
   }
@@ -255,7 +255,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: 'Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.')
       }
     }
   }
@@ -270,7 +270,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: `Invalid DSML element found: ${invalidElementMatch[0]}. Only <invoke> elements are allowed inside <calls>.`,
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage(`Invalid DSML element found: ${invalidElementMatch[0]}. Only <invoke> elements are allowed inside <calls>.`)
       }
     }
   }
@@ -289,8 +289,8 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         toolCalls: [],
         isMalformed: true,
         error: {
-          message: 'Tool name is empty or missing in <invoke> tag',
-          syntaxRules: CORRECTIVE_MESSAGE
+message: 'Tool name is empty or missing in <invoke> tag',
+        syntaxRules: buildCorrectiveMessage('Tool name is empty or missing in <invoke> tag')
         }
       }
     }
@@ -311,8 +311,8 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
           toolCalls: [],
           isMalformed: true,
           error: {
-            message: 'Parameter name is empty or missing',
-            syntaxRules: CORRECTIVE_MESSAGE
+message: 'Parameter name is empty or missing',
+        syntaxRules: buildCorrectiveMessage('Parameter name is empty or missing')
           }
         }
       }
@@ -330,7 +330,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
             isMalformed: true,
             error: {
               message: `Parameter "${paramName}" has string="false" but value is not valid JSON`,
-              syntaxRules: CORRECTIVE_MESSAGE
+              syntaxRules: buildCorrectiveMessage(`Parameter "${paramName}" has string="false" but value is not valid JSON`)
             }
           }
         }
@@ -347,7 +347,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         isMalformed: true,
         error: {
           message: 'Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag',
-          syntaxRules: CORRECTIVE_MESSAGE
+          syntaxRules: buildCorrectiveMessage('Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag')
         }
       }
     }
@@ -360,8 +360,8 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         toolCalls: [],
         isMalformed: true,
         error: {
-          message: 'Parameter tag missing required string="true|false" attribute',
-          syntaxRules: CORRECTIVE_MESSAGE
+message: 'Parameter tag missing required string="true|false" attribute',
+        syntaxRules: buildCorrectiveMessage('Parameter tag missing required string="true|false" attribute')
         }
       }
     }
@@ -376,7 +376,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         isMalformed: true,
         error: {
           message: `Invalid DSML element found inside invoke: ${invalidInvokeChildMatch[0]}. Only <parameter> elements are allowed inside <invoke>.`,
-          syntaxRules: CORRECTIVE_MESSAGE
+          syntaxRules: buildCorrectiveMessage(`Invalid DSML element found inside invoke: ${invalidInvokeChildMatch[0]}. Only <parameter> elements are allowed inside <invoke>.`)
         }
       }
     }
@@ -399,7 +399,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: '<calls> block must contain at least one <invoke> element',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('<calls> block must contain at least one <invoke> element')
       }
     }
   }
@@ -813,7 +813,7 @@ function createParser(
   return { state, emitFinal, emitContent, processLine }
 }
 
-export { parseDSMLToolCalls, CORRECTIVE_MESSAGE, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper }
+export { parseDSMLToolCalls, buildCorrectiveMessage, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper }
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
