@@ -10,7 +10,7 @@ import type { OpenAIChatCompletionRequest } from './translator/types.js'
 // Global FIFO queue for request delay between requests
 let globalQueue: Promise<void> = Promise.resolve();
 
-async function enqueueGlobalRequest(delayMs: number = 10000): Promise<void> {
+async function enqueueGlobalRequest(delayMs: number = 15000): Promise<void> {
   const previousQueue = globalQueue;
   let resolveMyTurn: () => void;
   const myTurn = new Promise<void>(resolve => { resolveMyTurn = resolve; });
@@ -222,7 +222,7 @@ export default {
               const prompt = latestUserMessage.content
               
               // Extract timeout from request or use default (10 seconds)
-              const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 10000
+              const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
               await enqueueGlobalRequest(timeoutMs)
               
               // Preserve thinking_enabled and search_enabled settings from model mapping
@@ -285,7 +285,7 @@ export default {
             }
 
             // Extract timeout from request or use default (10 seconds)
-            const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 10000
+            const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
             
             // Internal retry loop for malformed DSML (max 5 attempts)
             const MAX_MALFORMED_RETRIES = 5
