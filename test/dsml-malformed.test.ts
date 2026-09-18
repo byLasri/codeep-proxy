@@ -167,7 +167,11 @@ async function main() {
       expect(result.toolCalls).toHaveLength(0)
       expect(result.error).toBeDefined()
       expect(result.error!.message).toContain('Parameter found outside')
-      expect(result.error!.syntaxRules).toBe(buildCorrectiveMessage('Invalid DSML element found: invalid_element. Only <invoke> elements are allowed inside <calls>.'))
+      expect(result.error!.syntaxRules).toBe(
+        buildCorrectiveMessage(
+          'Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.'
+        )
+      )
     }},
     { name: 'invalid/unknown DSML element should be detected as malformed', fn: async () => {
       const xml = `<｜｜DSML｜｜ calls>
@@ -358,8 +362,8 @@ async function main() {
 
       const result = parseDSMLToolCalls(xml)
 
-      expect(result.error!.syntaxRules).toContain('<｜｜DSML｜｜ calls>')
-      expect(result.error!.syntaxRules).toContain('<｜｜DSML｜｜ invoke name=')
+      expect(result.error!.syntaxRules).toContain('<calls>')
+      expect(result.error!.syntaxRules).toContain('<invoke name=')
       expect(result.error!.syntaxRules).toContain('Rules:')
       expect(result.error!.syntaxRules).toContain('Parameters MUST be inside')
     }},

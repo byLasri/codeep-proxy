@@ -157,29 +157,40 @@ function escapeRegExp(string: string): string {
 }
 
 function buildCorrectiveMessage(parserError: string): string {
-  return 'Your previous response contained a malformed tool call.\n' +
-    'The tool call was NOT executed.\n\n' +
-    'Parsing error:\n' + parserError + '\n\n' +
-    'Please correct the structural error and retry the tool call.\n\n' +
-    'A valid tool call has this structure:\n\n' +
-    '<calls>\n' +
-    '<invoke name="read">\n' +
-    '<parameter name="filePath" string="true">README.md\n' +
-    '<parameter name="path" string="true">.\n' +
-    '</invoke>\n' +
-    '<invoke name="list">\n' +
-    '<parameter name="path" string="true">.\n' +
-    '</invoke>\n' +
-    '</calls>\n\n' +
-    'Rules:\n' +
-    '1. Structure: <calls> contains one or more <invoke> blocks. Each <invoke> contains one or more <parameter> blocks.\n' +
-    '2. Parameters MUST be inside an <invoke> block. Never place a parameter outside an invoke.\n' +
-    '3. Every opening tag must have exactly ONE matching closing tag with a forward slash: </tag>\n' +
-    '4. Closing tags must NOT contain attributes. Write </invoke>, not <invoke>.\n' +
-    '5. Each separate tool call needs its own <invoke name="..."> block.\n' +
-    '6. Do not add extra text or tags outside the DSML structure.\n\n' +
-    'The delimiter itself is not the error.\n' +
-    'Please correct the structural error and retry the tool call now.'
+  return `Your previous response contained a malformed tool call.
+The tool call was NOT executed.
+
+Parsing error:
+${parserError}
+
+Please correct the structural error and retry the tool call.
+
+A valid tool call has this structure:
+
+<calls>
+<invoke name="read">
+<parameter name="filePath" string="true">README.md</parameter>
+</invoke>
+</calls>
+
+Another example:
+
+<calls>
+<invoke name="list">
+<parameter name="path" string="true">.</parameter>
+</invoke>
+</calls>
+
+Rules:
+1. Structure: <calls> contains one or more <invoke> blocks. Each <invoke> contains one or more <parameter> blocks.
+2. Parameters MUST be inside an <invoke> block. Never place a parameter outside an invoke.
+3. Every opening tag must have exactly ONE matching closing tag.
+4. Closing tags must NOT contain attributes.
+5. Each separate tool call needs its own <invoke name="..."> block.
+6. Do not add extra text or tags outside the tool-call structure.
+
+The delimiter itself is not the error.
+Please correct the structural error and retry the tool call now.`
 }
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
