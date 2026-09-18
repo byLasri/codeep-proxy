@@ -587,6 +587,17 @@ function createParser(
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
+      const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
+      const forbiddenMarker = forbiddenDsmlMarkers.find(marker => state.toolCallBuffer.includes(marker))
+      if (forbiddenMarker) {
+        state.parseError = {
+          message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+          syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+        }
+        state.isToolCallInProgress = false
+        state.toolCallBuffer = ''
+        return
+      }
       if (state.detectedDialect) {
         if (state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
           const result = parseDSMLToolCalls(state.toolCallBuffer)
