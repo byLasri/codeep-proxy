@@ -14,6 +14,10 @@ export interface PromptWithToolResults {
   toolResults: ToolResult[]
 }
 
+function buildDeepSeekToolResultsPrompt(toolResults: ToolResult[]): string {
+  return toolResults.map(result => result.content).join('\n\n')
+}
+
 export function getXSessionIdFromHeaders(headers: Headers): string | undefined {
   let value = headers.get('X-Session-Id')
   if (value !== null) {
@@ -90,9 +94,7 @@ export function buildDeepSeekPrompt(
 
     let prompt: string
     if (toolResults.length > 0) {
-      // Use the content of the last tool result as the simple prompt for backward compatibility
-      // The structured toolResults are preserved in the returned object
-      prompt = toolResults[toolResults.length - 1].content
+      prompt = buildDeepSeekToolResultsPrompt(toolResults)
     } else {
       // Fallback to finding the latest user message
       const userMsg = [...messages].reverse().find((m) => m.role === 'user')
