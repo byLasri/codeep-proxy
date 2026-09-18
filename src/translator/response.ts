@@ -220,6 +220,21 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
     if (invokeDialect) {
       const openCount = (xml.match(new RegExp(escapeRegExp(invokeDialect.openInvoke), 'g')) || []).length
       const closeCount = (xml.match(new RegExp(escapeRegExp(invokeDialect.closeInvoke), 'g')) || []).length
+      
+      // Check for stray calls tags in wrapperless input - these are malformed
+      const hasStrayCallsOpen = getAllOpenCallsPatterns().some(pattern => xml.includes(pattern))
+      const hasStrayCallsClose = getAllCloseCallsPatterns().some(pattern => xml.includes(pattern))
+      if (hasStrayCallsOpen || hasStrayCallsClose) {
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: hasStrayCallsOpen ? 'Stray opening <calls> tag found in wrapperless invoke' : 'Stray closing </calls> tag found in wrapperless invoke',
+            syntaxRules: buildCorrectiveMessage(hasStrayCallsOpen ? 'Stray opening <calls> tag found in wrapperless invoke' : 'Stray closing </calls> tag found in wrapperless invoke')
+          }
+        }
+      }
+      
       if (openCount > 0 && openCount === closeCount) {
         // Complete invoke block(s) - wrap and parse normally
         const wrappedXml = wrapWithSyntheticCalls(xml, invokeDialect)
@@ -929,6 +944,15 @@ export async function translateDeepSeekStreamToSSE(
       }
       parser.state.isToolCallInProgress = false
       parser.state.toolCallBuffer = ''
+    }
+  }
+
+  // Check for malformed wrapperless DSML in accumulated content at EOF
+  // This catches cases like stray closing calls tags without opening calls tag
+  if (!parser.state.parseError && parser.state.accumulatedContent) {
+    const dsmlResult = parseDSMLToolCalls(parser.state.accumulatedContent)
+    if (dsmlResult.isMalformed && dsmlResult.error) {
+      parser.state.parseError = dsmlResult.error
     }
   }
 

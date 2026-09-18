@@ -647,6 +647,167 @@ Some text after`
       expect(result.toolCalls).toHaveLength(0)
       expect(result.error).toBeFalsy()
     }},
+    { name: 'wrapperless invoke with stray closing calls tag is malformed (exact config.json reproducer)', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">C:\\Users\\Damas\\workground\\config.json</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Stray closing')
+    }},
+    { name: 'wrapperless invoke with stray opening calls tag is malformed (detected as missing closing)', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Missing closing')
+    }},
+    { name: 'wrapperless multiple invokes with stray closing calls tag is malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+<｜｜DSML｜｜ invoke name="write">
+<｜｜DSML｜｜ parameter name="content" string="true">hello</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Stray closing')
+    }},
+    { name: 'wrapperless invoke with stray closing calls tag (single delimiter) is malformed', fn: async () => {
+      const xml = `<｜DSML｜ invoke name="read">
+<｜DSML｜ parameter name="filePath" string="true">README.md</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Stray closing')
+    }},
+    { name: 'wrapperless invoke with stray closing calls tag (ASCII delimiter) is malformed', fn: async () => {
+      const xml = `<||DSML||invoke name="read">
+<||DSML||parameter name="filePath" string="true">README.md</||DSML||parameter>
+</||DSML||invoke>
+</||DSML||calls>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Stray closing')
+    }},
+    { name: 'wrapperless invoke with stray opening calls tag (single delimiter) is malformed (detected as missing closing)', fn: async () => {
+      const xml = `<｜DSML｜ calls>
+<｜DSML｜ invoke name="read">
+<｜DSML｜ parameter name="filePath" string="true">README.md</｜DSML｜ parameter>
+</｜DSML｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Missing closing')
+    }},
+    { name: 'wrapperless invoke with stray opening calls tag (ASCII delimiter) is malformed (detected as missing closing)', fn: async () => {
+      const xml = `<||DSML||calls>
+<||DSML||invoke name="read">
+<||DSML||parameter name="filePath" string="true">README.md</||DSML||parameter>
+</||DSML||invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Missing closing')
+    }},
+    { name: 'malformed wrapperless cases produce zero tool calls', fn: async () => {
+      const cases = [
+        `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`,
+        `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`,
+      ]
+
+      for (const xml of cases) {
+        const result = parseDSMLToolCalls(xml)
+        expect(result.toolCalls).toHaveLength(0)
+        expect(result.isMalformed).toBe(true)
+      }
+    }},
+    { name: 'malformed wrapperless cases provide parser error', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toBeDefined()
+      expect(result.error!.syntaxRules).toBeDefined()
+      expect(result.error!.syntaxRules).toContain('Parsing error:')
+    }},
+    { name: 'streaming input containing stray closing wrapper produces parseError', fn: async () => {
+      const sseInput = [
+        makeSSEEvent('ready', { response_message_id: 123 }),
+        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">C:\\Users\\Damas\\workground\\config.json</｜｜DSML｜｜ parameter>' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
+        makeSSEEvent('close', {}),
+      ]
+      const stream = createSSEStream(sseInput)
+      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
+
+      const result = await translateDeepSeekStreamToSSE(stream, info)
+
+      expect(result.parseError).toBeDefined()
+      expect(result.parseError!.message).toContain('Stray closing')
+    }},
+    { name: 'streaming input containing stray opening wrapper produces parseError (detected as missing closing)', fn: async () => {
+      const sseInput = [
+        makeSSEEvent('ready', { response_message_id: 123 }),
+        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ calls>' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
+        makeSSEEvent('close', {}),
+      ]
+      const stream = createSSEStream(sseInput)
+      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
+
+      const result = await translateDeepSeekStreamToSSE(stream, info)
+
+      expect(result.parseError).toBeDefined()
+      expect(result.parseError!.message).toContain('Missing closing')
+    }},
     { name: 'wrapperless valid invoke produces no raw DSML in assistant content', fn: async () => {
       const sseInput = [
         makeSSEEvent('ready', { response_message_id: 123 }),
