@@ -34,7 +34,7 @@ function parseAttributes(source: string): { name?: string; stringMode?: 'true' |
   let rest = source.trim()
   const attrs: Record<string, string> = {}
   while (rest.length > 0) {
-    const match = rest.match(/^([A-Za-z_:][A-Za-z0-9_.:-]*)\\s*=\\s*"([^"]*)"(?:(?:\\s+)|$)/)
+    const match = rest.match(/^([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*"([^"]*)"(?:(?:\s+)|$)/)
     if (!match) return { malformed: 'Malformed parameter attributes' }
     const [, key, value] = match
     if (key in attrs) return { malformed: `Duplicate attribute "${key}"` }
@@ -82,7 +82,7 @@ export function parseCleanToolCalls(input: string): CleanParseResult {
   let pos = 0
 
   const skipWhitespace = () => {
-    while (pos < body.length && /\\s/.test(body[pos])) pos++
+    while (pos < body.length && /\s/.test(body[pos])) pos++
   }
 
   while (pos < body.length) {
@@ -96,7 +96,7 @@ export function parseCleanToolCalls(input: string): CleanParseResult {
     const invokeStart = body.indexOf('>', pos)
     if (invokeStart < 0) return malformed('Unclosed <invoke> tag')
     const openTag = body.slice(pos, invokeStart + 1)
-    const nameMatch = openTag.match(/^<invoke\\s+name="([^"]+)"\\s*>$/)
+    const nameMatch = openTag.match(/^<invoke\s+name="([^"]+)"\s*>$/)
     if (!nameMatch || !nameMatch[1].trim() || !/^[A-Za-z0-9_.-]+$/.test(nameMatch[1])) {
       return malformed('Invoke is missing a valid tool name')
     }
@@ -106,13 +106,13 @@ export function parseCleanToolCalls(input: string): CleanParseResult {
     const closeInvoke = body.indexOf('</invoke>', contentStart)
     if (closeInvoke < 0) return malformed('Missing closing </invoke> tag')
     const invokeBody = body.slice(contentStart, closeInvoke)
-    const trailingInvoke = invokeBody.match(/<\\/invoke>/)
+    const trailingInvoke = invokeBody.match(/<\/invoke>/)
     if (trailingInvoke) return malformed('Invalid nested <invoke> structure')
 
     let innerPos = 0
     const params: Record<string, unknown> = {}
     while (innerPos < invokeBody.length) {
-      while (innerPos < invokeBody.length && /\\s/.test(invokeBody[innerPos])) innerPos++
+      while (innerPos < invokeBody.length && /\s/.test(invokeBody[innerPos])) innerPos++
       if (innerPos >= invokeBody.length) break
       if (!invokeBody.startsWith('<parameter', innerPos)) {
         if (invokeBody[innerPos] === '<') return malformed('Unexpected structural element inside <invoke>')
@@ -122,7 +122,7 @@ export function parseCleanToolCalls(input: string): CleanParseResult {
       const parameterStart = invokeBody.indexOf('>', innerPos)
       if (parameterStart < 0) return malformed('Unclosed <parameter> tag')
       const parameterTag = invokeBody.slice(innerPos, parameterStart + 1)
-      const parameterMatch = parameterTag.match(/^<parameter\\s+([\\s\\S]*?)\\s*>$/)
+      const parameterMatch = parameterTag.match(/^<parameter\s+([\s\\S]*?)\s*>$/)
       if (!parameterMatch) return malformed('Malformed parameter attributes')
       const attributes = parseAttributes(parameterMatch[1])
       if (attributes.malformed) return malformed(attributes.malformed)
