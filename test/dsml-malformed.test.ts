@@ -667,8 +667,7 @@ Some text after`
       expect(result.choices[0].message.tool_calls[0].function.name).toBe('read')
       expect(JSON.parse(result.choices[0].message.tool_calls[0].function.arguments).filePath).toBe('README.md')
       // Should NOT contain raw DSML tags in assistant content
-      expect(result.choices[0].message.content).not.toContain('<｜｜DSML｜｜ invoke')
-      expect(result.choices[0].message.content).not.toContain('<｜｜DSML｜｜ parameter')
+      expect(result.choices[0].message.content).toBeNull()
     }}
   )
 
