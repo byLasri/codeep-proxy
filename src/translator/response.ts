@@ -136,17 +136,12 @@ function detectDialect(xml: string): DSMLDialect | null {
 
 function detectInvokeDialect(xml: string): DSMLDialect | null {
   for (const dialect of ALL_DIALECTS) {
-    if (xml.includes(dialect.openInvoke)) {
+    const invokePattern = new RegExp(escapeRegExp(dialect.openInvoke) + '\\s+name="[^"]+"')
+    if (invokePattern.test(xml)) {
       return dialect
     }
   }
   return null
-}
-
-function hasCompleteInvokeBlock(xml: string, dialect: DSMLDialect): boolean {
-  const openCount = (xml.match(new RegExp(escapeRegExp(dialect.openInvoke), 'g')) || []).length
-  const closeCount = (xml.match(new RegExp(escapeRegExp(dialect.closeInvoke), 'g')) || []).length
-  return openCount > 0 && openCount === closeCount
 }
 
 function wrapWithSyntheticCalls(xml: string, dialect: DSMLDialect): string {
