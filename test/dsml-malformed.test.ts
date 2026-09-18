@@ -1,4 +1,4 @@
-import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, ALL_DIALECTS } from '../src/translator/response.js'
+import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, ALL_DIALECTS } from '../src/translator/response.js'
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -573,7 +573,7 @@ Some text after`
   console.log('\n--- Phase 6: Orphan Invoke Detection Tests ---\n')
 
   // Generate unique invoke forms from ALL_DIALECTS (4 delimiters × 2 spacing = 8 unique)
-  const uniqueInvokeForms = new Map<string, DSMLDialect>()
+  const uniqueInvokeForms = new Map<string, typeof ALL_DIALECTS[number]>()
   for (const dialect of ALL_DIALECTS) {
     const key = dialect.delimiter + ':' + (dialect.openInvoke.includes(' invoke') ? 'spaced' : 'nospace')
     if (!uniqueInvokeForms.has(key)) {
@@ -648,14 +648,27 @@ Some text after`
       expect(result.error).toBeFalsy()
     }},
     { name: 'wrapperless valid invoke produces no raw DSML in assistant content', fn: async () => {
-      const xml = '<｜｜DSML｜｜ invoke name="read">\n<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>'
+      const sseInput = [
+        makeSSEEvent('ready', { response_message_id: 123 }),
+        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
+        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
+        makeSSEEvent('close', {}),
+      ]
+      const stream = createSSEStream(sseInput)
+      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
-      const result = parseDSMLToolCalls(xml)
+      const result = await translateDeepSeekStreamToJSON(stream, info)
 
-      expect(result.isMalformed).toBeFalsy()
-      expect(result.toolCalls).toHaveLength(1)
-      // The parse result should not contain the raw DSML tags
-      expect(result.toolCalls[0].function.name).toBe('read')
+      // Should produce tool call output via parseDSMLToolCalls on accumulated content
+      expect(result.choices[0].message.tool_calls).toBeDefined()
+      expect(result.choices[0].message.tool_calls).toHaveLength(1)
+      expect(result.choices[0].message.tool_calls[0].function.name).toBe('read')
+      expect(JSON.parse(result.choices[0].message.tool_calls[0].function.arguments).filePath).toBe('README.md')
+      // Should NOT contain raw DSML tags in assistant content
+      expect(result.choices[0].message.content).not.toContain('<｜｜DSML｜｜ invoke')
+      expect(result.choices[0].message.content).not.toContain('<｜｜DSML｜｜ parameter')
     }}
   )
 
