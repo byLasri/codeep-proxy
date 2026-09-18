@@ -179,6 +179,19 @@ Parsing error:
 
 Please correct the structural error and retry the tool call.`
 
+export const ACTIVE_CORRECTIVE_MESSAGE = `Invalid tool call form.
+
+These tool-call delimiters are not accepted:
+
+- "｜｜DSML｜｜"
+- "｜DSML｜｜"
+- "｜DSML｜"
+- "||DSML||"
+
+Here is a valid tool-call example:
+
+Please try again.`
+
 function buildCorrectiveMessage(_parserError: string): string {
   return DSML_CORRECTIVE_MESSAGE_TEMPLATE
 }
@@ -605,7 +618,7 @@ function createParser(
     if (forbiddenMarker) {
       state.parseError = {
         message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
-        syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE,
+        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
       }
       return
     }
@@ -1245,7 +1258,7 @@ export async function translateDeepSeekStreamToJSON(
   const forbiddenMarker = forbiddenDsmlMarkers.find(marker => accumulatedContent.includes(marker))
   const cleanResult = parseCleanToolCalls(accumulatedContent)
   const activeParseError = forbiddenMarker
-    ? { message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`, syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE }
+    ? { message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`, syntaxRules: ACTIVE_CORRECTIVE_MESSAGE }
     : cleanResult.isMalformed && cleanResult.error
       ? cleanResult.error
       : null
