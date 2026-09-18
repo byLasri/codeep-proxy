@@ -170,41 +170,16 @@ function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function buildCorrectiveMessage(parserError: string): string {
-  return `Your previous response contained a malformed tool call.
+export const DSML_CORRECTIVE_MESSAGE_TEMPLATE = `Your previous response contained a malformed tool call.
 The tool call was NOT executed.
 
 Parsing error:
-${parserError}
+{{PARSER_ERROR}}
 
-Please correct the structural error and retry the tool call.
+Please correct the structural error and retry the tool call.`
 
-A valid tool call has this structure:
-
-<calls>
-<invoke name="read">
-<parameter name="filePath" string="true">README.md</parameter>
-</invoke>
-</calls>
-
-Another example:
-
-<calls>
-<invoke name="list">
-<parameter name="path" string="true">.</parameter>
-</invoke>
-</calls>
-
-Rules:
-1. Structure: <calls> contains one or more <invoke> blocks. Each <invoke> contains one or more <parameter> blocks.
-2. Parameters MUST be inside an <invoke> block. Never place a parameter outside an invoke.
-3. Every opening tag must have exactly ONE matching closing tag.
-4. Closing tags must NOT contain attributes.
-5. Each separate tool call needs its own <invoke name="..."> block.
-6. Do not add extra text or tags outside the tool-call structure.
-
-The delimiter itself is not the error.
-Please correct the structural error and retry the tool call now.`
+function buildCorrectiveMessage(parserError: string): string {
+  return DSML_CORRECTIVE_MESSAGE_TEMPLATE.replace('{{PARSER_ERROR}}', parserError)
 }
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
