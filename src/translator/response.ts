@@ -1,6 +1,7 @@
 import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse, ToolCall } from './types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
+import { parseCleanToolCalls } from './clean-tool-calls.js'
 
 export function formatOpenAISSEChunk(chunk: OpenAIChatCompletionStreamResponse): string {
   return `data: ${JSON.stringify(chunk)}\n\n`
@@ -122,7 +123,7 @@ function getAllCloseParameterPatterns(): string[] {
 }
 
 function getHoldbackPatterns(): string[] {
-  return ALL_DIALECTS.map(d => d.openCalls)
+  return [...ALL_DIALECTS.map(d => d.openCalls), '<calls>']
 }
 
 function detectDialect(xml: string): DSMLDialect | null {
@@ -178,8 +179,8 @@ Parsing error:
 
 Please correct the structural error and retry the tool call.`
 
-function buildCorrectiveMessage(parserError: string): string {
-  return DSML_CORRECTIVE_MESSAGE_TEMPLATE.replace('{{PARSER_ERROR}}', parserError)
+function buildCorrectiveMessage(_parserError: string): string {
+  return DSML_CORRECTIVE_MESSAGE_TEMPLATE
 }
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
@@ -568,17 +569,23 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
+    if (state.parseError) return
+
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      // Check for closing calls tag using the detected dialect
-      if (state.detectedDialect && state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
-        const result = parseDSMLToolCalls(state.toolCallBuffer)
-        state.parsedToolCalls = result.toolCalls
-        // Store parse error in state for malformed DSML detection
-        if (result.isMalformed && result.error) {
-          state.parseError = result.error
+      if (state.detectedDialect) {
+        if (state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
+          const result = parseDSMLToolCalls(state.toolCallBuffer)
+          state.parsedToolCalls = result.toolCalls
+          if (result.isMalformed && result.error) state.parseError = result.error
+          state.isToolCallInProgress = false
+          state.toolCallBuffer = ''
         }
+      } else if (state.toolCallBuffer.includes('</calls>')) {
+        const result = parseCleanToolCalls(state.toolCallBuffer)
+        state.parsedToolCalls = result.toolCalls
+        if (result.isMalformed && result.error) state.parseError = result.error
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
       }
@@ -591,6 +598,51 @@ function createParser(
 
     // Build full prospective content
     const fullContent = state.accumulatedContent + combined
+
+    // DSML delimiters are forbidden on the active tool-call path.
+    const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
+    const forbiddenMarker = forbiddenDsmlMarkers.find(marker => fullContent.includes(marker))
+    if (forbiddenMarker) {
+      state.parseError = {
+        message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+        syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE,
+      }
+      return
+    }
+
+    // Clean tool-call syntax is the active format.
+    const cleanCallsIdx = fullContent.indexOf('<calls>')
+    if (cleanCallsIdx !== -1) {
+      const beforeCalls = fullContent.substring(0, cleanCallsIdx)
+      const newSafeContent = beforeCalls.substring(state.accumulatedContent.length)
+      if (newSafeContent.length > 0 && state.responseMessageId !== 'null') {
+        const isReasoning = state.currentFragmentType === 'THINK'
+        if (!state.hasEmittedRole) {
+          state.hasEmittedRole = true
+          const roleChunk: OpenAIChatCompletionStreamResponse = {
+            id: `chatcmpl-${state.responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: info.created,
+            model: info.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+          }
+          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+        }
+        const safeChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
+        }
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+      }
+      state.isToolCallInProgress = true
+      state.detectedDialect = null
+      state.toolCallBuffer = fullContent.substring(cleanCallsIdx)
+      state.accumulatedContent = beforeCalls
+      return
+    }
 
     // Check for full DSML start pattern (any supported dialect)
     let dsmlIdx = -1
@@ -857,6 +909,7 @@ function createParser(
 }
 
 export { parseDSMLToolCalls, buildCorrectiveMessage, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper }
+export { parseCleanToolCalls } from './clean-tool-calls.js'
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
@@ -909,26 +962,33 @@ export async function translateDeepSeekStreamToSSE(
     parser.emitContent('')
   }
 
-  // Check for unclosed DSML at EOF using the detected dialect
-  if (parser.state.isToolCallInProgress && parser.state.detectedDialect) {
-    if (!parser.state.toolCallBuffer.includes(parser.state.detectedDialect.closeCalls)) {
-      const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
-      parser.state.parsedToolCalls = result.toolCalls
-      if (result.isMalformed && result.error) {
-        parser.state.parseError = result.error
+  // Finalize any unclosed active tool-call block.
+  if (parser.state.isToolCallInProgress) {
+    const result = parser.state.detectedDialect
+      ? parseDSMLToolCalls(parser.state.toolCallBuffer)
+      : parseCleanToolCalls(parser.state.toolCallBuffer)
+    parser.state.parsedToolCalls = result.toolCalls
+    if (result.isMalformed && result.error) parser.state.parseError = result.error
+    parser.state.isToolCallInProgress = false
+    parser.state.toolCallBuffer = ''
+  }
+
+  // Reject forbidden DSML markers even when they never formed a complete block.
+  if (!parser.state.parseError) {
+    const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
+    const forbiddenMarker = forbiddenDsmlMarkers.find(marker => parser.state.accumulatedContent.includes(marker))
+    if (forbiddenMarker) {
+      parser.state.parseError = {
+        message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+        syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE,
       }
-      parser.state.isToolCallInProgress = false
-      parser.state.toolCallBuffer = ''
     }
   }
 
-  // Check for malformed wrapperless DSML in accumulated content at EOF
-  // This catches cases like stray closing calls tags without opening calls tag
+  // Parse complete clean calls that arrived in the accumulated content.
   if (!parser.state.parseError && parser.state.accumulatedContent) {
-    const dsmlResult = parseDSMLToolCalls(parser.state.accumulatedContent)
-    if (dsmlResult.isMalformed && dsmlResult.error) {
-      parser.state.parseError = dsmlResult.error
-    }
+    const cleanResult = parseCleanToolCalls(parser.state.accumulatedContent)
+    if (cleanResult.isMalformed && cleanResult.error) parser.state.parseError = cleanResult.error
   }
 
   parseError = parser.state.parseError
@@ -1180,12 +1240,18 @@ export async function translateDeepSeekStreamToJSON(
     }
   }
 
-  // Parse DSML tool calls from accumulated content
-  const dsmlResult = parseDSMLToolCalls(accumulatedContent)
-  
-  // If DSML is malformed, return error info WITHOUT sending to client
-  // The caller (index.ts) will handle the internal retry loop
-  if (dsmlResult.isMalformed && dsmlResult.error) {
+  // DSML delimiters are forbidden on the active path.
+  const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
+  const forbiddenMarker = forbiddenDsmlMarkers.find(marker => accumulatedContent.includes(marker))
+  const cleanResult = parseCleanToolCalls(accumulatedContent)
+  const activeParseError = forbiddenMarker
+    ? { message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`, syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE }
+    : cleanResult.isMalformed && cleanResult.error
+      ? cleanResult.error
+      : null
+
+  // Malformed active tool calls are returned only through the existing internal retry path.
+  if (activeParseError) {
     const result: OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } } = {
       id: `chatcmpl-${responseMessageId}`,
       object: 'chat.completion',
@@ -1207,14 +1273,14 @@ export async function translateDeepSeekStreamToJSON(
         completion_tokens: accumulatedTokens,
         total_tokens: accumulatedTokens,
       },
-      _malformedError: dsmlResult.error,
+      _malformedError: activeParseError,
     }
     logger?.logOutgoingToClient(result)
     return result
   }
   
-  // If tool calls are found (valid DSML), return them with finish_reason: "tool_calls"
-  if (dsmlResult.toolCalls.length > 0) {
+  // If clean tool calls are found, return the existing OpenAI-compatible tool_calls shape.
+  if (cleanResult.toolCalls.length > 0) {
     const result: OpenAIChatCompletionResponse = {
       id: `chatcmpl-${responseMessageId}`,
       object: 'chat.completion',
@@ -1227,7 +1293,7 @@ export async function translateDeepSeekStreamToJSON(
             role: 'assistant', 
             content: null,
             reasoning_content: accumulatedReasoning || undefined,
-            tool_calls: dsmlResult.toolCalls
+            tool_calls: cleanResult.toolCalls
           },
           finish_reason: 'tool_calls',
         },
