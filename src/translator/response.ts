@@ -134,6 +134,25 @@ function detectDialect(xml: string): DSMLDialect | null {
   return null
 }
 
+function detectInvokeDialect(xml: string): DSMLDialect | null {
+  for (const dialect of ALL_DIALECTS) {
+    if (xml.includes(dialect.openInvoke)) {
+      return dialect
+    }
+  }
+  return null
+}
+
+function hasCompleteInvokeBlock(xml: string, dialect: DSMLDialect): boolean {
+  const openCount = (xml.match(new RegExp(escapeRegExp(dialect.openInvoke), 'g')) || []).length
+  const closeCount = (xml.match(new RegExp(escapeRegExp(dialect.closeInvoke), 'g')) || []).length
+  return openCount > 0 && openCount === closeCount
+}
+
+function wrapWithSyntheticCalls(xml: string, dialect: DSMLDialect): string {
+  return `${dialect.openCalls}${xml}${dialect.closeCalls}`
+}
+
 function normalizeToCanonical(xml: string, dialect: DSMLDialect): string {
   let normalized = xml
   
@@ -196,15 +215,43 @@ Please correct the structural error and retry the tool call now.`
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
   
-  // Detect dialect
-  const dialect = detectDialect(xml)
+  // Detect dialect from outer wrapper first
+  let dialect = detectDialect(xml)
+  let normalizedXml: string
+
   if (!dialect) {
-    // No supported DSML dialect detected - this is normal for text responses
-    return { toolCalls: [] }
+    // Fallback: check for wrapperless invoke blocks
+    const invokeDialect = detectInvokeDialect(xml)
+    if (invokeDialect) {
+      const openCount = (xml.match(new RegExp(escapeRegExp(invokeDialect.openInvoke), 'g')) || []).length
+      const closeCount = (xml.match(new RegExp(escapeRegExp(invokeDialect.closeInvoke), 'g')) || []).length
+      if (openCount > 0 && openCount === closeCount) {
+        // Complete invoke block(s) - wrap and parse normally
+        const wrappedXml = wrapWithSyntheticCalls(xml, invokeDialect)
+        dialect = invokeDialect
+        normalizedXml = normalizeToCanonical(wrappedXml, dialect)
+      } else if (openCount > 0) {
+        // Malformed: invoke start tag exists but no matching close tag
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: `Mismatched <invoke> tags: ${openCount} opening tags but only ${closeCount} closing tags`,
+            syntaxRules: buildCorrectiveMessage(`Mismatched <invoke> tags: ${openCount} opening tags but only ${closeCount} closing tags`)
+          }
+        }
+      } else {
+        // No supported DSML dialect detected - this is normal for text responses
+        return { toolCalls: [] }
+      }
+    } else {
+      // No supported DSML dialect detected - this is normal for text responses
+      return { toolCalls: [] }
+    }
+  } else {
+    // Normalize to canonical form for structural validation
+    normalizedXml = normalizeToCanonical(xml, dialect)
   }
-  
-  // Normalize to canonical form for structural validation
-  const normalizedXml = normalizeToCanonical(xml, dialect)
   
   // Check for basic DSML structure in normalized form
   const hasCallsStart = normalizedXml.includes('<｜｜DSML｜｜ calls>')

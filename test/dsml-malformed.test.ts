@@ -569,6 +569,138 @@ Some text after`
     }},
   ]
 
+  // Phase 6: Orphan Invoke Detection (wrapperless tool calls)
+  console.log('\n--- Phase 6: Orphan Invoke Detection Tests ---\n')
+
+  const orphanInvokeTests = [
+    { name: 'wrapperless single invoke with double delimiter should parse', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+    }},
+    { name: 'wrapperless multiple invokes should parse in order', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+<｜｜DSML｜｜ invoke name="list">
+<｜｜DSML｜｜ parameter name="path" string="true">.</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(2)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+      expect(result.toolCalls[1].function.name).toBe('list')
+      expect(JSON.parse(result.toolCalls[1].function.arguments).path).toBe('.')
+    }},
+    { name: 'wrapperless invoke with single delimiter should parse', fn: async () => {
+      const xml = `<｜DSML｜invoke name="read">
+<｜DSML｜parameter name="filePath" string="true">README.md</｜DSML｜parameter>
+</｜DSML｜invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+    }},
+    { name: 'wrapperless invoke with mixed delimiter should parse', fn: async () => {
+      const xml = `<｜DSML｜｜invoke name="read">
+<｜DSML｜｜parameter name="filePath" string="true">README.md</｜DSML｜｜parameter>
+</｜DSML｜｜invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+    }},
+    { name: 'wrapperless invoke with ASCII delimiter should parse', fn: async () => {
+      const xml = `<||DSML||invoke name="read">
+<||DSML||parameter name="filePath" string="true">README.md</||DSML||parameter>
+</||DSML||invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+    }},
+    { name: 'wrapperless invoke with spacing variant (with space) should parse', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      expect(result.toolCalls[0].function.name).toBe('read')
+      expect(JSON.parse(result.toolCalls[0].function.arguments).filePath).toBe('README.md')
+    }},
+    { name: 'malformed wrapperless invoke missing close tag should be detected', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('Mismatched <invoke> tags')
+      expect(result.error!.syntaxRules).toBe(
+        buildCorrectiveMessage('Mismatched <invoke> tags: 1 opening tags but only 0 closing tags')
+      )
+    }},
+    { name: 'malformed parameter inside wrapperless invoke should be detected', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      expect(result.error!.message).toContain('string=')
+    }},
+    { name: 'prose mentioning invoke without structured tag should not be detected', fn: async () => {
+      const xml = `The model should invoke the read tool when necessary.`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeFalsy()
+    }},
+    { name: 'wrapperless valid invoke produces no raw DSML in assistant content', fn: async () => {
+      const xml = `<｜｜DSML｜｜ invoke name="read">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBeFalsy()
+      expect(result.toolCalls).toHaveLength(1)
+      // The parse result should not contain the raw DSML tags
+      expect(result.toolCalls[0].function.name).toBe('read')
+    }},
+  ]
+
+  failed += await runTestsSequentially(orphanInvokeTests)
+
   // Phase 4: Parameter semantic tests
   console.log('\n--- Phase 4: Parameter Semantic Tests ---\n')
 
