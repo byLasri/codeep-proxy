@@ -118,6 +118,29 @@ async function main(): Promise<void> {
     if (calls[0].function.name !== 'read' || calls[1].function.name !== 'list') throw new Error('tool call order was not preserved')
   })
 
+  await run('streaming clean calls become OpenAI tool_calls', async () => {
+    const stream = createSSEStream([
+      makeSSEEvent('ready', { response_message_id: 123 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<calls><invoke name="read">' }] } } }),
+      makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<parameter name="filePath">README.md</parameter></invoke></calls>' }),
+      makeSSEEvent('close', {}),
+    ])
+    const result = await import('../src/translator/response.js').then(({ translateDeepSeekStreamToSSE }) =>
+      translateDeepSeekStreamToSSE(stream, { model: 'test', id: 'chatcmpl-1', created: 1 })
+    )
+    if (result.parseError) throw new Error(result.parseError.message)
+    const reader = result.stream.getReader()
+    const decoder = new TextDecoder()
+    let output = ''
+    while (true) {
+      const item = await reader.read()
+      if (item.done) break
+      output += decoder.decode(item.value, { stream: true })
+    }
+    output += decoder.decode()
+    if (!output.includes('"tool_calls"') || !output.includes('"read"')) throw new Error('streaming clean calls were not emitted')
+  })
+
   console.log('All clean tool-call tests passed.')
 }
 
