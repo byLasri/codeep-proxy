@@ -148,8 +148,8 @@ failed += runTest('first turn with system prompt and tools', () => {
   expect(result.prompt).toContain('test')
 })
 
-// Test 6: translateOpenAIRequest includes toolResults
-failed += runTest('translateOpenAIRequest includes toolResults', () => {
+// Test 6: translateOpenAIRequest returns DeepSeekCompletionInput WITHOUT toolResults
+failed += runTest('translateOpenAIRequest returns DeepSeekCompletionInput without toolResults', () => {
   const req: OpenAIChatCompletionRequest = {
     model: 'deepseek-chat',
     messages: [
@@ -162,17 +162,27 @@ failed += runTest('translateOpenAIRequest includes toolResults', () => {
 
   const result = translateOpenAIRequest(req, makeHeaders('session-123'), false)
 
+  // Verify DeepSeekCompletionInput fields
   expect(result.prompt).toBe('README contents')
-  expect(result.toolResults).toHaveLength(1)
-  expect(result.toolResults[0].tool_call_id).toBe('call_123')
-  expect(result.toolResults[0].content).toBe('README contents')
   expect(result.model_type).toBeDefined()
-  expect(result.thinking_enabled).toBeDefined()
-  expect(result.search_enabled).toBeDefined()
+  expect(typeof result.thinking_enabled).toBe('boolean')
+  expect(typeof result.search_enabled).toBe('boolean')
+  expect(result.xSessionId).toBe('session-123')
+  if (result.chat_session_id !== undefined) {
+    throw new Error('chat_session_id should be undefined')
+  }
+  if (result.timeout !== undefined) {
+    throw new Error('timeout should be undefined')
+  }
+
+  // CRITICAL: toolResults must NOT be on the public return
+  if ('toolResults' in result) {
+    throw new Error('translateOpenAIRequest must not expose toolResults')
+  }
 })
 
-// Test 7: translateOpenAIRequest with multiple tool results
-failed += runTest('translateOpenAIRequest with multiple tool results', () => {
+// Test 7: translateOpenAIRequest with multiple tool results - prompt correct, no toolResults exposed
+failed += runTest('translateOpenAIRequest with multiple tool results - prompt correct, no toolResults exposed', () => {
   const req: OpenAIChatCompletionRequest = {
     model: 'deepseek-chat',
     messages: [
@@ -189,10 +199,13 @@ failed += runTest('translateOpenAIRequest with multiple tool results', () => {
 
   const result = translateOpenAIRequest(req, makeHeaders('session-123'), false)
 
-  expect(result.toolResults).toHaveLength(2)
-  expect(result.toolResults[0].tool_call_id).toBe('call_1')
-  expect(result.toolResults[1].tool_call_id).toBe('call_2')
+  // Prompt should be correctly constructed
   expect(result.prompt).toBe('File A\n\nFile B')
+
+  // CRITICAL: toolResults must NOT be on the public return
+  if ('toolResults' in result) {
+    throw new Error('translateOpenAIRequest must not expose toolResults')
+  }
 })
 
 // Test 8: Tool result without tool_call_id is not included (invalid)
@@ -225,7 +238,7 @@ failed += runTest('tool result with null content is not included', () => {
   expect(result.prompt).toBe('test')
 })
 
-// Test 10: Mixed messages - only trailing tool results collected
+// Test 9: Mixed messages - only trailing tool results collected
 failed += runTest('only trailing consecutive tool results collected', () => {
   const messages: OpenAIChatMessage[] = [
     { role: 'user', content: 'First' },
@@ -246,7 +259,7 @@ failed += runTest('only trailing consecutive tool results collected', () => {
   expect(result.prompt).toBe('Tool 2\n\nTool 3')
 })
 
-// Test 11: Four-result regression (exact shape of live failure)
+// Test 10: Four-result regression (exact shape of live failure)
 failed += runTest('four-result regression preserves all results in order', () => {
   const messages: OpenAIChatMessage[] = [
     { role: 'user', content: 'Read all files' },
@@ -282,7 +295,7 @@ failed += runTest('four-result regression preserves all results in order', () =>
   expect(result.prompt).toBe('README result\n\nconfig.json result\n\nindex.js result\n\nnotes.txt result')
 })
 
-// Test 12: Exact content preservation (whitespace, newlines, XML-like, Windows paths)
+// Test 11: Exact content preservation (whitespace, newlines, XML-like, Windows paths)
 failed += runTest('exact content preservation for complex tool results', () => {
   const complexContent = '  leading spaces\nmiddle line\n  trailing  \nwith <xml-like> text\nC:\\Users\\Damas\\file.txt'
   const messages: OpenAIChatMessage[] = [
@@ -307,7 +320,7 @@ failed += runTest('exact content preservation for complex tool results', () => {
   expect(result.prompt).toBe(`${complexContent}\n\nsimple content`)
 })
 
-// Test 13: Empty result list falls back to user message
+// Test 12: Empty result list falls back to user message
 failed += runTest('empty result list falls back to user message', () => {
   const messages: OpenAIChatMessage[] = [
     { role: 'user', content: 'First' },
@@ -321,7 +334,7 @@ failed += runTest('empty result list falls back to user message', () => {
   expect(result.prompt).toBe('Second')
 })
 
-// Test 14: Normal user continuation still uses latest user message
+// Test 13: Normal user continuation still uses latest user message
 failed += runTest('normal user continuation without tool results uses latest user message', () => {
   const messages: OpenAIChatMessage[] = [
     { role: 'user', content: 'First message' },
@@ -335,7 +348,7 @@ failed += runTest('normal user continuation without tool results uses latest use
   expect(result.prompt).toBe('Second message')
 })
 
-// Test 15: tool_call_id stays out of DeepSeek-Web prompt
+// Test 14: tool_call_id stays out of DeepSeek-Web prompt
 failed += runTest('tool_call_id and role metadata not included in DeepSeek-Web prompt', () => {
   const messages: OpenAIChatMessage[] = [
     { role: 'user', content: 'Read files' },

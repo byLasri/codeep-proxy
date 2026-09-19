@@ -326,7 +326,7 @@ async function main() {
   // ============================================================
   console.log('\n--- 3. Translator-Out Boundary Baseline ---\n')
 
-  failed += await runTest('translateOpenAIRequest returns DeepSeekCompletionInput with all required fields + toolResults', () => {
+  failed += await runTest('translateOpenAIRequest returns DeepSeekCompletionInput without toolResults', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'deepseek-chat',
       messages: [
@@ -339,6 +339,7 @@ async function main() {
 
     const result = translateOpenAIRequest(req, makeHeaders('session-123'), false)
 
+    // DeepSeekCompletionInput fields
     expect(result.prompt).toBe('README contents')
     expect(result.model_type).toBeDefined()
     expect(typeof result.thinking_enabled).toBe('boolean')
@@ -347,11 +348,46 @@ async function main() {
     expect(result.chat_session_id).toBeUndefined()
     expect(result.timeout).toBeUndefined()
 
-    expect(result.toolResults).toBeDefined()
-    expect(Array.isArray(result.toolResults)).toBe(true)
-    expect(result.toolResults).toHaveLength(1)
-    expect(result.toolResults[0].tool_call_id).toBe('call_123')
-    expect(result.toolResults[0].content).toBe('README contents')
+    // CRITICAL: toolResults must NOT be on the public return
+    if ('toolResults' in result) {
+      throw new Error('translateOpenAIRequest must not expose toolResults')
+    }
+  })
+
+  failed += await runTest('public boundary: tool results internal to translator, prompt correct', () => {
+    // This test explicitly demonstrates the architectural contract:
+    // - Tool results are used INTERNALLY to build the prompt
+    // - But toolResults does NOT leak across the public boundary
+    const req: OpenAIChatCompletionRequest = {
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'user', content: 'Read multiple files' },
+        { role: 'assistant', content: null, tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"filePath":"a.txt"}' } },
+          { id: 'call_2', type: 'function', function: { name: 'read', arguments: '{"filePath":"b.txt"}' } }
+        ] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'File A contents' },
+        { role: 'tool', tool_call_id: 'call_2', content: 'File B contents' },
+      ],
+      tools: []
+    }
+
+    const result = translateOpenAIRequest(req, makeHeaders('session-123'), false)
+
+    // The prompt correctly contains the tool result content
+    expect(result.prompt).toBe('File A contents\n\nFile B contents')
+
+    // But the toolResults array is NOT exposed publicly
+    if ('toolResults' in result) {
+      throw new Error('toolResults leaked across public boundary')
+    }
+
+    // Internal buildDeepSeekPrompt still works correctly
+    const internal = buildDeepSeekPrompt(req.messages, req.tools, false)
+    expect(internal.toolResults).toHaveLength(2)
+    expect(internal.toolResults[0].content).toBe('File A contents')
+    expect(internal.toolResults[1].content).toBe('File B contents')
+    expect(internal.prompt).toBe('File A contents\n\nFile B contents')
   })
 
   failed += await runTest('translateOpenAIRequest xSessionId extracted from X-Session-Id header', () => {
@@ -726,7 +762,7 @@ async function main() {
     expect(withoutSystem.prompt).toBe('User message')
   })
 
-  // ============================================================
+// ============================================================
   // 10. SESSION BOUNDARY BASELINE
   // ============================================================
   console.log('\n--- 10. Session Boundary Baseline ---\n')
@@ -764,8 +800,9 @@ async function main() {
     expect(result.xSessionId).toBe('session-xyz')
     expect(result.chat_session_id).toBeUndefined()
 
-    if (!('toolResults' in result)) {
-      throw new Error('Expected object to have property "toolResults"')
+    // CRITICAL: toolResults must NOT be on the public return
+    if ('toolResults' in result) {
+      throw new Error('translateOpenAIRequest must not expose toolResults')
     }
   })
 

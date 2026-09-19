@@ -112,18 +112,17 @@ export function translateOpenAIRequest(
   headers: Headers,
   sendSystemPrompt?: boolean,
   logger?: RequestLogger
-): DeepSeekCompletionInput & { toolResults: ToolResult[] } {
+): DeepSeekCompletionInput {
   const config = mapOpenAIModelToDeepSeek(req.model)
   const promptWithToolResults = buildDeepSeekPrompt(req.messages, Array.isArray(req.tools) ? req.tools : undefined, sendSystemPrompt)
-  const result: DeepSeekCompletionInput & { toolResults: ToolResult[] } = {
+  const result: DeepSeekCompletionInput = {
     xSessionId: getXSessionIdFromHeaders(headers),
     prompt: promptWithToolResults.prompt,
     model_type: config.model_type,
     thinking_enabled: config.thinking,
     search_enabled: config.search,
     chat_session_id: undefined,
-    toolResults: promptWithToolResults.toolResults,
   }
-  logger?.logTranslatedRequest(result)
+  logger?.logTranslatedRequest({ ...result, toolResults: promptWithToolResults.toolResults })
   return result
 }
