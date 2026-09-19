@@ -1,10 +1,7 @@
 import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse, ToolCall } from './types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
-import {
-  parseCleanToolCalls,
-  CORRECTIVE_MESSAGE as ACTIVE_CORRECTIVE_MESSAGE,
-} from './clean-tool-calls.js'
+import { parseCleanToolCalls, CORRECTIVE_MESSAGE as ACTIVE_CORRECTIVE_MESSAGE } from './clean-tool-calls.js'
 
 export function formatOpenAISSEChunk(chunk: OpenAIChatCompletionStreamResponse): string {
   return `data: ${JSON.stringify(chunk)}\n\n`
@@ -577,18 +574,15 @@ function createParser(
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
-      const forbiddenMarker = forbiddenDsmlMarkers.find(marker => state.toolCallBuffer.includes(marker))
-      if (forbiddenMarker) {
+      if (state.detectedDialect) {
         state.parseError = {
-          message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+          message: `Forbidden DSML tool-call delimiter detected while buffering`,
           syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
         }
         state.isToolCallInProgress = false
         state.toolCallBuffer = ''
-        return
-      }
-      if (state.toolCallBuffer.includes('</calls>')) {
+        state.detectedDialect = null
+      } else if (state.toolCallBuffer.includes('</calls>')) {
         const result = parseCleanToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
         if (result.isMalformed && result.error) state.parseError = result.error
@@ -647,6 +641,52 @@ function createParser(
       state.detectedDialect = null
       state.toolCallBuffer = fullContent.substring(cleanCallsIdx)
       state.accumulatedContent = beforeCalls
+      return
+    }
+
+    // Check for full DSML start pattern (any supported dialect)
+    let dsmlIdx = -1
+    let matchedDialect: DSMLDialect | null = null
+    for (const dialect of ALL_DIALECTS) {
+      const idx = fullContent.indexOf(dialect.openCalls)
+      if (idx !== -1 && (dsmlIdx === -1 || idx < dsmlIdx)) {
+        dsmlIdx = idx
+        matchedDialect = dialect
+      }
+    }
+
+    if (dsmlIdx !== -1 && matchedDialect) {
+      // Emit everything before DSML that hasn't been emitted yet
+      const beforeDSML = fullContent.substring(0, dsmlIdx)
+      const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
+      if (newSafeContent.length > 0 && state.responseMessageId !== 'null') {
+        const isReasoning = state.currentFragmentType === 'THINK'
+        if (!state.hasEmittedRole) {
+          state.hasEmittedRole = true
+          const roleChunk: OpenAIChatCompletionStreamResponse = {
+            id: `chatcmpl-${state.responseMessageId}`,
+            object: 'chat.completion.chunk',
+            created: info.created,
+            model: info.model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+          }
+          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
+        }
+        const safeChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
+        }
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+      }
+
+      state.parseError = {
+        message: `Forbidden DSML tool-call delimiter detected`,
+        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+      }
+      state.accumulatedContent = beforeDSML
       return
     }
 
@@ -922,25 +962,37 @@ export async function translateDeepSeekStreamToSSE(
     parser.emitContent('')
   }
 
-  // Reject forbidden DSML markers before finalizing any active block.
-  const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
-  const forbiddenMarker = forbiddenDsmlMarkers.find(marker =>
-    parser.state.accumulatedContent.includes(marker) || parser.state.toolCallBuffer.includes(marker)
-  )
-  if (!parser.state.parseError && forbiddenMarker) {
-    const detectedDialectAtEOF = parser.state.isToolCallInProgress && detectDialect(parser.state.toolCallBuffer)
-    parser.state.parseError = {
-      message: detectedDialectAtEOF
-        ? 'Forbidden DSML tool-call delimiter detected (incomplete block at EOF)'
-        : `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
-      syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+  // Finalize any unclosed active tool-call block.
+  if (parser.state.isToolCallInProgress) {
+    if (parser.state.detectedDialect) {
+      parser.state.parseError = {
+        message: `Forbidden DSML tool-call delimiter detected (incomplete block at EOF)`,
+        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+      }
+    } else {
+      const result = parseCleanToolCalls(parser.state.toolCallBuffer)
+      parser.state.parsedToolCalls = result.toolCalls
+      if (result.isMalformed && result.error) parser.state.parseError = result.error
     }
     parser.state.isToolCallInProgress = false
     parser.state.toolCallBuffer = ''
+    parser.state.detectedDialect = null
   }
 
-  // Finalize an incomplete clean block at EOF. DSML blocks were already rejected above.
-  if (parser.state.isToolCallInProgress && !parser.state.parseError) {
+  // Reject forbidden DSML markers even when they never formed a complete block.
+  if (!parser.state.parseError) {
+    const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
+    const forbiddenMarker = forbiddenDsmlMarkers.find(marker => parser.state.accumulatedContent.includes(marker))
+    if (forbiddenMarker) {
+      parser.state.parseError = {
+        message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+      }
+    }
+  }
+
+  // Parse complete clean calls that arrived in the accumulated content.
+  if (!parser.state.parseError && parser.state.accumulatedContent) {
     const result = parseCleanToolCalls(parser.state.toolCallBuffer)
     parser.state.parsedToolCalls = result.toolCalls
     if (result.isMalformed && result.error) parser.state.parseError = result.error
