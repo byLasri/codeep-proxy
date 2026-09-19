@@ -1,5 +1,5 @@
-import { parseCleanToolCalls } from '../src/translator/clean-tool-calls.js'
-import { translateDeepSeekStreamToJSON } from '../src/translator/response.js'
+import { parseCleanToolCalls, CORRECTIVE_MESSAGE } from '../src/translator/clean-tool-calls.js'
+import { ACTIVE_CORRECTIVE_MESSAGE, translateDeepSeekStreamToJSON } from '../src/translator/response.js'
 
 function makeSSEEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
@@ -76,6 +76,17 @@ async function main(): Promise<void> {
     if (result.isMalformed) throw new Error(result.error?.message)
     const args = JSON.parse(result.toolCalls[0].function.arguments) as Record<string, unknown>
     if (JSON.stringify(args.args) !== JSON.stringify(['a', 2, true])) throw new Error('JSON parameter was not parsed')
+  })
+
+  await run('ordinary prose is not a tool call', () => {
+    const result = parseCleanToolCalls('The model should invoke the read tool when necessary.')
+    if (result.isMalformed || result.toolCalls.length !== 0) throw new Error('ordinary prose was parsed as a tool call')
+  })
+
+  await run('corrective message contains complete clean example', () => {
+    const expected = '<calls>\n<invoke name="read">\n<parameter name="filePath">\nC:\\Users\\Damas\\workground\n</parameter>\n</invoke>\n</calls>'
+    if (!CORRECTIVE_MESSAGE.includes(expected)) throw new Error('corrective message is missing the complete clean example')
+    if (!ACTIVE_CORRECTIVE_MESSAGE.includes(expected)) throw new Error('active corrective message is missing the complete clean example')
   })
 
   await run('missing string attribute is raw string', () => {
