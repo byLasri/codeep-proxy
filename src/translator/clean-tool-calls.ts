@@ -24,6 +24,14 @@ These tool-call delimiters are not accepted:
 
 Here is a valid tool-call example:
 
+<calls>
+<invoke name="read">
+<parameter name="filePath">
+C:\\Users\\Damas\\workground
+</parameter>
+</invoke>
+</calls>
+
 Please try again.`
 
 function malformed(message: string): CleanParseResult {
@@ -122,7 +130,7 @@ export function parseCleanToolCalls(input: string): CleanParseResult {
       const parameterStart = invokeBody.indexOf('>', innerPos)
       if (parameterStart < 0) return malformed('Unclosed <parameter> tag')
       const parameterTag = invokeBody.slice(innerPos, parameterStart + 1)
-      const parameterMatch = parameterTag.match(/^<parameter\s+([\s\\S]*?)\s*>$/)
+      const parameterMatch = parameterTag.match(/^<parameter\s+([\s\S]*?)\s*>$/)
       if (!parameterMatch) return malformed('Malformed parameter attributes')
       const attributes = parseAttributes(parameterMatch[1])
       if (attributes.malformed) return malformed(attributes.malformed)
