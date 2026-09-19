@@ -1,12 +1,19 @@
 import type { DeepSeekCompletionInput } from '../deepseek_api/types.js'
-import type { DeepSeekWebClient, CompletionResult } from '../deepseek_api/client.js'
+import type { CompletionResult } from '../deepseek_api/client.js'
 import type { OpenAIChatCompletionRequest } from '../translator/types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { translateOpenAIRequest } from '../translator/request.js'
 import { translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, type SSEParseResult } from '../translator/response.js'
 
+export interface CompletionClient {
+  completeWithAutoSession(
+    input: DeepSeekCompletionInput,
+    logger?: RequestLogger
+  ): Promise<CompletionResult>;
+}
+
 export interface OrchestratorConfig {
-  client: DeepSeekWebClient;
+  client: CompletionClient;
   timeoutMs: number;
   sendSystemPrompt: boolean;
   logger?: RequestLogger;

@@ -295,13 +295,13 @@ export default {
             let jsonResp: Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>> | null = null
             let lastMalformedError: { message: string; syntaxRules: string } | null = null
 
-            const client = createDeepSeekClient(env)
-
             while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
               await enqueueGlobalRequest(timeoutMs)
 
               // Retry never sends system prompt - only the initial request uses sendSystemPrompt
               const retrySendSystemPrompt = malformedRetryCount > 0 ? false : sendSystemPrompt
+
+              const client = createDeepSeekClient(env)
 
               const attemptResult = await executeCompletionAttempt(openaiReq, request.headers, {
                 client,

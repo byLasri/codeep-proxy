@@ -1,8 +1,8 @@
-import { DeepSeekWebClient } from '../src/deepseek_api/client.js'
-import type { DeepSeekCompletionInput, CompletionResult } from '../src/deepseek_api/types.js'
+import type { DeepSeekCompletionInput, CompletionResult } from '../src/deepseek_api/client.js'
+import type { CompletionClient } from '../src/orchestrator/completion.js'
 import { executeCompletionAttempt, type CompletionAttemptResult } from '../src/orchestrator/completion.js'
 import { translateOpenAIRequest } from '../src/translator/request.js'
-import type { OpenAIChatCompletionRequest, OpenAIChatMessage } from '../src/translator/types.js'
+import type { OpenAIChatCompletionRequest } from '../src/translator/types.js'
 import type { RequestLogger } from '../src/observability/logger.js'
 
 function makeHeaders(sessionId?: string): Headers {
@@ -22,10 +22,10 @@ function makePEvent(data: object): string {
 function createMockClient(overrides: Partial<{
   response: Response;
   sessionUpdatePromise: Promise<void>;
-}> = {}): DeepSeekWebClient {
+}> = {}): CompletionClient {
   const defaultSessionUpdatePromise = Promise.resolve()
   
-  const mockClient = {
+  const mockClient: CompletionClient = {
     completeWithAutoSession: async (
       input: DeepSeekCompletionInput,
       logger?: RequestLogger
@@ -36,7 +36,7 @@ function createMockClient(overrides: Partial<{
         sessionUpdatePromise: overrides.sessionUpdatePromise ?? defaultSessionUpdatePromise,
       }
     },
-  } as DeepSeekWebClient
+  }
   
   return mockClient
 }
@@ -93,21 +93,6 @@ function createMalformedDSMLStream(): ReadableStream<Uint8Array> {
     makeSSEEvent('close', {}),
   ]
   return createSSEStream(sseChunks)
-}
-
-function runTest(name: string, fn: () => void | Promise<void>): boolean {
-  try {
-    const result = fn()
-    if (result instanceof Promise) {
-      return false // Will be handled by async runner
-    }
-    console.log(`✓ ${name}`)
-    return false
-  } catch (error) {
-    console.error(`✗ ${name}`)
-    console.error(`  ${error instanceof Error ? error.message : error}`)
-    return true
-  }
 }
 
 async function runTestAsync(name: string, fn: () => void | Promise<void>): Promise<boolean> {
@@ -215,9 +200,8 @@ async function main() {
   failed += await runTestAsync('translator-out input reaches mocked DeepSeek client correctly', async () => {
     let capturedInput: DeepSeekCompletionInput | null = null
     const mockClient = createMockClient({
-      response: new Response(createValidDSMLStream().getReader().read(), { status: 200 }), // won't actually use this
+      response: new Response(createValidDSMLStream().getReader().read(), { status: 200 }),
     })
-    // Override to capture input
     const originalComplete = mockClient.completeWithAutoSession
     mockClient.completeWithAutoSession = async (input: DeepSeekCompletionInput) => {
       capturedInput = input
@@ -238,14 +222,13 @@ async function main() {
     expect(capturedInput!.xSessionId).toBe('test-session')
   })
 
-  // Test 2: sendSystemPrompt reaches translator-out correctly
-  failed += await runTestAsync('sendSystemPrompt=true reaches translator-out', async () => {
-    let capturedSendSystemPrompt: boolean | undefined
+  // Test 2: sendSystemPrompt=true includes system prompt in generated prompt
+  failed += await runTestAsync('sendSystemPrompt=true includes system prompt in generated prompt', async () => {
+    let capturedInput: DeepSeekCompletionInput | null = null
     const mockClient = createMockClient()
     const originalComplete = mockClient.completeWithAutoSession
     mockClient.completeWithAutoSession = async (input: DeepSeekCompletionInput) => {
-      // We can't directly see sendSystemPrompt here, but we can verify the prompt
-      // includes system prompt when sendSystemPrompt=true
+      capturedInput = input
       return originalComplete(input)
     }
 
@@ -263,16 +246,46 @@ async function main() {
       sendSystemPrompt: true,
     })
 
-    // The orchestrator should have called translateOpenAIRequest with sendSystemPrompt=true
-    // which would include the system prompt in the generated prompt
-    if (result.kind === 'streaming-success' || result.kind === 'json-success') {
-      // We can't easily test this without mocking the translator, but the test ensures
-      // the parameter is passed through correctly
-      expect(result).toBeDefined()
+    expect(capturedInput).toNotBeNull()
+    expect(capturedInput!.prompt).toContain('System instruction')
+    expect(capturedInput!.prompt).toContain('User message')
+    const sysIdx = capturedInput!.prompt.indexOf('System instruction')
+    const userIdx = capturedInput!.prompt.indexOf('User message')
+    if (!(sysIdx < userIdx)) {
+      throw new Error('System should come before user')
     }
   })
 
-  // Test 3: timeout reaches DeepSeekCompletionInput
+  // Test 3: sendSystemPrompt=false excludes system prompt
+  failed += await runTestAsync('sendSystemPrompt=false excludes system prompt', async () => {
+    let capturedInput: DeepSeekCompletionInput | null = null
+    const mockClient = createMockClient()
+    const originalComplete = mockClient.completeWithAutoSession
+    mockClient.completeWithAutoSession = async (input: DeepSeekCompletionInput) => {
+      capturedInput = input
+      return originalComplete(input)
+    }
+
+    const reqWithSystem: OpenAIChatCompletionRequest = {
+      ...openaiReq,
+      messages: [
+        { role: 'system', content: 'System instruction' },
+        { role: 'user', content: 'User message' },
+      ],
+    }
+
+    const result = await executeCompletionAttempt(reqWithSystem, makeHeaders(), {
+      client: mockClient,
+      timeoutMs: 15000,
+      sendSystemPrompt: false,
+    })
+
+    expect(capturedInput).toNotBeNull()
+    expect(capturedInput!.prompt).not.toContain('System instruction')
+    expect(capturedInput!.prompt).toBe('User message')
+  })
+
+  // Test 4: timeout reaches DeepSeekCompletionInput
   failed += await runTestAsync('timeout reaches DeepSeekCompletionInput', async () => {
     let capturedTimeout: number | undefined
     const mockClient = createMockClient()
@@ -292,9 +305,8 @@ async function main() {
     expect(capturedTimeout).toBe(customTimeout)
   })
 
-  // Test 4: logger is passed through
-  failed += await runTestAsync('logger is passed through to translator and deepseek_api', async () => {
-    let translatorLogger: RequestLogger | undefined
+  // Test 5: logger is passed through to client
+  failed += await runTestAsync('logger is passed through to deepseek_api', async () => {
     let clientLogger: RequestLogger | undefined
     
     const mockClient = createMockClient()
@@ -304,9 +316,6 @@ async function main() {
       return originalComplete(input, logger)
     }
 
-    // We need to mock the translator to capture the logger
-    // For this test, we'll just verify the orchestrator passes logger through
-    // by checking the client receives it
     const testLogger = {
       logIncoming: () => {},
       logTranslatedRequest: () => {},
@@ -327,7 +336,7 @@ async function main() {
     expect(result).toBeDefined()
   })
 
-  // Test 5: successful streaming response passed through translator-in
+  // Test 6: successful streaming response passed through translator-in
   failed += await runTestAsync('successful streaming response passed through translator-in', async () => {
     const mockClient = createMockClient({
       response: new Response(createValidDSMLStream()),
@@ -347,7 +356,7 @@ async function main() {
     }
   })
 
-  // Test 6: successful JSON response passed through translator-in
+  // Test 7: successful JSON response passed through translator-in
   failed += await runTestAsync('successful JSON response passed through translator-in', async () => {
     const mockClient = createMockClient({
       response: new Response(createValidDSMLStream()),
@@ -368,7 +377,7 @@ async function main() {
     }
   })
 
-  // Test 7: malformed streaming parser result preserved unchanged
+  // Test 8: malformed streaming parser result preserved unchanged
   failed += await runTestAsync('malformed streaming parser result preserved unchanged', async () => {
     const mockClient = createMockClient({
       response: new Response(createMalformedDSMLStream()),
@@ -388,7 +397,7 @@ async function main() {
     }
   })
 
-  // Test 8: malformed JSON parser result preserved unchanged
+  // Test 9: malformed JSON parser result preserved unchanged
   failed += await runTestAsync('malformed JSON parser result preserved unchanged', async () => {
     const mockClient = createMockClient({
       response: new Response(createMalformedDSMLStream()),
@@ -408,7 +417,7 @@ async function main() {
     }
   })
 
-  // Test 9: unsuccessful upstream response returned as upstream-error result
+  // Test 10: unsuccessful upstream response returned as upstream-error result
   failed += await runTestAsync('unsuccessful upstream response returned as upstream-error result', async () => {
     const mockClient = createMockClient({
       response: new Response(null, { status: 500, statusText: 'Internal Server Error' }),
@@ -427,7 +436,7 @@ async function main() {
     }
   })
 
-  // Test 10: successful upstream response with no body returned as missing-body result
+  // Test 11: successful upstream response with no body returned as missing-body result
   failed += await runTestAsync('successful upstream response with no body returned as missing-body result', async () => {
     const mockClient = createMockClient({
       response: new Response(null, { status: 200 }),
@@ -442,9 +451,8 @@ async function main() {
     expect(result.kind).toBe('missing-body')
   })
 
-  // Test 11: sessionUpdatePromise preserved exactly for caller
+  // Test 12: sessionUpdatePromise preserved exactly for caller
   failed += await runTestAsync('sessionUpdatePromise preserved exactly for caller', async () => {
-    let capturedPromise: Promise<void> | null = null
     const testPromise = Promise.resolve()
     
     const mockClient = createMockClient({
@@ -457,11 +465,10 @@ async function main() {
       sendSystemPrompt: false,
     })
 
-    // The sessionUpdatePromise should be the exact same promise
     expect(result.sessionUpdatePromise).toBe(testPromise)
   })
 
-  // Test 12: no toolResults property crosses translator-out/deepseek boundary
+  // Test 13: no toolResults property crosses translator-out/deepseek boundary
   failed += await runTestAsync('no toolResults property crosses translator-out/deepseek boundary', async () => {
     let capturedInput: DeepSeekCompletionInput | null = null
     const mockClient = createMockClient()
@@ -478,9 +485,7 @@ async function main() {
     })
 
     expect(capturedInput).toNotBeNull()
-    // Verify toolResults is NOT on the DeepSeekCompletionInput
     expect(capturedInput).not.toHaveProperty('toolResults')
-    // Verify all expected fields are present
     expect(capturedInput).toHaveProperty('prompt')
     expect(capturedInput).toHaveProperty('model_type')
     expect(capturedInput).toHaveProperty('thinking_enabled')
