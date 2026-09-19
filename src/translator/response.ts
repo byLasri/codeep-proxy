@@ -24,6 +24,7 @@ interface SSEParserState {
   currentFragmentType: 'THINK' | 'RESPONSE' | null
   accumulatedReasoning: string
   parseError: { message: string; syntaxRules: string } | null
+  pendingToolCallContent: string
 }
 
 const FORBIDDEN_DSML_DELIMITERS = [
@@ -33,24 +34,17 @@ const FORBIDDEN_DSML_DELIMITERS = [
   '||DSML||'
 ]
 
-const DSML_CORRECTIVE_MESSAGE = `Invalid tool call form.
-
-These tool-call delimiters are not accepted:
-
-- "｜｜DSML｜｜"
-- "｜DSML｜｜"
-- "｜DSML｜"
-- "||DSML||"
-
-Here is a valid tool-call example:
-
+const DSML_CORRECTIVE_MESSAGE = `<error>
+Invalid tool call syntax.
+｜｜DSML｜｜ , ｜DSML｜｜ , ｜DSML｜ , ||DSML|| are not allowed.
+correct example:
 <calls>
 <invoke name="read">
-<parameter name="filePath">C:\\Users\\Damas\\workground
+<parameter name="filePath">C:\\your\\path\\here</parameter>
 </invoke>
 </calls>
-
-Please try again.`
+Try again.
+</error>`
 
 function detectDSML(content: string): boolean {
   return FORBIDDEN_DSML_DELIMITERS.some(d => content.includes(d))
@@ -105,6 +99,7 @@ function createParser(
     currentFragmentType: 'RESPONSE',
     accumulatedReasoning: '',
     parseError: null,
+    pendingToolCallContent: '',
   }
 
   const emitFinal = () => {
@@ -165,6 +160,17 @@ function createParser(
       }
       enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
     } else {
+      // Emit buffered normal content
+      if (state.pendingToolCallContent.length > 0) {
+        const contentChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${state.responseMessageId}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: { content: state.pendingToolCallContent }, finish_reason: null }],
+        }
+        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(contentChunk)))
+      }
       const finalChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${state.responseMessageId}`,
         object: 'chat.completion.chunk',
@@ -216,18 +222,18 @@ function createParser(
 
     if (isReasoning) {
       state.accumulatedReasoning += text
+      const chunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${state.responseMessageId}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: { reasoning_content: text }, finish_reason: null }],
+      }
+      enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
     } else {
       state.accumulatedContent += text
+      state.pendingToolCallContent += text
     }
-
-    const chunk: OpenAIChatCompletionStreamResponse = {
-      id: `chatcmpl-${state.responseMessageId}`,
-      object: 'chat.completion.chunk',
-      created: info.created,
-      model: info.model,
-      choices: [{ index: 0, delta: isReasoning ? { reasoning_content: text } : { content: text }, finish_reason: null }],
-    }
-    enqueue(new TextEncoder().encode(formatOpenAISSEChunk(chunk)))
   }
 
   const processLine = (line: string) => {

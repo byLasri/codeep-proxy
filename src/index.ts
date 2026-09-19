@@ -296,7 +296,9 @@ export default {
             while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
               await enqueueGlobalRequest(timeoutMs)
 
-              const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt, logger)
+              // Retry never sends system prompt - it only sends the corrective message
+              const retrySendSystemPrompt = malformedRetryCount > 0 ? false : sendSystemPrompt
+              const input = translateOpenAIRequest(openaiReq, request.headers, retrySendSystemPrompt, logger)
               input.timeout = timeoutMs
               const client = createDeepSeekClient(env)
               const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input, logger)
