@@ -2,10 +2,12 @@ import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
-import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders, mapOpenAIModelToDeepSeek } from './translator/index.js'
+import { getXSessionIdFromHeaders, mapOpenAIModelToDeepSeek } from './translator/index.js'
+import { translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON } from './translator/index.js'
 import type { SSEParseResult } from './translator/index.js'
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
+import { executeCompletionAttempt, type CompletionAttemptResult } from './orchestrator/completion.js'
 
 // Global FIFO queue for request delay between requests
 let globalQueue: Promise<void> = Promise.resolve();
@@ -292,36 +294,36 @@ export default {
             let malformedRetryCount = 0
             let jsonResp: Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>> | null = null
             let lastMalformedError: { message: string; syntaxRules: string } | null = null
-            
+
+            const client = createDeepSeekClient(env)
+
             while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
               await enqueueGlobalRequest(timeoutMs)
 
               // Retry never sends system prompt - only the initial request uses sendSystemPrompt
               const retrySendSystemPrompt = malformedRetryCount > 0 ? false : sendSystemPrompt
-              const input = translateOpenAIRequest(openaiReq, request.headers, retrySendSystemPrompt, logger)
-              input.timeout = timeoutMs
-              const client = createDeepSeekClient(env)
-              const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input, logger)
+
+              const attemptResult = await executeCompletionAttempt(openaiReq, request.headers, {
+                client,
+                timeoutMs,
+                sendSystemPrompt: retrySendSystemPrompt,
+                logger,
+              })
 
               // MUST run before returning, otherwise attachSessionPersistence may be cancelled
-              ctx.waitUntil(sessionUpdatePromise)
+              ctx.waitUntil(attemptResult.sessionUpdatePromise)
 
-              if (!response.ok) {
-                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+              // Handle upstream errors
+              if (attemptResult.kind === 'upstream-error') {
+                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${attemptResult.status} ${attemptResult.statusText}`, type: 'upstream_error', code: attemptResult.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
               }
-              if (!response.body) {
+              if (attemptResult.kind === 'missing-body') {
                 return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
               }
 
-              const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
-
-              if (openaiReq.stream === true) {
-                // For streaming, we need to consume the entire stream first to detect malformed DSML
-                // This is necessary because we can't retry after starting to stream to the client
-                const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
-                
+              if (attemptResult.kind === 'streaming-success') {
                 // Check if DSML parsing failed (malformed DSML detected)
-                const parseError = sseResult.parseError
+                const parseError = attemptResult.sseResult.parseError
                 if (parseError) {
                   lastMalformedError = parseError
                   malformedRetryCount++
@@ -347,7 +349,7 @@ export default {
                 }
                 
                 // Valid DSML - stream to client
-                return new Response(sseResult.stream, {
+                return new Response(attemptResult.sseResult.stream, {
                   headers: {
                     'Content-Type': 'text/event-stream; charset=utf-8',
                     'Cache-Control': 'no-cache, no-transform',
@@ -356,7 +358,8 @@ export default {
                 })
               }
 
-              jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
+              // json-success
+              jsonResp = attemptResult.jsonResult
               
               // Check if response has malformed DSML error
               if (jsonResp._malformedError) {
