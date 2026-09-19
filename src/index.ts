@@ -235,161 +235,338 @@ export default {
               }
               
               const client = createDeepSeekClient(env)
-              const { response, sessionUpdatePromise } = await client.editMessage(
-                xSessionId,
-                messageId,
-                prompt,
-                options,
-                logger
-              )
+                            const { response, sessionUpdatePromise } = await client.editMessage(
+                              xSessionId,
+                              messageId,
+                              prompt,
+                              options,
+                              logger
+                            )
+
+                            if (!response.ok) {
+                              return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                            }
+                            if (!response.body) {
+                              return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                            }
+
+                            const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
+
+                            if (openaiReq.stream === true) {
+                              const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
+                
+                              // Valid response - persist session state
+                              if (xSessionId) {
+                                const persistPromise = (async () => {
+                                  try {
+                                    // Parse response_message_id from the stream for edit_message
+                                    // For edit_message, the sessionUpdatePromise resolves with the parsed IDs
+                                    const row = await env.DB.prepare(
+                                      'SELECT turn_count, parent_message_id, chat_session_id, created_at FROM proxy_sessions WHERE x_session_id = ?'
+                                    ).bind(xSessionId).first()
+                      
+                                    const currentTurnCount = row && typeof row.turn_count === 'number' ? row.turn_count : 0
+                                    const currentParentMessageId = row && typeof row.parent_message_id === 'number' ? row.parent_message_id : 0
+                                    const chatSessionId = row?.chat_session_id
+                                    const createdAt = row?.created_at ?? Date.now()
+                      
+                                    const newTurnCount = currentTurnCount + 1
+                                    // For edit_message, update parent_message_id normally
+                                    const responseMessageId = response.headers.get('X-Response-Message-Id')
+                                    const newParentId = responseMessageId ? Number(responseMessageId) : (currentParentMessageId === 0 ? null : currentParentMessageId)
+                      
+                                    await env.DB.prepare(`
+                                      INSERT INTO proxy_sessions (x_session_id, chat_session_id, parent_message_id, turn_count, created_at, updated_at)
+                                      VALUES (?, ?, ?, ?, ?, ?)
+                                      ON CONFLICT(x_session_id) DO UPDATE SET
+                                        chat_session_id = excluded.chat_session_id,
+                                        parent_message_id = excluded.parent_message_id,
+                                        turn_count = excluded.turn_count,
+                                        updated_at = excluded.updated_at
+                                    `).bind(xSessionId, chatSessionId, newParentId ?? 0, newTurnCount, createdAt, Date.now()).run()
+                      
+                                    console.log(
+                                      "[Worker] Stored session (edit_message)",
+                                      xSessionId,
+                                      "parent_message_id:",
+                                      newParentId,
+                                      "turn_count:",
+                                      newTurnCount
+                                    )
+                                  } catch (error) {
+                                    console.error("[Worker] Failed to store session info after edit:", error)
+                                  }
+                                })()
+                                ctx.waitUntil(persistPromise)
+                              }
+                
+                              return new Response(sseResult.stream, {
+                                headers: {
+                                  'Content-Type': 'text/event-stream; charset=utf-8',
+                                  'Cache-Control': 'no-cache, no-transform',
+                                  'Connection': 'keep-alive',
+                                },
+                              })
+                            }
               
-              // MUST run before returning, otherwise attachSessionPersistence may be cancelled
-              ctx.waitUntil(sessionUpdatePromise)
+                            const jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
               
-              if (!response.ok) {
-                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-              }
-              if (!response.body) {
-                return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-              }
+                            // Valid response - persist session state
+                            if (xSessionId) {
+                              const persistPromise = (async () => {
+                                try {
+                                  const row = await env.DB.prepare(
+                                    'SELECT turn_count, parent_message_id, chat_session_id, created_at FROM proxy_sessions WHERE x_session_id = ?'
+                                  ).bind(xSessionId).first()
+                    
+                                  const currentTurnCount = row && typeof row.turn_count === 'number' ? row.turn_count : 0
+                                  const currentParentMessageId = row && typeof row.parent_message_id === 'number' ? row.parent_message_id : 0
+                                  const chatSessionId = row?.chat_session_id
+                                  const createdAt = row?.created_at ?? Date.now()
+                    
+                                  const newTurnCount = currentTurnCount + 1
+                                  // For edit_message, update parent_message_id normally
+                                  const responseMessageId = response.headers.get('X-Response-Message-Id')
+                                  const newParentId = responseMessageId ? Number(responseMessageId) : (currentParentMessageId === 0 ? null : currentParentMessageId)
+                    
+                                  await env.DB.prepare(`
+                                    INSERT INTO proxy_sessions (x_session_id, chat_session_id, parent_message_id, turn_count, created_at, updated_at)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                    ON CONFLICT(x_session_id) DO UPDATE SET
+                                      chat_session_id = excluded.chat_session_id,
+                                      parent_message_id = excluded.parent_message_id,
+                                      turn_count = excluded.turn_count,
+                                      updated_at = excluded.updated_at
+                                  `).bind(xSessionId, chatSessionId, newParentId ?? 0, newTurnCount, createdAt, Date.now()).run()
+                    
+                                  console.log(
+                                    "[Worker] Stored session (edit_message)",
+                                    xSessionId,
+                                    "parent_message_id:",
+                                    newParentId,
+                                    "turn_count:",
+                                    newTurnCount
+                                  )
+                                } catch (error) {
+                                  console.error("[Worker] Failed to store session info after edit:", error)
+                                }
+                              })()
+                              ctx.waitUntil(persistPromise)
+                            }
               
-              const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
-              
-              if (openaiReq.stream === true) {
-                const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
-                return new Response(sseResult.stream, {
-                  headers: {
-                    'Content-Type': 'text/event-stream; charset=utf-8',
-                    'Cache-Control': 'no-cache, no-transform',
-                    'Connection': 'keep-alive',
-                  },
-                })
-              }
-              
-              const jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
-              return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
+                            return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
             }
             
             // NORMAL FLOW: Continue with existing completion logic with internal retry for malformed DSML
-            // Check turn_count to determine if we should send system prompt (turns 1 and 2 only)
-            const xSessionId = getXSessionIdFromHeaders(request.headers)
-            let sendSystemPrompt = true
-            if (xSessionId) {
-              const row = await env.DB.prepare(
-                'SELECT turn_count FROM proxy_sessions WHERE x_session_id = ?'
-              ).bind(xSessionId).first()
-              if (row && typeof row.turn_count === 'number') {
-                // Send system prompt on turn 1 and turn 2. Strip from turn 3 onward.
-                sendSystemPrompt = row.turn_count < 2
-              }
-            }
+                        // Check turn_count to determine if we should send system prompt (turns 1 and 2 only)
+                        const xSessionId = getXSessionIdFromHeaders(request.headers)
+                        let sendSystemPrompt = true
+                        if (xSessionId) {
+                          const row = await env.DB.prepare(
+                            'SELECT turn_count FROM proxy_sessions WHERE x_session_id = ?'
+                          ).bind(xSessionId).first()
+                          if (row && typeof row.turn_count === 'number') {
+                            // Send system prompt on turn 1 and turn 2. Strip from turn 3 onward.
+                            sendSystemPrompt = row.turn_count < 2
+                          }
+                        }
 
-            // Extract timeout from request or use default (10 seconds)
-            const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
+                        // Extract timeout from request or use default (10 seconds)
+                        const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
             
-            // Internal retry loop for malformed DSML (max 5 attempts)
-            const MAX_MALFORMED_RETRIES = 5
-            let malformedRetryCount = 0
-            let jsonResp: Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>> | null = null
-            let lastMalformedError: { message: string; syntaxRules: string } | null = null
-            
-            while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
-              await enqueueGlobalRequest(timeoutMs)
+                        // Internal retry loop for malformed DSML (max 5 attempts)
+                        const MAX_MALFORMED_RETRIES = 5
+                        let malformedRetryCount = 0
+                        let jsonResp: Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>> | null = null
+                        let lastMalformedError: { message: string; syntaxRules: string } | null = null
+                        let sessionUpdatePromise: Promise<void> | null = null
+                        let validResponseReceived = false
 
-              const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt, logger)
-              input.timeout = timeoutMs
-              const client = createDeepSeekClient(env)
-              const { response, sessionUpdatePromise } = await client.completeWithAutoSession(input, logger)
+                        while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
+                          await enqueueGlobalRequest(timeoutMs)
 
-              // MUST run before returning, otherwise attachSessionPersistence may be cancelled
-              ctx.waitUntil(sessionUpdatePromise)
+                          const input = translateOpenAIRequest(openaiReq, request.headers, sendSystemPrompt, logger)
+                          input.timeout = timeoutMs
+                          const client = createDeepSeekClient(env)
+                          const { response, sessionUpdatePromise: persistPromise } = await client.completeWithAutoSession(input, logger)
 
-              if (!response.ok) {
-                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-              }
-              if (!response.body) {
-                return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-              }
+                          if (!response.ok) {
+                            return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                          }
+                          if (!response.body) {
+                            return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                          }
 
-              const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
+                          const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
 
-              if (openaiReq.stream === true) {
-                // For streaming, we need to consume the entire stream first to detect malformed DSML
-                // This is necessary because we can't retry after starting to stream to the client
-                const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
+                          if (openaiReq.stream === true) {
+                            // For streaming, we need to consume the entire stream first to detect malformed DSML
+                            // This is necessary because we can't retry after starting to stream to the client
+                            const sseResult = await translateDeepSeekStreamToSSE(response.body, info, logger)
                 
-                // Check if DSML parsing failed (malformed DSML detected)
-                const parseError = sseResult.parseError
-                if (parseError) {
-                  lastMalformedError = parseError
-                  malformedRetryCount++
-                  
-                  if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
-                    // Max retries reached - return error to client
-                    return new Response(JSON.stringify({ 
-                      error: { 
-                        message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
-                        type: 'model_error' 
-                      } 
-                    }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-                  }
-                  
-                  // Inject corrective feedback into messages for retry
-                  openaiReq.messages.push({
-                    role: 'user',
-                    content: lastMalformedError.syntaxRules
-                  })
-                  
-                  // Continue loop for retry
-                  continue
-                }
-                
-                // Valid DSML - stream to client
-                return new Response(sseResult.stream, {
-                  headers: {
-                    'Content-Type': 'text/event-stream; charset=utf-8',
-                    'Cache-Control': 'no-cache, no-transform',
-                    'Connection': 'keep-alive',
-                  },
-                })
-              }
+                            // Check if DSML parsing failed (malformed DSML detected)
+                            const parseError = sseResult.parseError
+                            if (parseError) {
+                              lastMalformedError = parseError
+                              malformedRetryCount++
 
-              jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
+                              if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
+                                // Max retries reached - return error to client
+                                return new Response(JSON.stringify({ 
+                                  error: { 
+                                    message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
+                                    type: 'model_error' 
+                                  } 
+                                }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                              }
+
+                              // Inject corrective feedback into messages for retry
+                              openaiReq.messages.push({
+                                role: 'user',
+                                content: lastMalformedError.syntaxRules
+                              })
+
+                              // Continue loop for retry
+                              continue
+                            }
+                
+                            // Valid DSML - persist session state and stream to client
+                            if (xSessionId) {
+                              sessionUpdatePromise = (async () => {
+                                try {
+                                  const row = await env.DB.prepare(
+                                    'SELECT turn_count, parent_message_id, chat_session_id, created_at FROM proxy_sessions WHERE x_session_id = ?'
+                                  ).bind(xSessionId).first()
+                      
+                                  const currentTurnCount = row && typeof row.turn_count === 'number' ? row.turn_count : 0
+                                  const currentParentMessageId = row && typeof row.parent_message_id === 'number' ? row.parent_message_id : 0
+                                  const chatSessionId = row?.chat_session_id
+                                  const createdAt = row?.created_at ?? Date.now()
+                      
+                                  const newTurnCount = currentTurnCount + 1
+                                  // For the first 2 turns (turn_count becomes 1 or 2), DO NOT update parent_message_id.
+                                  // This forces the next request to send the same parent_message_id, triggering an upstream edit.
+                                  // Starting from turn 3, update parent_message_id normally.
+                                  const responseMessageId = response.headers.get('X-Response-Message-Id')
+                                  const newParentId = (newTurnCount < 2) ? (currentParentMessageId === 0 ? null : currentParentMessageId) : (responseMessageId ? Number(responseMessageId) : (currentParentMessageId === 0 ? null : currentParentMessageId))
+                      
+                                  await env.DB.prepare(`
+                                    INSERT INTO proxy_sessions (x_session_id, chat_session_id, parent_message_id, turn_count, created_at, updated_at)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                    ON CONFLICT(x_session_id) DO UPDATE SET
+                                      chat_session_id = excluded.chat_session_id,
+                                      parent_message_id = excluded.parent_message_id,
+                                      turn_count = excluded.turn_count,
+                                      updated_at = excluded.updated_at
+                                  `).bind(xSessionId, chatSessionId, newParentId ?? 0, newTurnCount, createdAt, Date.now()).run()
+                      
+                                  console.log(
+                                    "[Worker] Stored session",
+                                    xSessionId,
+                                    "parent_message_id:",
+                                    newParentId,
+                                    "turn_count:",
+                                    newTurnCount
+                                  )
+                                } catch (error) {
+                                  console.error("[Worker] Failed to store session info:", error)
+                                }
+                              })()
+                              ctx.waitUntil(sessionUpdatePromise)
+                            }
+                
+                            validResponseReceived = true
+                            return new Response(sseResult.stream, {
+                              headers: {
+                                'Content-Type': 'text/event-stream; charset=utf-8',
+                                'Cache-Control': 'no-cache, no-transform',
+                                'Connection': 'keep-alive',
+                              },
+                            })
+                          }
+
+                          jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
               
-              // Check if response has malformed DSML error
-              if (jsonResp._malformedError) {
-                lastMalformedError = jsonResp._malformedError
-                malformedRetryCount++
+                          // Check if response has malformed DSML error
+                          if (jsonResp._malformedError) {
+                            lastMalformedError = jsonResp._malformedError
+                            malformedRetryCount++
                 
-                if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
-                  // Max retries reached - return error to client
-                  return new Response(JSON.stringify({ 
-                    error: { 
-                      message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
-                      type: 'model_error' 
-                    } 
-                  }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-                }
+                            if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
+                              // Max retries reached - return error to client
+                              return new Response(JSON.stringify({ 
+                                error: { 
+                                  message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
+                                  type: 'model_error' 
+                                } 
+                              }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                            }
                 
-                // Inject corrective feedback into messages for retry
-                openaiReq.messages.push({
-                  role: 'user',
-                  content: lastMalformedError.syntaxRules
-                })
+                            // Inject corrective feedback into messages for retry
+                            openaiReq.messages.push({
+                              role: 'user',
+                              content: lastMalformedError.syntaxRules
+                            })
                 
-                // Continue loop for retry
-                continue
-              }
+                            // Continue loop for retry
+                            continue
+                          }
               
-              // Valid response - break out of retry loop
-              break
-            }
+                          // Valid response - persist session state
+                          if (xSessionId) {
+                            sessionUpdatePromise = (async () => {
+                              try {
+                                const row = await env.DB.prepare(
+                                  'SELECT turn_count, parent_message_id, chat_session_id, created_at FROM proxy_sessions WHERE x_session_id = ?'
+                                ).bind(xSessionId).first()
+                    
+                                const currentTurnCount = row && typeof row.turn_count === 'number' ? row.turn_count : 0
+                                const currentParentMessageId = row && typeof row.parent_message_id === 'number' ? row.parent_message_id : 0
+                                const chatSessionId = row?.chat_session_id
+                                const createdAt = row?.created_at ?? Date.now()
+                    
+                                const newTurnCount = currentTurnCount + 1
+                                // For the first 2 turns (turn_count becomes 1 or 2), DO NOT update parent_message_id.
+                                // This forces the next request to send the same parent_message_id, triggering an upstream edit.
+                                // Starting from turn 3, update parent_message_id normally.
+                                const responseMessageId = response.headers.get('X-Response-Message-Id')
+                                const newParentId = (newTurnCount < 2) ? (currentParentMessageId === 0 ? null : currentParentMessageId) : (responseMessageId ? Number(responseMessageId) : (currentParentMessageId === 0 ? null : currentParentMessageId))
+                    
+                                await env.DB.prepare(`
+                                  INSERT INTO proxy_sessions (x_session_id, chat_session_id, parent_message_id, turn_count, created_at, updated_at)
+                                  VALUES (?, ?, ?, ?, ?, ?)
+                                  ON CONFLICT(x_session_id) DO UPDATE SET
+                                    chat_session_id = excluded.chat_session_id,
+                                    parent_message_id = excluded.parent_message_id,
+                                    turn_count = excluded.turn_count,
+                                    updated_at = excluded.updated_at
+                                `).bind(xSessionId, chatSessionId, newParentId ?? 0, newTurnCount, createdAt, Date.now()).run()
+                    
+                                console.log(
+                                  "[Worker] Stored session",
+                                  xSessionId,
+                                  "parent_message_id:",
+                                  newParentId,
+                                  "turn_count:",
+                                  newTurnCount
+                                )
+                              } catch (error) {
+                                console.error("[Worker] Failed to store session info:", error)
+                              }
+                            })()
+                            ctx.waitUntil(sessionUpdatePromise)
+                          }
+              
+                          validResponseReceived = true
+                          // Valid response - break out of retry loop
+                          break
+                        }
             
-            if (!jsonResp) {
-              return new Response(JSON.stringify({ error: { message: 'No response from DeepSeek', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-            }
+                        if (!jsonResp && !validResponseReceived) {
+                          return new Response(JSON.stringify({ error: { message: 'No response from DeepSeek', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                        }
             
-            return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
+                        return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
           } catch (err) {
             // translateOpenAIRequest throws 'No user message found' on bad input -> 400
             const message = err instanceof Error ? err.message : 'Internal error'

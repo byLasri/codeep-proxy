@@ -18,5 +18,5 @@ export {
   translateDeepSeekStreamToSSE,
   translateDeepSeekStreamToJSON,
   buildCorrectiveMessage,
-  parseCleanToolCalls,
 } from './response.js'
+export { parseCleanToolCalls } from './clean-tool-calls.js'

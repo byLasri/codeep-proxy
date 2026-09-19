@@ -321,108 +321,31 @@ export class DeepSeekWebClient {
   }
 
   /**
-   * Forwards SSE chunks to the caller while buffering lines so a split
-   * `ready` event still yields response_message_id. Upserts that id as
-   * parent_message_id for the next turn as soon as it is seen.
-   */
+       * Forwards SSE chunks to the caller without session persistence.
+       * Session persistence is now handled in the Worker layer (index.ts) AFTER
+       * response validation succeeds, so retries don't corrupt turn counting.
+       */
       private attachSessionPersistence(
-    body: ReadableStream<Uint8Array>,
-    chatSessionId: string,
-    xSessionId: string | undefined,
-    existingState: ProxySessionState | null,
-    logger?: RequestLogger
-  ): { stream: ReadableStream<Uint8Array>; sessionUpdatePromise: Promise<void> } {
-    const decoder = new TextDecoder();
-    let sseBuffer = "";
-    let persistPromise: Promise<void> | null = null;
+        body: ReadableStream<Uint8Array>,
+        _chatSessionId: string,
+        _xSessionId: string | undefined,
+        _existingState: ProxySessionState | null,
+        logger?: RequestLogger
+      ): { stream: ReadableStream<Uint8Array>; sessionUpdatePromise: Promise<void> } {
+        // No-op: session persistence moved to Worker layer after validation
+        let sessionUpdatePromise: Promise<void>;
+        const resolved = Promise.resolve().then(() => {});
+        // Use a resolved promise to avoid the TypeScript issue
+        sessionUpdatePromise = Promise.resolve();
 
-    const persistParent = async (responseMessageId: number): Promise<void> => {
-      try {
-        if (xSessionId) {
-          const newTurnCount = (existingState?.turn_count || 0) + 1;
-          // For the first 2 turns (turn_count becomes 1 or 2), DO NOT update parent_message_id.
-          // This forces the next request to send the same parent_message_id, triggering an upstream edit.
-          // Starting from turn 3, update parent_message_id normally.
-          const newParentId = (newTurnCount < 2) ? (existingState?.parent_message_id ?? null) : responseMessageId;
-          
-          await this.sessionStore.set(xSessionId, {
-            x_session_id: xSessionId,
-            chat_session_id: chatSessionId,
-            parent_message_id: newParentId,
-            turn_count: newTurnCount,
-            created_at: existingState?.created_at || Date.now(),
-            updated_at: Date.now(),
-          });
-          console.log(
-            "[DeepSeekWebClient] Stored session",
-            xSessionId,
-            "parent_message_id:",
-            newParentId,
-            "turn_count:",
-            newTurnCount
-          );
+        // Wrap with teeAndLogStream if logger is provided
+        let finalStream = body;
+        if (logger) {
+          finalStream = teeAndLogStream(body, logger, "upstream_response");
         }
-      } catch (error) {
-        // Best-effort: parent_message_id write happens after the response has begun
-        // streaming, so we log and continue rather than corrupting the client stream.
-        console.error("[DeepSeekWebClient] Failed to store session info:", error);
+
+        return { stream: finalStream, sessionUpdatePromise };
       }
-    };
-
-    const consumeLine = (line: string) => {
-      if (persistPromise) {
-        return;
-      }
-      const id = extractResponseMessageId(line);
-      if (id !== null) {
-        persistPromise = persistParent(id).finally(() => resolveUpdate());
-      }
-    };
-
-    let resolveUpdate: () => void;
-    const sessionUpdatePromise = new Promise<void>((resolve) => {
-      resolveUpdate = resolve;
-    });
-
-    const finish = async () => {
-      consumeLine(sseBuffer);
-      sseBuffer = "";
-      if (persistPromise) {
-        await persistPromise;
-      } else {
-        console.log(
-          "[DeepSeekWebClient] No response_message_id found for session",
-          chatSessionId
-        );
-      }
-      resolveUpdate();
-    };
-
-    const stream = body.pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          controller.enqueue(chunk);
-          sseBuffer += decoder.decode(chunk, { stream: true });
-          const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop() ?? "";
-          for (const line of lines) {
-            consumeLine(line);
-          }
-        },
-        async flush() {
-          await finish();
-        },
-      })
-    );
-
-    // Wrap with teeAndLogStream if logger is provided
-    let finalStream = stream;
-    if (logger) {
-      finalStream = teeAndLogStream(stream, logger, "upstream_response");
-    }
-
-    return { stream: finalStream, sessionUpdatePromise };
-  }
 
   async complete(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
     // Delegate to completeWithAutoSession which handles session resolution and persistence
@@ -430,86 +353,78 @@ export class DeepSeekWebClient {
   }
 
   /**
-   * Edit a message in an existing chat session using the native /api/v0/chat/edit_message endpoint.
-   * 
-   * Flow:
-   * 1. Retrieve session state from sessionStore
-   * 2. Fetch fresh PoW challenge (session-aware)
-   * 3. POST /api/v0/chat/edit_message with messageId and edited prompt
-   * 4. Parse response to extract request_message_id and response_message_id
-   * 5. Update session state with new response_message_id as parent for next turn
-   */
-  async editMessage(
-    xSessionId: string,
-    messageId: number,
-    prompt: string,
-    options?: EditMessageOptions,
-    logger?: RequestLogger
-  ): Promise<CompletionResult> {
-    const existingState = await this.sessionStore.get(xSessionId);
-    if (!existingState) {
-      throw new DeepSeekProtocolError(
-        "Session not found for edit_message",
-        { kind: "edit_message", status: 404 }
-      );
-    }
-
-    const credentials = await this.getCredentials();
-    const chatSessionId = existingState.chat_session_id;
-
-    const hifLeim = await this.hifLeimCache.getValue();
-    const challenge = await createPowChallenge(credentials, this.origin, chatSessionId);
-    const solution = solvePow(challenge);
-    const powHeader = encodePowResponse(solution);
-    const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, chatSessionId);
-
-    const response = await editMessage(
-      headers,
-      chatSessionId,
-      messageId,
-      prompt,
-      this.origin,
-      options ?? {}
-    );
-
-    const [stream1, stream2] = response.body!.tee();
-    const idsPromise = this.parseEditMessageIds(stream1);
-    const instrumentedBody = stream2;
-
-    const persistPromise = (async () => {
-      try {
-        const { response_message_id } = await idsPromise;
-        const newTurnCount = (existingState.turn_count || 0) + 1;
-        await this.sessionStore.set(xSessionId, {
-          x_session_id: xSessionId,
-          chat_session_id: chatSessionId,
-          parent_message_id: response_message_id,
-          turn_count: newTurnCount,
-          created_at: existingState.created_at || Date.now(),
-          updated_at: Date.now(),
-        });
-      } catch (error) {
-        console.error("[DeepSeekWebClient] Failed to store session info after edit:", error);
+     * Edit a message in an existing chat session using the native /api/v0/chat/edit_message endpoint.
+     * 
+     * Flow:
+     * 1. Retrieve session state from sessionStore
+     * 2. Fetch fresh PoW challenge (session-aware)
+     * 3. POST /api/v0/chat/edit_message with messageId and edited prompt
+     * 4. Parse response to extract request_message_id and response_message_id
+     * 5. Return response - session persistence handled by caller (Worker layer)
+     */
+    async editMessage(
+      xSessionId: string,
+      messageId: number,
+      prompt: string,
+      options?: EditMessageOptions,
+      logger?: RequestLogger
+    ): Promise<CompletionResult> {
+      const existingState = await this.sessionStore.get(xSessionId);
+      if (!existingState) {
+        throw new DeepSeekProtocolError(
+          "Session not found for edit_message",
+          { kind: "edit_message", status: 404 }
+        );
       }
-    })();
 
-    let finalStream = instrumentedBody;
-    if (logger) {
-      finalStream = teeAndLogStream(instrumentedBody, logger, "upstream_response");
+      const credentials = await this.getCredentials();
+      const chatSessionId = existingState.chat_session_id;
+
+      const hifLeim = await this.hifLeimCache.getValue();
+      const challenge = await createPowChallenge(credentials, this.origin, chatSessionId);
+      const solution = solvePow(challenge);
+      const powHeader = encodePowResponse(solution);
+      const headers = buildCompletionHeaders(credentials, powHeader, hifLeim, chatSessionId);
+
+      const response = await editMessage(
+        headers,
+        chatSessionId,
+        messageId,
+        prompt,
+        this.origin,
+        options ?? {}
+      );
+
+      const [stream1, stream2] = response.body!.tee();
+      const idsPromise = this.parseEditMessageIds(stream1);
+      const instrumentedBody = stream2;
+
+      // Return response and IDs promise - caller handles session persistence
+      let finalStream = instrumentedBody;
+      if (logger) {
+        finalStream = teeAndLogStream(instrumentedBody, logger, "upstream_response");
+      }
+
+      const outboundHeaders = new Headers(response.headers);
+      outboundHeaders.set("X-Chat-Session-Id", chatSessionId);
+
+      return {
+        response: new Response(finalStream, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: outboundHeaders,
+        }),
+        sessionUpdatePromise: idsPromise.then(({ response_message_id }) => ({
+          xSessionId,
+          chatSessionId,
+          responseMessageId: response_message_id,
+          existingState,
+        })).then(async ({ xSessionId, chatSessionId, responseMessageId, existingState }) => {
+          // This is now handled in index.ts after validation
+          // We keep the promise for compatibility but it resolves immediately
+        }),
+      };
     }
-
-    const outboundHeaders = new Headers(response.headers);
-    outboundHeaders.set("X-Chat-Session-Id", chatSessionId);
-
-    return {
-      response: new Response(finalStream, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: outboundHeaders,
-      }),
-      sessionUpdatePromise: persistPromise,
-    };
-  }
 
   private async parseEditMessageIds(
     body: ReadableStream<Uint8Array>
