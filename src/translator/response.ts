@@ -138,16 +138,16 @@ function createParser(
   }
 
   const emitText = (text: string) => {
+    if (state.responseMessageId === 'null') {
+      state.pendingContent += text
+      return
+    }
+
     const isReasoning = state.currentFragmentType === 'THINK'
     if (isReasoning) {
       state.accumulatedReasoning += text
     } else {
       state.accumulatedContent += text
-    }
-
-    if (state.responseMessageId === 'null') {
-      state.pendingContent += text
-      return
     }
 
     if (!state.hasEmittedRole) {
