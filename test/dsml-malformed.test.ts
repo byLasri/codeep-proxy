@@ -1,4 +1,4 @@
-import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE } from '../src/translator/response.js'
+import { parseDSMLToolCalls, buildCorrectiveMessage, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE, ACTIVE_CORRECTIVE_MESSAGE } from '../src/translator/response.js'
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -1447,477 +1447,108 @@ ${dialect.closeCalls}`
 
   failed += await runTestsSequentially(matrixTests)
 
-  console.log('\n--- Streaming DSML Tests ---\n')
+  console.log('\n--- Active translator DSML rejection tests ---\n')
 
-  const streamingTests = [
-    { name: 'valid normal text stream should parse without error', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: 'Hello' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: ' world' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('Hello')
-      expect(output).toContain('world')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'valid DSML tool call stream should parse without error', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      if (result.parseError) {
-        console.error('Parse error:', result.parseError)
-      }
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-      expect(output).toContain('README.md')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'parser directly handles full DSML buffer correctly', fn: async () => {
-      const buffer = `<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read"><｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>`
-      const result = parseDSMLToolCalls(buffer)
-      console.log('Direct parser result:', result)
-      expect(result.isMalformed).toBeFalsy()
-      expect(result.toolCalls).toHaveLength(1)
-    }},
-    { name: 'malformed complete DSML should produce parse error', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">test.txt</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeDefined()
-      expect(result.parseError!.message).toContain('Parameter found outside')
-      const output = await decodeStream(result.stream)
-      expect(output).not.toContain('tool_calls')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'missing closing calls tag at EOF should produce parse error', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeDefined()
-      expect(result.parseError!.message).toContain('Missing closing')
-      const output = await decodeStream(result.stream)
-      expect(output).not.toContain('tool_calls')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'missing closing invoke tag at EOF should produce parse error', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeDefined()
-      expect(result.parseError!.message).toContain('Mismatched <invoke> tags')
-      const output = await decodeStream(result.stream)
-      expect(output).not.toContain('tool_calls')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'DSML split across multiple upstream chunks should parse correctly', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜' }] } } }),
-        makeSSEData({ v: { response: { fragments: [{ type: 'RESPONSE', content: '｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-    }},
-    { name: 'closing DSML tag split across chunks should parse correctly', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜' }),
-        makeSSEData({ v: { response: { fragments: [{ type: 'RESPONSE', content: '｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-    }},
-    { name: 'CRLF SSE input should parse correctly', fn: async () => {
-      const sseInput = [
-        `event: ready\r\ndata: ${JSON.stringify({ response_message_id: 123 })}\r\n\r\n`,
-        `event: update_session\r\ndata: ${JSON.stringify({ v: { response: { fragments: [{ type: 'RESPONSE', content: 'Hello' }] } } })}\r\n\r\n`,
-        `event: close\r\ndata: ${JSON.stringify({})}\r\n\r\n`,
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('Hello')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'final SSE line without newline should parse correctly', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: 'Hello' }] } } }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('Hello')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'malformed response produces final parse error', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">test.txt</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeDefined()
-      expect(result.parseError!.message).toContain('Parameter found outside')
-      expect(result.parseError!.syntaxRules).toBe(buildCorrectiveMessage('Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.'))
-      expect(result.parseError!.syntaxRules).toContain('Parameter found outside of <invoke> block')
-      expect(result.parseError!.syntaxRules).toContain('Your previous response contained a malformed tool call')
-      expect(result.parseError!.syntaxRules).not.toContain('Rules:')
-      expect(result.parseError!.syntaxRules).not.toContain('<calls>')
-      // The parser error contains "<invoke" but the template itself is delimiter-neutral
-      expect(DSML_CORRECTIVE_MESSAGE_TEMPLATE).not.toContain('<invoke')
-    }},
-    { name: 'malformed response produces no client-facing DSML/tool-call output', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">test.txt</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      const output = await decodeStream(result.stream)
-      expect(output).not.toContain('tool_calls')
-      expect(output).not.toContain('<｜｜DSML｜｜')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'valid response remains unchanged', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: 'Hello' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: ' world' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('Hello')
-      expect(output).toContain('world')
-      expect(output).not.toContain('tool_calls')
-      expect(output).toContain('[DONE]')
-    }},
-{ name: 'upstream stream fully consumed before parse error available', fn: async () => {
-      let chunksConsumed = 0
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">test.txt</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      
-      const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          if (chunksConsumed < sseInput.length) {
-            controller.enqueue(new TextEncoder().encode(sseInput[chunksConsumed++]))
-          } else {
-            controller.close()
-          }
-        },
-      })
-      
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(chunksConsumed).toBe(sseInput.length)
-      expect(result.parseError).toBeDefined()
-      expect(result.parseError!.message).toContain('Parameter found outside')
-    }},
-    { name: 'single delimiter split across chunks should parse', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜' }] } } }),
-        makeSSEData({ v: { response: { fragments: [{ type: 'RESPONSE', content: 'DSML｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜DSML｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜DSML｜ parameter name="filePath" string="true">README.md</｜DSML｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜DSML｜ invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜DSML｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-    }},
-    { name: 'mixed delimiter split across chunks should parse', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜' }] } } }),
-        makeSSEData({ v: { response: { fragments: [{ type: 'RESPONSE', content: 'DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜DSML｜｜ parameter name="filePath" string="true">README.md</｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜DSML｜｜ invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-    }},
-    { name: 'ASCII delimiter split across chunks should parse', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<||' }] } } }),
-        makeSSEData({ v: { response: { fragments: [{ type: 'RESPONSE', content: 'DSML||calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<||DSML||invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<||DSML||parameter name="filePath" string="true">README.md</||DSML||parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</||DSML||invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</||DSML||calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-    }},
-    { name: 'mismatched opening and closing dialects should be malformed', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜DSML｜｜ invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜DSML｜｜ calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeDefined()
-      const output = await decodeStream(result.stream)
-      expect(output).not.toContain('tool_calls')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'unknown delimiter should not enter DSML parsing', fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<fooDSMLfoo calls>' }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<fooDSMLfoo invoke name="read">' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '<fooDSMLfoo parameter name="filePath" string="true">README.md</fooDSMLfoo parameter>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</fooDSMLfoo invoke>' }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: '</fooDSMLfoo calls>' }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      // Should be treated as normal text, not DSML
-      expect(output).not.toContain('tool_calls')
-      expect(output).toContain('fooDSMLfoo')
-      expect(output).toContain('[DONE]')
-    }},
-    { name: 'split multibyte UTF-8 character across chunks should be reconstructed at EOF', fn: async () => {
-      // Build SSE events with the actual emoji character in the JS string
-      // JSON.stringify will escape it, but JSON.parse will unescape it correctly
-      const readyEvent = makeSSEEventBytes('ready', { response_message_id: 123 })
-      const updateEvent = makeSSEEventBytes('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } })
-      
-      // Use the actual emoji in the JS string
-      const text = 'Hello 🎉 world'
-      const pEvent1 = makeSSEEventBytes('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: text })
-      const closeEvent = makeSSEEventBytes('close', {})
-      
-      // Concatenate all bytes
-      const allBytes = new Uint8Array(
-        readyEvent.length + updateEvent.length + pEvent1.length + closeEvent.length
-      )
-      let offset = 0
-      for (const arr of [readyEvent, updateEvent, pEvent1, closeEvent]) {
-        allBytes.set(arr, offset)
-        offset += arr.length
-      }
-      
-      // Find the emoji in the combined byte stream (🎉 = F0 9F 8E 89)
-      let emojiPos = -1
-      for (let i = 0; i < allBytes.length - 3; i++) {
-        if (allBytes[i] === 0xF0 && allBytes[i+1] === 0x9F && allBytes[i+2] === 0x8E && allBytes[i+3] === 0x89) {
-          emojiPos = i
-          break
-        }
-      }
-      
-      if (emojiPos === -1) {
-        throw new Error('Emoji not found in combined stream')
-      }
-      
-      // Split after the first 2 bytes of the emoji
-      const splitPos = emojiPos + 2
-      const chunk1Combined = allBytes.slice(0, splitPos)
-      const chunk2Combined = allBytes.slice(splitPos)
-      
-      const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          controller.enqueue(chunk1Combined)
-          controller.enqueue(chunk2Combined)
-          controller.close()
-        },
-      })
-      
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('🎉')
-      expect(output).toContain('Hello')
-      expect(output).toContain('world')
-      expect(output).toContain('[DONE]')
-    }},
-  ]
+  const dsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
 
-  // Streaming matrix tests: all 20 dialect/wrapper combinations
-  console.log('\n--- Streaming DSML Dialect Matrix Tests (4 delimiters × 5 wrappers = 20) ---\n')
+  const makeDSMLStream = (content: string) => createSSEStream([
+    makeSSEEvent('ready', { response_message_id: 123 }),
+    makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content }] } } }),
+    makeSSEEvent('close', {}),
+  ])
 
-  const streamingMatrixTests = ALL_DIALECTS.map(dialect => ({
-    name: `streaming matrix: ${dialect.delimiter} delimiter + ${dialect.wrapper} wrapper`,
+  const assertDSMLRejectedBySSE = async (content: string, expectedMessage?: string) => {
+    const result = await translateDeepSeekStreamToSSE(
+      makeDSMLStream(content),
+      { model: 'test', id: 'chatcmpl-1', created: 1 }
+    )
+    expect(result.parseError).toBeDefined()
+    expect(result.parseError!.message).toContain(expectedMessage ?? 'Forbidden DSML')
+    expect(result.parseError!.syntaxRules).toBe(ACTIVE_CORRECTIVE_MESSAGE)
+    const output = await decodeStream(result.stream)
+    expect(output).not.toContain('tool_calls')
+    expect(output).not.toContain('DSML')
+    expect(output).toContain('[DONE]')
+  }
+
+  const assertDSMLRejectedByJSON = async (content: string) => {
+    const result = await translateDeepSeekStreamToJSON(
+      makeDSMLStream(content),
+      { model: 'test', id: 'chatcmpl-1', created: 1 }
+    )
+    expect(result._malformedError).toBeDefined()
+    expect(result._malformedError!.message).toContain('Forbidden DSML')
+    expect(result._malformedError!.syntaxRules).toBe(ACTIVE_CORRECTIVE_MESSAGE)
+    expect(result.choices[0].message.tool_calls).toBeFalsy()
+  }
+
+  const activeStreamingTests = dsmlMarkers.map(marker => ({
+    name: `active streaming rejects DSML marker: ${marker}`,
     fn: async () => {
-      const sseInput = [
-        makeSSEEvent('ready', { response_message_id: 123 }),
-        makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: dialect.openCalls }] } } }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: `${dialect.openInvoke} name="read">` }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: `${dialect.openParameter} name="filePath" string="true">README.md${dialect.closeParameter}` }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: dialect.closeInvoke }),
-        makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: dialect.closeCalls }),
-        makeSSEEvent('close', {}),
-      ]
-      const stream = createSSEStream(sseInput)
-      const info = { model: 'test', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
-      
-      const result = await translateDeepSeekStreamToSSE(stream, info)
-      
-      expect(result.parseError).toBeNull()
-      const output = await decodeStream(result.stream)
-      expect(output).toContain('tool_calls')
-      expect(output).toContain('read')
-      expect(output).toContain('README.md')
-      expect(output).toContain('[DONE]')
-    }
+      await assertDSMLRejectedBySSE(`<${marker} calls><${marker} invoke name="read"></${marker} invoke></${marker} calls>`)
+    },
   }))
 
-  failed += await runTestsSequentially(streamingMatrixTests)
+  const activeJsonTests = dsmlMarkers.map(marker => ({
+    name: `active JSON rejects DSML marker: ${marker}`,
+    fn: async () => {
+      await assertDSMLRejectedByJSON(`<${marker} calls><${marker} invoke name="read"></${marker} invoke></${marker} calls>`)
+    },
+  }))
 
-  failed += await runTestsSequentially(streamingTests)
+  const eofTests = [
+    {
+      name: 'active streaming rejects incomplete detected DSML block at EOF',
+      fn: async () => {
+        const result = await translateDeepSeekStreamToSSE(
+          makeDSMLStream('<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read">'),
+          { model: 'test', id: 'chatcmpl-1', created: 1 }
+        )
+        expect(result.parseError).toBeDefined()
+        expect(result.parseError!.message).toBe('Forbidden DSML tool-call delimiter detected: ｜｜DSML｜｜')
+        expect(result.parseError!.syntaxRules).toBe(ACTIVE_CORRECTIVE_MESSAGE)
+      },
+    },
+    {
+      name: 'active streaming rejects incomplete DSML block with explicit EOF message when buffered dialect is detected',
+      fn: async () => {
+        const result = await translateDeepSeekStreamToSSE(
+          createSSEStream([
+            makeSSEEvent('ready', { response_message_id: 123 }),
+            makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '<｜｜DSML｜｜ calls>' }] } } }),
+            makeSSEEvent('close', {}),
+          ]),
+          { model: 'test', id: 'chatcmpl-1', created: 1 }
+        )
+        expect(result.parseError).toBeDefined()
+        expect(result.parseError!.syntaxRules).toBe(ACTIVE_CORRECTIVE_MESSAGE)
+        expect(result.parseError!.message).toContain('Forbidden DSML')
+      },
+    },
+  ]
+
+  failed += await runTestsSequentially(activeStreamingTests)
+  failed += await runTestsSequentially(activeJsonTests)
+  failed += await runTestsSequentially(eofTests)
+
+  console.log('\n--- Active normal response regression tests ---\n')
+
+  failed += await runTestsSequentially([
+    {
+      name: 'ordinary prose remains a normal streaming response',
+      fn: async () => {
+        const result = await translateDeepSeekStreamToSSE(
+          makeDSMLStream('Hello, this is ordinary prose.'),
+          { model: 'test', id: 'chatcmpl-1', created: 1 }
+        )
+        expect(result.parseError).toBeNull()
+        const output = await decodeStream(result.stream)
+        expect(output).toContain('Hello, this is ordinary prose.')
+        expect(output).not.toContain('tool_calls')
+      },
+    },
+  ])
+
 
   console.log(`\n${failed === 0 ? 'All' : failed} test${failed !== 1 ? 's' : ''} ${failed === 0 ? 'passed' : 'failed'}!`)
   if (failed > 0) process.exit(1)
