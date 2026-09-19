@@ -336,10 +336,12 @@ export default {
 
               const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) }
               const persistEditIfSuccessful = async (malformed: boolean) => {
-                if (malformed || !editMessageIdsPromise) return
+                if (!editMessageIdsPromise) return
                 try {
                   const editMessageIds = await editMessageIdsPromise
-                  ctx.waitUntil(persistSuccessfulEdit(env.DB, xSessionId, editMessageIds))
+                  if (!malformed) {
+                    ctx.waitUntil(persistSuccessfulEdit(env.DB, xSessionId, editMessageIds))
+                  }
                 } catch (error) {
                   console.error("[Worker] Failed to read edit_message response IDs:", error)
                 }
