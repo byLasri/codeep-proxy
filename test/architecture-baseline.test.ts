@@ -48,39 +48,21 @@ async function decodeStream(stream: ReadableStream<Uint8Array>): Promise<string>
   return result
 }
 
-function runTest(name: string, fn: () => void | Promise<void>) {
-  try {
-    const result = fn()
-    if (result instanceof Promise) {
-      return result.then(() => {
-        console.log(`✓ ${name}`)
-        return false
-      }).catch((error) => {
-        console.error(`✗ ${name}`)
-        console.error(`  ${error instanceof Error ? error.message : error}`)
-        return true
-      })
-    }
-    console.log(`✓ ${name}`)
-    return false
-  } catch (error) {
-    console.error(`✗ ${name}`)
-    console.error(`  ${error instanceof Error ? error.message : error}`)
-    return true
-  }
-}
-
-async function runTestsSequentially(tests: Array<{ name: string; fn: () => void | Promise<void> }>) {
-  let failed = 0
-  for (const { name, fn } of tests) {
-    const result = runTest(name, fn)
-    if (result instanceof Promise) {
-      if (await result) failed++
-    } else if (result) {
-      failed++
-    }
-  }
-  return failed
+function createCountingStream(chunks: string[]): { stream: ReadableStream<Uint8Array>; getCount: () => number } {
+  const encoder = new TextEncoder()
+  let index = 0
+  let chunksConsumed = 0
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[index++]))
+        chunksConsumed++
+      } else {
+        controller.close()
+      }
+    },
+  })
+  return { stream, getCount: () => chunksConsumed }
 }
 
 function expect<T>(actual: T) {
@@ -143,6 +125,29 @@ function expect<T>(actual: T) {
   return { ...matchers }
 }
 
+async function runTest(name: string, fn: () => void | Promise<void>): Promise<boolean> {
+  try {
+    const result = fn()
+    if (result instanceof Promise) {
+      await result
+    }
+    console.log(`✓ ${name}`)
+    return false
+  } catch (error) {
+    console.error(`✗ ${name}`)
+    console.error(`  ${error instanceof Error ? error.message : error}`)
+    return true
+  }
+}
+
+async function runTestsSequentially(tests: Array<{ name: string; fn: () => void | Promise<void> }>): Promise<number> {
+  let failed = 0
+  for (const { name, fn } of tests) {
+    if (await runTest(name, fn)) failed++
+  }
+  return failed
+}
+
 async function main() {
   console.log('Running Architecture Baseline Tests...\n')
 
@@ -153,8 +158,7 @@ async function main() {
   // ============================================================
   console.log('\n--- 1. Outbound Prompt Construction ---\n')
 
-  // First turn with system + user + tools
-  failed += runTest('first turn: system + user + tools -> prompt contains system, tools, user in order', () => {
+  failed += await runTest('first turn: system + user + tools -> prompt contains system, tools, user in order', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'system', content: 'You are a helpful assistant' },
       { role: 'user', content: 'Hello world' },
@@ -166,7 +170,6 @@ async function main() {
     expect(result.prompt).toContain('You are a helpful assistant')
     expect(result.prompt).toContain('read_file')
     expect(result.prompt).toContain('Hello world')
-    // Order: system -> tools -> user
     const sysIdx = result.prompt.indexOf('You are a helpful assistant')
     const toolsIdx = result.prompt.indexOf('read_file')
     const userIdx = result.prompt.indexOf('Hello world')
@@ -176,8 +179,7 @@ async function main() {
     expect(result.toolResults).toHaveLength(0)
   })
 
-  // First turn without system, with user + tools
-  failed += runTest('first turn: user + tools -> prompt contains tools, user in order', () => {
+  failed += await runTest('first turn: user + tools -> prompt contains tools, user in order', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'user', content: 'Hello world' },
     ]
@@ -195,8 +197,7 @@ async function main() {
     expect(result.toolResults).toHaveLength(0)
   })
 
-  // Continuation turn without tool results
-  failed += runTest('continuation without tool results: latest user message becomes prompt', () => {
+  failed += await runTest('continuation without tool results: latest user message becomes prompt', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'user', content: 'First message' },
       { role: 'assistant', content: 'First response' },
@@ -209,8 +210,7 @@ async function main() {
     expect(result.prompt).toBe('Second message')
   })
 
-  // Continuation with single tool result
-  failed += runTest('continuation with single tool result: tool content becomes prompt', () => {
+  failed += await runTest('continuation with single tool result: tool content becomes prompt', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'user', content: 'Read README' },
       { role: 'assistant', content: null, tool_calls: [{ id: 'call_123', type: 'function', function: { name: 'read', arguments: '{"filePath":"README.md"}' } }] },
@@ -226,8 +226,7 @@ async function main() {
     expect(result.prompt).toBe('README contents')
   })
 
-  // Continuation with multiple consecutive tool results
-  failed += runTest('continuation with multiple tool results: all preserved in order, joined with double newline', () => {
+  failed += await runTest('continuation with multiple tool results: all preserved in order, joined with double newline', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'user', content: 'Read multiple files' },
       { role: 'assistant', content: null, tool_calls: [
@@ -248,8 +247,7 @@ async function main() {
     expect(result.prompt).toBe('File A contents\n\nFile B contents')
   })
 
-  // Tool call metadata NOT in prompt
-  failed += runTest('tool_call_id and role metadata NOT in DeepSeek prompt', () => {
+  failed += await runTest('tool_call_id and role metadata NOT in DeepSeek prompt', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'user', content: 'Read files' },
       { role: 'assistant', content: null, tool_calls: [
@@ -277,7 +275,7 @@ async function main() {
   // ============================================================
   console.log('\n--- 2. sendSystemPrompt Behavior ---\n')
 
-  failed += runTest('sendSystemPrompt=true: system messages included in prompt', () => {
+  failed += await runTest('sendSystemPrompt=true: system messages included in prompt', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'system', content: 'System instruction' },
       { role: 'user', content: 'User message' },
@@ -294,7 +292,7 @@ async function main() {
     }
   })
 
-  failed += runTest('sendSystemPrompt=false: system messages EXCLUDED from prompt', () => {
+  failed += await runTest('sendSystemPrompt=false: system messages EXCLUDED from prompt', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'system', content: 'System instruction' },
       { role: 'user', content: 'User message' },
@@ -307,7 +305,7 @@ async function main() {
     expect(result.prompt).toBe('User message')
   })
 
-  failed += runTest('sendSystemPrompt=false on continuation: system excluded, tool results still work', () => {
+  failed += await runTest('sendSystemPrompt=false on continuation: system excluded, tool results still work', () => {
     const messages: OpenAIChatMessage[] = [
       { role: 'system', content: 'System instruction' },
       { role: 'user', content: 'First' },
@@ -328,7 +326,7 @@ async function main() {
   // ============================================================
   console.log('\n--- 3. Translator-Out Boundary Baseline ---\n')
 
-  failed += runTest('translateOpenAIRequest returns DeepSeekCompletionInput with all required fields + toolResults', () => {
+  failed += await runTest('translateOpenAIRequest returns DeepSeekCompletionInput with all required fields + toolResults', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'deepseek-chat',
       messages: [
@@ -341,7 +339,6 @@ async function main() {
 
     const result = translateOpenAIRequest(req, makeHeaders('session-123'), false)
 
-    // DeepSeekCompletionInput fields
     expect(result.prompt).toBe('README contents')
     expect(result.model_type).toBeDefined()
     expect(typeof result.thinking_enabled).toBe('boolean')
@@ -350,7 +347,6 @@ async function main() {
     expect(result.chat_session_id).toBeUndefined()
     expect(result.timeout).toBeUndefined()
 
-    // toolResults (current internal field, will be removed in Phase 2)
     expect(result.toolResults).toBeDefined()
     expect(Array.isArray(result.toolResults)).toBe(true)
     expect(result.toolResults).toHaveLength(1)
@@ -358,7 +354,7 @@ async function main() {
     expect(result.toolResults[0].content).toBe('README contents')
   })
 
-  failed += runTest('translateOpenAIRequest xSessionId extracted from X-Session-Id header', () => {
+  failed += await runTest('translateOpenAIRequest xSessionId extracted from X-Session-Id header', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: 'test' }],
@@ -368,7 +364,7 @@ async function main() {
     expect(result.xSessionId).toBe('test-session-456')
   })
 
-  failed += runTest('translateOpenAIRequest xSessionId extracted from X-Session-Affinity fallback', () => {
+  failed += await runTest('translateOpenAIRequest xSessionId extracted from X-Session-Affinity fallback', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: 'test' }],
@@ -380,7 +376,7 @@ async function main() {
     expect(result.xSessionId).toBe('affinity-session-789')
   })
 
-  failed += runTest('translateOpenAIRequest model mapping: V4-Pro-DeepThink -> expert + thinking', () => {
+  failed += await runTest('translateOpenAIRequest model mapping: V4-Pro-DeepThink -> expert + thinking', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'V4-Pro-DeepThink',
       messages: [{ role: 'user', content: 'test' }],
@@ -392,7 +388,7 @@ async function main() {
     expect(result.search_enabled).toBe(false)
   })
 
-  failed += runTest('translateOpenAIRequest model mapping: V4.1-flash-DeepThink-Web -> flash + thinking + search', () => {
+  failed += await runTest('translateOpenAIRequest model mapping: V4.1-flash-DeepThink-Web -> flash + thinking + search', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'V4.1-flash-DeepThink-Web',
       messages: [{ role: 'user', content: 'test' }],
@@ -409,7 +405,6 @@ async function main() {
   // ============================================================
   console.log('\n--- 4. Inbound Normal Text Response ---\n')
 
-  // Helper to create a simple text response SSE stream
   function createTextSSEStream(text: string): ReadableStream<Uint8Array> {
     const sseChunks = [
       makeSSEEvent('ready', { response_message_id: 12345 }),
@@ -421,7 +416,7 @@ async function main() {
     return createSSEStream(sseChunks)
   }
 
-  failed += runTest('translateDeepSeekStreamToSSE: normal text -> parseError null, stream has content + [DONE]', async () => {
+  failed += await runTest('translateDeepSeekStreamToSSE: normal text -> parseError null, stream has content + [DONE]', async () => {
     const stream = createTextSSEStream('Hello, this is a normal response.')
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
@@ -434,7 +429,7 @@ async function main() {
     expect(output).not.toContain('tool_calls')
   })
 
-  failed += runTest('translateDeepSeekStreamToJSON: normal text -> _malformedError undefined, finish_reason stop', async () => {
+  failed += await runTest('translateDeepSeekStreamToJSON: normal text -> _malformedError undefined, finish_reason stop', async () => {
     const stream = createTextSSEStream('Hello, this is a normal response.')
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
@@ -452,7 +447,6 @@ async function main() {
   console.log('\n--- 5. Inbound Valid DSML Tool Call ---\n')
 
   function createValidDSMLStream(): ReadableStream<Uint8Array> {
-    // Send DSML in multiple chunks like real DeepSeek does
     const sseChunks = [
       makeSSEEvent('ready', { response_message_id: 12345 }),
       makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
@@ -467,7 +461,7 @@ async function main() {
     return createSSEStream(sseChunks)
   }
 
-  failed += runTest('translateDeepSeekStreamToSSE: valid DSML -> parseError null, tool_calls emitted', async () => {
+  failed += await runTest('translateDeepSeekStreamToSSE: valid DSML -> parseError null, tool_calls emitted', async () => {
     const stream = createValidDSMLStream()
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
@@ -481,7 +475,7 @@ async function main() {
     expect(output).toContain('[DONE]')
   })
 
-  failed += runTest('translateDeepSeekStreamToJSON: valid DSML -> _malformedError undefined, tool_calls in response', async () => {
+  failed += await runTest('translateDeepSeekStreamToJSON: valid DSML -> _malformedError undefined, tool_calls in response', async () => {
     const stream = createValidDSMLStream()
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
@@ -502,7 +496,6 @@ async function main() {
   console.log('\n--- 6. Inbound Malformed DSML Behavior ---\n')
 
   function createMalformedDSMLStream(): ReadableStream<Uint8Array> {
-    // Missing closing </calls> tag - send in multiple chunks
     const sseChunks = [
       makeSSEEvent('ready', { response_message_id: 12345 }),
       makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
@@ -510,14 +503,13 @@ async function main() {
       makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read_file">' }),
       makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
       makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
-      // Missing </｜｜DSML｜｜ calls>
       makePEvent({ p: 'response/status', o: 'SET', v: 'FINISHED' }),
       makeSSEEvent('close', {}),
     ]
     return createSSEStream(sseChunks)
   }
 
-  failed += runTest('translateDeepSeekStreamToSSE: malformed DSML -> parseError present with message + syntaxRules', async () => {
+  failed += await runTest('translateDeepSeekStreamToSSE: malformed DSML -> parseError present with message + syntaxRules', async () => {
     const stream = createMalformedDSMLStream()
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
@@ -530,7 +522,7 @@ async function main() {
     expect(result.parseError!.syntaxRules).toContain('Your previous response contained a malformed tool call')
   })
 
-  failed += runTest('translateDeepSeekStreamToJSON: malformed DSML -> _malformedError present', async () => {
+  failed += await runTest('translateDeepSeekStreamToJSON: malformed DSML -> _malformedError present', async () => {
     const stream = createMalformedDSMLStream()
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
@@ -543,14 +535,13 @@ async function main() {
     expect(result._malformedError!.syntaxRules).toContain('Your previous response contained a malformed tool call')
   })
 
-  failed += runTest('malformed DSML: no successful tool_calls emitted to client', async () => {
+  failed += await runTest('malformed DSML: no successful tool_calls emitted to client', async () => {
     const stream = createMalformedDSMLStream()
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
     const result: SSEParseResult = await translateDeepSeekStreamToSSE(stream, info)
     const output = await decodeStream(result.stream)
 
-    // Should emit empty response with finish_reason stop, not tool_calls
     expect(output).not.toContain('tool_calls')
     expect(output).toContain('[DONE]')
   })
@@ -560,24 +551,49 @@ async function main() {
   // ============================================================
   console.log('\n--- 7. Full-Stream Consumption Behavior ---\n')
 
-  failed += runTest('upstream stream fully consumed before parse error available (streaming)', async () => {
-    const stream = createMalformedDSMLStream()
+  failed += await runTest('upstream stream fully consumed before parse error available (streaming)', async () => {
+    const { stream, getCount } = createCountingStream([
+      makeSSEEvent('ready', { response_message_id: 12345 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ calls>' }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read_file">' }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
+      makePEvent({ p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ])
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
     const result = await translateDeepSeekStreamToSSE(stream, info)
+    const consumed = getCount()
 
-    // The function must fully consume the stream before returning parseError
-    // This is verified by the fact that parseError is available synchronously after the call
     expect(result.parseError).toBeDefined()
+    // There are 8 chunks, all must be consumed
+    if (consumed !== 8) {
+      throw new Error(`Expected 8 chunks consumed, got ${consumed}`)
+    }
   })
 
-  failed += runTest('upstream stream fully consumed before parse error available (non-streaming)', async () => {
-    const stream = createMalformedDSMLStream()
+  failed += await runTest('upstream stream fully consumed before parse error available (non-streaming)', async () => {
+    const { stream, getCount } = createCountingStream([
+      makeSSEEvent('ready', { response_message_id: 12345 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ calls>' }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ invoke name="read_file">' }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>' }),
+      makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: '</｜｜DSML｜｜ invoke>' }),
+      makePEvent({ p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ])
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
 
     const result = await translateDeepSeekStreamToJSON(stream, info)
+    const consumed = getCount()
 
     expect(result._malformedError).toBeDefined()
+    if (consumed !== 8) {
+      throw new Error(`Expected 8 chunks consumed, got ${consumed}`)
+    }
   })
 
   // ============================================================
@@ -585,14 +601,13 @@ async function main() {
   // ============================================================
   console.log('\n--- 8. Chunk Boundary Robustness ---\n')
 
-  failed += runTest('split SSE chunks: DSML delimiter split across chunks', async () => {
+  failed += await runTest('split SSE chunks: DSML delimiter split across chunks', async () => {
     const dsml = `<｜｜DSML｜｜ calls>
 <｜｜DSML｜｜ invoke name="read_file">
 <｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
 </｜｜DSML｜｜ invoke>
 </｜｜DSML｜｜ calls>`
 
-    // Split the DSML across multiple chunks
     const sseChunks = [
       makeSSEEvent('ready', { response_message_id: 12345 }),
       makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
@@ -613,7 +628,7 @@ async function main() {
     expect(output).toContain('read_file')
   })
 
-  failed += runTest('CRLF line endings in SSE stream', async () => {
+  failed += await runTest('CRLF line endings in SSE stream', async () => {
     const sseChunks = [
       'event: ready\r\ndata: {"response_message_id": 12345}\r\n\r\n',
       'event: update_session\r\ndata: {"v":{"response":{"fragments":[{"type":"RESPONSE","content":""}]}}}\r\n\r\n',
@@ -632,13 +647,13 @@ async function main() {
     expect(output).toContain('[DONE]')
   })
 
-  failed += runTest('final SSE line without trailing newline', async () => {
+  failed += await runTest('final SSE line without trailing newline', async () => {
     const sseChunks = [
       makeSSEEvent('ready', { response_message_id: 12345 }),
       makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
       makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: 'Final content' }),
       makePEvent({ p: 'response/status', o: 'SET', v: 'FINISHED' }),
-      'event: close', // No trailing \n\n
+      'event: close',
     ]
     const stream = createSSEStream(sseChunks)
     const info = { model: 'test-model', id: 'chatcmpl-1', created: Math.floor(Date.now() / 1000) }
@@ -656,54 +671,39 @@ async function main() {
   // ============================================================
   console.log('\n--- 9. No-System-Prompt Retry Characterization ---\n')
 
-  // This test simulates the retry behavior using pure translator functions
-  // It does NOT perform a live DeepSeek call - it uses mocked translator-in results
-  // to verify the outbound translation behavior on retry
-
-  failed += runTest('retry: second translateOpenAIRequest call excludes system prompt when sendSystemPrompt=false', () => {
-    // Simulate initial request with system prompt
+  failed += await runTest('retry: second translateOpenAIRequest call excludes system prompt when sendSystemPrompt=false', () => {
     const initialMessages: OpenAIChatMessage[] = [
       { role: 'system', content: 'You are a helpful assistant' },
       { role: 'user', content: 'Read README' },
     ]
 
-    // Initial translation (turn 1, sendSystemPrompt=true)
     const initialResult = translateOpenAIRequest(
       { model: 'deepseek-chat', messages: initialMessages, tools: [] },
       makeHeaders('session-1'),
-      true // sendSystemPrompt = true for initial request
+      true
     )
 
     expect(initialResult.prompt).toContain('You are a helpful assistant')
     expect(initialResult.prompt).toContain('Read README')
 
-    // Simulate malformed response -> retry preparation
-    // In real code, index.ts pushes corrective message as user message
-    // Here we simulate the retry by calling translateOpenAIRequest again with:
-    // - updated messages (with corrective feedback)
-    // - sendSystemPrompt = false (the 961a0b7 fix)
     const retryMessages: OpenAIChatMessage[] = [
       { role: 'system', content: 'You are a helpful assistant' },
       { role: 'user', content: 'Read README' },
-      { role: 'assistant', content: 'malformed tool call attempt' }, // simulated bad response
-      { role: 'user', content: 'CORRECTIVE: Missing closing </calls> tag' }, // corrective feedback
+      { role: 'assistant', content: 'malformed tool call attempt' },
+      { role: 'user', content: 'CORRECTIVE: Missing closing </calls> tag' },
     ]
 
     const retryResult = translateOpenAIRequest(
       { model: 'deepseek-chat', messages: retryMessages, tools: [] },
       makeHeaders('session-1'),
-      false // sendSystemPrompt = false on retry (critical 961a0b7 behavior)
+      false
     )
 
-    // The retry prompt should NOT contain the system instruction
     expect(retryResult.prompt).not.toContain('You are a helpful assistant')
     expect(retryResult.prompt).toContain('CORRECTIVE: Missing closing </calls> tag')
   })
 
-  failed += runTest('retry: system prompt suppression verified at translateOpenAIRequest boundary', () => {
-    // This test explicitly documents the contract that the retry logic depends on:
-    // translateOpenAIRequest(sendSystemPrompt=false) MUST exclude system messages
-
+  failed += await runTest('retry: system prompt suppression verified at translateOpenAIRequest boundary', () => {
     const messagesWithSystem: OpenAIChatMessage[] = [
       { role: 'system', content: 'System instruction' },
       { role: 'user', content: 'User message' },
@@ -731,7 +731,7 @@ async function main() {
   // ============================================================
   console.log('\n--- 10. Session Boundary Baseline ---\n')
 
-  failed += runTest('translateOpenAIRequest output has correct DeepSeekCompletionInput shape for deepseek_api', () => {
+  failed += await runTest('translateOpenAIRequest output has correct DeepSeekCompletionInput shape for deepseek_api', () => {
     const req: OpenAIChatCompletionRequest = {
       model: 'deepseek-chat',
       messages: [
@@ -743,7 +743,6 @@ async function main() {
 
     const result = translateOpenAIRequest(req, makeHeaders('session-xyz'), true)
 
-    // Verify all fields that deepseek_api expects
     const expectedKeys: (keyof DeepSeekCompletionInput)[] = [
       'chat_session_id',
       'xSessionId',
@@ -759,16 +758,12 @@ async function main() {
       }
     }
 
-    // Verify types
     expect(typeof result.prompt).toBe('string')
-    // model_type can be string or null
     expect(typeof result.thinking_enabled).toBe('boolean')
     expect(typeof result.search_enabled).toBe('boolean')
     expect(result.xSessionId).toBe('session-xyz')
     expect(result.chat_session_id).toBeUndefined()
 
-    // toolResults is internal - not part of DeepSeekCompletionInput
-    // but currently present on the returned object
     if (!('toolResults' in result)) {
       throw new Error('Expected object to have property "toolResults"')
     }
