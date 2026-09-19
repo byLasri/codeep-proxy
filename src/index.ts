@@ -3,7 +3,6 @@ import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
 import { DeepSeekWebClient } from './deepseek_api/index.js'
 import { translateOpenAIRequest, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, getXSessionIdFromHeaders, mapOpenAIModelToDeepSeek } from './translator/index.js'
-import type { SSEParseResult } from './translator/index.js'
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
 import type { ResolvedSession, EditMessageIds } from './deepseek_api/client.js'
@@ -329,7 +328,7 @@ export default {
               )
 
               if (!response.ok) {
-                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: ${response.status} } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
               }
               if (!response.body) {
                 return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
@@ -397,7 +396,7 @@ export default {
               const { response } = await client.completeWithAutoSession(input, logger, resolvedSession)
 
               if (!response.ok) {
-                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: ${response.status} } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${response.status} ${response.statusText}`, type: 'upstream_error', code: response.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
               }
               if (!response.body) {
                 return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
