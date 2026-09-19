@@ -19,27 +19,6 @@ import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
 import { editMessage, type EditMessageOptions } from "./edit-message.js";
 
-/** Parse response_message_id from a single SSE line (ready event data payload). */
-function extractResponseMessageId(line: string): number | null {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
-  if (!payload.startsWith("{")) {
-    return null;
-  }
-  try {
-    const data = JSON.parse(payload) as { response_message_id?: unknown };
-    if (typeof data.response_message_id === "number") {
-      return data.response_message_id;
-    }
-  } catch {
-    // Incomplete or non-JSON line
-  }
-  return null;
-}
-
 export interface StoredDeepSeekCredentials {
   authorizationToken?: string;
   cookies?: Array<{
@@ -151,9 +130,21 @@ export interface DeepSeekWebClientConfig {
   origin?: string;
 }
 
+export interface EditMessageIds {
+  request_message_id: number;
+  response_message_id: number;
+}
+
 export interface CompletionResult {
   response: Response;
   sessionUpdatePromise: Promise<void>;
+  editMessageIdsPromise?: Promise<EditMessageIds>;
+}
+
+export interface ResolvedSession {
+  chat_session_id: string;
+  parent_message_id: number | null;
+  existingState: ProxySessionState | null;
 }
 
 export class DeepSeekWebClient {
@@ -190,61 +181,59 @@ export class DeepSeekWebClient {
    * 3. Send completion to external /completion endpoint with resolved parent_message_id
    * 4. On success, extract response_message_id and store as new parent_message_id
    */
-    async completeWithAutoSession(input: DeepSeekCompletionInput, logger?: RequestLogger): Promise<CompletionResult> {
-      let resolvedParentMessageId: number | null = null;
-      let resolvedChatSessionId: string;
-      const xSessionId = input.xSessionId;
-      let existingState: ProxySessionState | null = null;
+  async resolveSession(input: DeepSeekCompletionInput): Promise<ResolvedSession> {
+    const xSessionId = input.xSessionId;
+    const existingState = xSessionId
+      ? await this.sessionStore.get(xSessionId)
+      : null;
 
-      if (xSessionId) {
-        existingState = await this.sessionStore.get(xSessionId);
-      }
-
-      if (existingState) {
-        resolvedChatSessionId = existingState.chat_session_id;
-        resolvedParentMessageId = existingState.parent_message_id;
-      } else if (input.chat_session_id) {
-        resolvedChatSessionId = input.chat_session_id;
-        resolvedParentMessageId = null;
-      } else {
-        const newSession = await this.createSession();
-        resolvedChatSessionId = newSession.id;
-        resolvedParentMessageId = null;
-      }
-
-      // Build completion input with protocol-resolved session state
-      const completionInput: DeepSeekCompletionInput = {
-        ...input,
-        chat_session_id: resolvedChatSessionId,
-      };
-
-      // Create a session state object for the completion request
-      const sessionState: DeepSeekConversationState = {
-        chat_session_id: resolvedChatSessionId,
-        parent_message_id: resolvedParentMessageId,
-      };
-
-      // Send completion and capture response for session update
-      const { response, sessionUpdatePromise } = await this.completeWithSessionUpdate(
-        sessionState,
-        completionInput,
-        xSessionId,
+    if (existingState) {
+      return {
+        chat_session_id: existingState.chat_session_id,
+        parent_message_id: existingState.parent_message_id,
         existingState,
-        logger
-      );
-
-      return { response, sessionUpdatePromise };
+      };
     }
 
-  /**
-   * Sends completion request and updates session in KV on success.
-   * Parses the SSE stream to extract the new response_message_id.
-   */
+    if (input.chat_session_id) {
+      return {
+        chat_session_id: input.chat_session_id,
+        parent_message_id: null,
+        existingState: null,
+      };
+    }
+
+    const newSession = await this.createSession();
+    return {
+      chat_session_id: newSession.id,
+      parent_message_id: null,
+      existingState: null,
+    };
+  }
+
+  async completeWithAutoSession(
+    input: DeepSeekCompletionInput,
+    logger?: RequestLogger,
+    resolvedSession?: ResolvedSession
+  ): Promise<CompletionResult> {
+    const resolved = resolvedSession ?? await this.resolveSession(input);
+
+    const completionInput: DeepSeekCompletionInput = {
+      ...input,
+      chat_session_id: resolved.chat_session_id,
+    };
+
+    const sessionState: DeepSeekConversationState = {
+      chat_session_id: resolved.chat_session_id,
+      parent_message_id: resolved.parent_message_id,
+    };
+
+    return this.completeWithSessionUpdate(sessionState, completionInput, logger);
+  }
+
     private async completeWithSessionUpdate(
     session: DeepSeekConversationState,
     input: DeepSeekCompletionInput,
-    xSessionId: string | undefined,
-    existingState: ProxySessionState | null,
     logger?: RequestLogger
   ): Promise<{ response: Response; sessionUpdatePromise: Promise<void> }> {
     const { prompt, ...options } = input;
@@ -305,7 +294,7 @@ export class DeepSeekWebClient {
     }
 
     const { stream: instrumentedBody, sessionUpdatePromise: persistPromise } =
-      this.attachSessionPersistence(response.body, session.chat_session_id, xSessionId, existingState, logger);
+      this.attachSessionPersistence(response.body, logger);
 
     const outboundHeaders = new Headers(response.headers);
     outboundHeaders.set("X-Chat-Session-Id", session.chat_session_id);
@@ -325,18 +314,11 @@ export class DeepSeekWebClient {
        * Session persistence is now handled in the Worker layer (index.ts) AFTER
        * response validation succeeds, so retries don't corrupt turn counting.
        */
-      private attachSessionPersistence(
-        body: ReadableStream<Uint8Array>,
-        _chatSessionId: string,
-        _xSessionId: string | undefined,
-        _existingState: ProxySessionState | null,
-        logger?: RequestLogger
-      ): { stream: ReadableStream<Uint8Array>; sessionUpdatePromise: Promise<void> } {
-        // No-op: session persistence moved to Worker layer after validation
-        let sessionUpdatePromise: Promise<void>;
-        const resolved = Promise.resolve().then(() => {});
-        // Use a resolved promise to avoid the TypeScript issue
-        sessionUpdatePromise = Promise.resolve();
+  private attachSessionPersistence(
+    body: ReadableStream<Uint8Array>,
+    logger?: RequestLogger
+  ): { stream: ReadableStream<Uint8Array>; sessionUpdatePromise: Promise<void> } {
+    const sessionUpdatePromise = Promise.resolve();
 
         // Wrap with teeAndLogStream if logger is provided
         let finalStream = body;
@@ -360,7 +342,7 @@ export class DeepSeekWebClient {
      * 2. Fetch fresh PoW challenge (session-aware)
      * 3. POST /api/v0/chat/edit_message with messageId and edited prompt
      * 4. Parse response to extract request_message_id and response_message_id
-     * 5. Return response - session persistence handled by caller (Worker layer)
+     * 5. Return response plus parsed edit IDs for the caller/session layer
      */
     async editMessage(
       xSessionId: string,
@@ -414,15 +396,8 @@ export class DeepSeekWebClient {
           statusText: response.statusText,
           headers: outboundHeaders,
         }),
-        sessionUpdatePromise: idsPromise.then(({ response_message_id }) => ({
-          xSessionId,
-          chatSessionId,
-          responseMessageId: response_message_id,
-          existingState,
-        })).then(async ({ xSessionId, chatSessionId, responseMessageId, existingState }) => {
-          // This is now handled in index.ts after validation
-          // We keep the promise for compatibility but it resolves immediately
-        }),
+        sessionUpdatePromise: Promise.resolve(),
+        editMessageIdsPromise: idsPromise,
       };
     }
 
