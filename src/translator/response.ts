@@ -182,21 +182,8 @@ Parsing error:
 
 Please correct the structural error and retry the tool call.`
 
-export const ACTIVE_CORRECTIVE_MESSAGE = `Invalid tool call form.
-
-These tool-call delimiters are not accepted:
-
-- "｜｜DSML｜｜"
-- "｜DSML｜｜"
-- "｜DSML｜"
-- "||DSML||"
-
-Here is a valid tool-call example:
-
-Please try again.`
-
-function buildCorrectiveMessage(_parserError: string): string {
-  return DSML_CORRECTIVE_MESSAGE_TEMPLATE
+function buildCorrectiveMessage(parserError: string): string {
+  return DSML_CORRECTIVE_MESSAGE_TEMPLATE.replace('{{PARSER_ERROR}}', parserError)
 }
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
