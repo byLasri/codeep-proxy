@@ -1,7 +1,10 @@
 import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse, ToolCall } from './types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { teeAndLogStream } from '../observability/logger.js'
-import { parseCleanToolCalls } from './clean-tool-calls.js'
+import {
+  parseCleanToolCalls,
+  CORRECTIVE_MESSAGE as ACTIVE_CORRECTIVE_MESSAGE,
+} from './clean-tool-calls.js'
 
 export function formatOpenAISSEChunk(chunk: OpenAIChatCompletionStreamResponse): string {
   return `data: ${JSON.stringify(chunk)}\n\n`
@@ -598,15 +601,7 @@ function createParser(
         state.toolCallBuffer = ''
         return
       }
-      if (state.detectedDialect) {
-        if (state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
-          const result = parseDSMLToolCalls(state.toolCallBuffer)
-          state.parsedToolCalls = result.toolCalls
-          if (result.isMalformed && result.error) state.parseError = result.error
-          state.isToolCallInProgress = false
-          state.toolCallBuffer = ''
-        }
-      } else if (state.toolCallBuffer.includes('</calls>')) {
+      if (state.toolCallBuffer.includes('</calls>')) {
         const result = parseCleanToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
         if (result.isMalformed && result.error) state.parseError = result.error
@@ -665,52 +660,6 @@ function createParser(
       state.detectedDialect = null
       state.toolCallBuffer = fullContent.substring(cleanCallsIdx)
       state.accumulatedContent = beforeCalls
-      return
-    }
-
-    // Check for full DSML start pattern (any supported dialect)
-    let dsmlIdx = -1
-    let matchedDialect: DSMLDialect | null = null
-    for (const dialect of ALL_DIALECTS) {
-      const idx = fullContent.indexOf(dialect.openCalls)
-      if (idx !== -1 && (dsmlIdx === -1 || idx < dsmlIdx)) {
-        dsmlIdx = idx
-        matchedDialect = dialect
-      }
-    }
-
-    if (dsmlIdx !== -1 && matchedDialect) {
-      // Emit everything before DSML that hasn't been emitted yet
-      const beforeDSML = fullContent.substring(0, dsmlIdx)
-      const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
-      if (newSafeContent.length > 0 && state.responseMessageId !== 'null') {
-        const isReasoning = state.currentFragmentType === 'THINK'
-        if (!state.hasEmittedRole) {
-          state.hasEmittedRole = true
-          const roleChunk: OpenAIChatCompletionStreamResponse = {
-            id: `chatcmpl-${state.responseMessageId}`,
-            object: 'chat.completion.chunk',
-            created: info.created,
-            model: info.model,
-            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-          }
-          enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
-        }
-        const safeChunk: OpenAIChatCompletionStreamResponse = {
-          id: `chatcmpl-${state.responseMessageId}`,
-          object: 'chat.completion.chunk',
-          created: info.created,
-          model: info.model,
-          choices: [{ index: 0, delta: isReasoning ? { reasoning_content: newSafeContent } : { content: newSafeContent }, finish_reason: null }],
-        }
-        enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
-      }
-      
-      // Start tool call buffering
-      state.isToolCallInProgress = true
-      state.detectedDialect = matchedDialect
-      state.toolCallBuffer = fullContent.substring(dsmlIdx)
-      state.accumulatedContent = beforeDSML
       return
     }
 
@@ -933,7 +882,7 @@ function createParser(
 }
 
 export { parseDSMLToolCalls, buildCorrectiveMessage, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper }
-export { parseCleanToolCalls } from './clean-tool-calls.js'
+export { ACTIVE_CORRECTIVE_MESSAGE }
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
@@ -986,27 +935,27 @@ export async function translateDeepSeekStreamToSSE(
     parser.emitContent('')
   }
 
-  // Finalize any unclosed active tool-call block.
-  if (parser.state.isToolCallInProgress) {
-    const result = parser.state.detectedDialect
-      ? parseDSMLToolCalls(parser.state.toolCallBuffer)
-      : parseCleanToolCalls(parser.state.toolCallBuffer)
-    parser.state.parsedToolCalls = result.toolCalls
-    if (result.isMalformed && result.error) parser.state.parseError = result.error
+  // Reject forbidden DSML markers before finalizing any active block.
+  const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
+  const forbiddenMarker = forbiddenDsmlMarkers.find(marker =>
+    parser.state.accumulatedContent.includes(marker) || parser.state.toolCallBuffer.includes(marker)
+  )
+  if (!parser.state.parseError && forbiddenMarker) {
+    parser.state.parseError = {
+      message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+      syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+    }
     parser.state.isToolCallInProgress = false
     parser.state.toolCallBuffer = ''
   }
 
-  // Reject forbidden DSML markers even when they never formed a complete block.
-  if (!parser.state.parseError) {
-    const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
-    const forbiddenMarker = forbiddenDsmlMarkers.find(marker => parser.state.accumulatedContent.includes(marker))
-    if (forbiddenMarker) {
-      parser.state.parseError = {
-        message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
-        syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE,
-      }
-    }
+  // Finalize an incomplete clean block at EOF. DSML blocks were already rejected above.
+  if (parser.state.isToolCallInProgress && !parser.state.parseError) {
+    const result = parseCleanToolCalls(parser.state.toolCallBuffer)
+    parser.state.parsedToolCalls = result.toolCalls
+    if (result.isMalformed && result.error) parser.state.parseError = result.error
+    parser.state.isToolCallInProgress = false
+    parser.state.toolCallBuffer = ''
   }
 
   // Parse complete clean calls that arrived in the accumulated content.
