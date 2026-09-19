@@ -2,6 +2,8 @@ import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse }
 import type { RequestLogger } from '../observability/logger.js'
 import { parseCleanToolCalls, CORRECTIVE_MESSAGE as ACTIVE_CORRECTIVE_MESSAGE } from './clean-tool-calls.js'
 
+export { ACTIVE_CORRECTIVE_MESSAGE }
+
 export function formatOpenAISSEChunk(chunk: OpenAIChatCompletionStreamResponse): string {
   return `data: ${JSON.stringify(chunk)}\n\n`
 }
