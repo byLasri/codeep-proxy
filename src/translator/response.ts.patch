@@ -1,0 +1,112 @@
+--- a/src/translator/response.ts
++++ b/src/translator/response.ts
+@@ -1,7 +1,7 @@
+ import type { OpenAIChatCompletionResponse, OpenAIChatCompletionStreamResponse, ToolCall } from './types.js'
+ import type { RequestLogger } from '../observability/logger.js'
+ import { teeAndLogStream } from '../observability/logger.js'
+-import { parseCleanToolCalls } from './clean-tool-calls.js'
++import { parseCleanToolCalls, CORRECTIVE_MESSAGE as ACTIVE_CORRECTIVE_MESSAGE } from './clean-tool-calls.js'
+ 
+ export function formatOpenAISSEChunk(chunk: OpenAIChatCompletionStreamResponse): string {
+   return `data: ${JSON.stringify(chunk)}\n\n`
+@@ -179,21 +179,10 @@
+ 
+ Please correct the structural error and retry the tool call.`
+ 
+-export const ACTIVE_CORRECTIVE_MESSAGE = `Invalid tool call form.
+-
+-These tool-call delimiters are not accepted:
+-
+-- "｜｜DSML｜｜"
+-- "｜DSML｜｜"
+-- "｜DSML｜"
+-- "||DSML||"
+-
+-Here is a valid tool-call example:
+-
+-Please try again.`
+-
+-function buildCorrectiveMessage(_parserError: string): string {
+-  return DSML_CORRECTIVE_MESSAGE_TEMPLATE
++export { ACTIVE_CORRECTIVE_MESSAGE }
++
++function buildCorrectiveMessage(parserError: string): string {
++  return DSML_CORRECTIVE_MESSAGE_TEMPLATE.replace('{{PARSER_ERROR}}', parserError)
+ }
+ 
+ function parseDSMLToolCalls(xml: string): DSMLParseResult {
+@@ -599,13 +588,14 @@
+         return
+       }
+       if (state.detectedDialect) {
+-        if (state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
+-          const result = parseDSMLToolCalls(state.toolCallBuffer)
+-          state.parsedToolCalls = result.toolCalls
+-          if (result.isMalformed && result.error) state.parseError = result.error
+-          state.isToolCallInProgress = false
+-          state.toolCallBuffer = ''
+-        }
++        // DSML is forbidden on the active path — never hand off to the legacy parser.
++        state.parseError = {
++          message: `Forbidden DSML tool-call delimiter detected while buffering`,
++          syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
++        }
++        state.isToolCallInProgress = false
++        state.toolCallBuffer = ''
++        state.detectedDialect = null
+       } else if (state.toolCallBuffer.includes('</calls>')) {
+         const result = parseCleanToolCalls(state.toolCallBuffer)
+         state.parsedToolCalls = result.toolCalls
+@@ -705,11 +695,12 @@
+         }
+         enqueue(new TextEncoder().encode(formatOpenAISSEChunk(safeChunk)))
+       }
+-      
+-      // Start tool call buffering
+-      state.isToolCallInProgress = true
+-      state.detectedDialect = matchedDialect
+-      state.toolCallBuffer = fullContent.substring(dsmlIdx)
++
++      // DSML is forbidden on the active path — reject with clean corrective message.
++      state.parseError = {
++        message: `Forbidden DSML tool-call delimiter detected`,
++        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
++      }
+       state.accumulatedContent = beforeDSML
+       return
+     }
+@@ -988,13 +979,20 @@
+ 
+   // Finalize any unclosed active tool-call block.
+   if (parser.state.isToolCallInProgress) {
+-    const result = parser.state.detectedDialect
+-      ? parseDSMLToolCalls(parser.state.toolCallBuffer)
+-      : parseCleanToolCalls(parser.state.toolCallBuffer)
+-    parser.state.parsedToolCalls = result.toolCalls
+-    if (result.isMalformed && result.error) parser.state.parseError = result.error
++    if (parser.state.detectedDialect) {
++      // DSML is forbidden on the active path — never hand off to the legacy parser.
++      parser.state.parseError = {
++        message: `Forbidden DSML tool-call delimiter detected (incomplete block at EOF)`,
++        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
++      }
++    } else {
++      const result = parseCleanToolCalls(parser.state.toolCallBuffer)
++      parser.state.parsedToolCalls = result.toolCalls
++      if (result.isMalformed && result.error) parser.state.parseError = result.error
++    }
+     parser.state.isToolCallInProgress = false
+     parser.state.toolCallBuffer = ''
++    parser.state.detectedDialect = null
+   }
+ 
+   // Reject forbidden DSML markers even when they never formed a complete block.
+@@ -1004,7 +1002,7 @@
+     if (forbiddenMarker) {
+       parser.state.parseError = {
+         message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+-        syntaxRules: DSML_CORRECTIVE_MESSAGE_TEMPLATE,
++        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
+       }
+     }
+   }
