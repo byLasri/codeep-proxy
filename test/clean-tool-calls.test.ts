@@ -48,6 +48,21 @@ async function main(): Promise<void> {
     if (result.toolCalls[0].function.arguments !== '{}') throw new Error('zero-parameter arguments were not {}')
   })
 
+  await run('ordinary prose is not a tool call', () => {
+    const samples = [
+      'Hello, how can I help you today?',
+      'Use < and > carefully in comparisons.',
+      'An XML-like snippet: <note>hello</note> is just text.',
+      'Please make several calls to the API.',
+      'Here is an incomplete fragment: <calls>',
+      'Closing without open: </calls>',
+    ]
+    for (const sample of samples) {
+      const result = parseCleanToolCalls(sample)
+      if (result.toolCalls.length !== 0) throw new Error(`ordinary text produced tool calls: ${sample}`)
+    }
+  })
+
   await run('string=true preserves raw content exactly', () => {
     const value = '  first line\n  second line  '
     const result = parseCleanToolCalls(`<calls><invoke name="write"><parameter name="content" string="true">${value}</parameter></invoke></calls>`)
@@ -101,7 +116,8 @@ async function main(): Promise<void> {
       const result = await translateDeepSeekStreamToJSON(stream, { model: 'test', id: 'chatcmpl-1', created: 1 })
       if (!result._malformedError) throw new Error('DSML marker did not reach parse-error path')
       if ('tool_calls' in result.choices[0].message) throw new Error('DSML produced client-facing tool calls')
-      if (result._malformedError.syntaxRules !== 'Invalid tool call form.\n\nThese tool-call delimiters are not accepted:\n\n- "｜｜DSML｜｜"\n- "｜DSML｜｜"\n- "｜DSML｜"\n- "||DSML||"\n\nHere is a valid tool-call example:\n\nPlease try again.') throw new Error('unexpected corrective message')
+      const expected = `Invalid tool call form.\n\nThese tool-call delimiters are not accepted:\n\n- "｜｜DSML｜｜"\n- "｜DSML｜｜"\n- "｜DSML｜"\n- "||DSML||"\n\nHere is a valid tool-call example:\n\n<calls>\n<invoke name="read">\n<parameter name="filePath">\nC:\\Users\\Damas\\workground\n</parameter>\n</invoke>\n</calls>\n\nPlease try again.`
+      if (result._malformedError.syntaxRules !== expected) throw new Error('unexpected corrective message')
     })
   }
 
