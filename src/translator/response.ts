@@ -22,6 +22,7 @@ interface SSEParserState {
   accumulatedTokens: number
   pendingContent: string
   currentFragmentType: 'THINK' | 'RESPONSE' | null
+  accumulatedReasoning: string
   toolCallBuffer: string
   isToolCallInProgress: boolean
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
@@ -46,6 +47,7 @@ function createParser(
     accumulatedTokens: 0,
     pendingContent: '',
     currentFragmentType: 'RESPONSE',
+    accumulatedReasoning: '',
     toolCallBuffer: '',
     isToolCallInProgress: false,
     parsedToolCalls: [],
@@ -362,7 +364,14 @@ function createParser(
     }
   }
 
-  return { state, emitFinal, emitContent, processLine }
+  const flushPendingLookahead = () => {
+    if (!state.pendingLookahead) return
+    const pending = state.pendingLookahead
+    state.pendingLookahead = ''
+    emitText(pending)
+  }
+
+  return { state, emitFinal, emitContent, flushPendingLookahead, processLine }
 }
 
 export interface SSEParseResult {
@@ -414,40 +423,11 @@ export async function translateDeepSeekStreamToSSE(
   }
 
   if (parser.state.pendingLookahead) {
-    parser.emitContent('')
+    parser.flushPendingLookahead()
   }
 
-  // Finalize any unclosed active tool-call block.
+  // Finalize any unclosed clean tool-call block.
   if (parser.state.isToolCallInProgress) {
-    if (parser.state.detectedDialect) {
-      parser.state.parseError = {
-        message: `Forbidden DSML tool-call delimiter detected (incomplete block at EOF)`,
-        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
-      }
-    } else {
-      const result = parseCleanToolCalls(parser.state.toolCallBuffer)
-      parser.state.parsedToolCalls = result.toolCalls
-      if (result.isMalformed && result.error) parser.state.parseError = result.error
-    }
-    parser.state.isToolCallInProgress = false
-    parser.state.toolCallBuffer = ''
-    parser.state.detectedDialect = null
-  }
-
-  // Reject forbidden DSML markers even when they never formed a complete block.
-  if (!parser.state.parseError) {
-    const forbiddenDsmlMarkers = ['｜｜DSML｜｜', '｜DSML｜｜', '｜DSML｜', '||DSML||']
-    const forbiddenMarker = forbiddenDsmlMarkers.find(marker => parser.state.accumulatedContent.includes(marker))
-    if (forbiddenMarker) {
-      parser.state.parseError = {
-        message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
-        syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
-      }
-    }
-  }
-
-  // Parse complete clean calls that arrived in the accumulated content.
-  if (!parser.state.parseError && parser.state.accumulatedContent) {
     const result = parseCleanToolCalls(parser.state.toolCallBuffer)
     parser.state.parsedToolCalls = result.toolCalls
     if (result.isMalformed && result.error) parser.state.parseError = result.error
@@ -455,8 +435,24 @@ export async function translateDeepSeekStreamToSSE(
     parser.state.toolCallBuffer = ''
   }
 
-  // Parse complete clean calls that arrived in the accumulated content.
-  if (!parser.state.parseError && parser.state.accumulatedContent) {
+  // Reject forbidden DSML markers even when they never formed a complete block.
+  if (!parser.state.parseError) {
+    const forbiddenMarker = FORBIDDEN_DSML_MARKERS.find(marker => parser.state.accumulatedContent.includes(marker))
+    if (forbiddenMarker) {
+      parser.state.parseError = {
+        message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+        syntaxRules: CLEAN_CORRECTIVE_MESSAGE,
+      }
+    }
+  }
+
+  // Preserve malformed clean-call detection for content not captured by the streaming block.
+  if (
+    !parser.state.parseError &&
+    !parser.state.isToolCallInProgress &&
+    parser.state.parsedToolCalls.length === 0 &&
+    parser.state.accumulatedContent
+  ) {
     const cleanResult = parseCleanToolCalls(parser.state.accumulatedContent)
     if (cleanResult.isMalformed && cleanResult.error) parser.state.parseError = cleanResult.error
   }
