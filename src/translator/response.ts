@@ -941,8 +941,11 @@ export async function translateDeepSeekStreamToSSE(
     parser.state.accumulatedContent.includes(marker) || parser.state.toolCallBuffer.includes(marker)
   )
   if (!parser.state.parseError && forbiddenMarker) {
+    const detectedDialectAtEOF = parser.state.isToolCallInProgress && detectDialect(parser.state.toolCallBuffer)
     parser.state.parseError = {
-      message: `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
+      message: detectedDialectAtEOF
+        ? 'Forbidden DSML tool-call delimiter detected (incomplete block at EOF)'
+        : `Forbidden DSML tool-call delimiter detected: ${forbiddenMarker}`,
       syntaxRules: ACTIVE_CORRECTIVE_MESSAGE,
     }
     parser.state.isToolCallInProgress = false
