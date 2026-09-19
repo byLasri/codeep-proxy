@@ -1,6 +1,7 @@
-import type { DeepSeekCompletionInput, CompletionResult } from '../src/deepseek_api/client.js'
+import type { DeepSeekCompletionInput } from '../src/deepseek_api/types.js'
+import type { CompletionResult } from '../src/deepseek_api/client.js'
 import type { CompletionClient } from '../src/orchestrator/completion.js'
-import { executeCompletionAttempt, type CompletionAttemptResult } from '../src/orchestrator/completion.js'
+import { executeCompletionAttempt } from '../src/orchestrator/completion.js'
 import { translateOpenAIRequest } from '../src/translator/request.js'
 import type { OpenAIChatCompletionRequest } from '../src/translator/types.js'
 import type { RequestLogger } from '../src/observability/logger.js'
@@ -53,17 +54,6 @@ function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
       }
     },
   })
-}
-
-function createTextSSEStream(text: string): ReadableStream<Uint8Array> {
-  const sseChunks = [
-    makeSSEEvent('ready', { response_message_id: 12345 }),
-    makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
-    makePEvent({ p: 'response/fragments/-1/content', o: 'APPEND', v: text }),
-    makePEvent({ p: 'response/status', o: 'SET', v: 'FINISHED' }),
-    makeSSEEvent('close', {}),
-  ]
-  return createSSEStream(sseChunks)
 }
 
 function createValidDSMLStream(): ReadableStream<Uint8Array> {
