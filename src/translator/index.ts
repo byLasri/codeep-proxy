@@ -7,7 +7,7 @@ export type {
   OpenAIChatCompletionStreamResponse,
 } from './types.js'
 
-export type { SSEParseResult, DSMLParseResult } from './response.js'
+export type { SSEParseResult } from './response.js'
 
 export { mapOpenAIModelToDeepSeek } from './models.js'
 export { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt, translateOpenAIRequest } from './request.js'
@@ -17,6 +17,6 @@ export {
   formatOpenAIDone,
   translateDeepSeekStreamToSSE,
   translateDeepSeekStreamToJSON,
-  buildCorrectiveMessage,
+  ACTIVE_CORRECTIVE_MESSAGE,
 } from './response.js'
 export { parseCleanToolCalls } from './clean-tool-calls.js'
