@@ -753,7 +753,7 @@ export async function translateDeepSeekStreamToJSON(
   
   // If clean tool calls are found, return the existing OpenAI-compatible tool_calls shape.
   if (cleanResult.toolCalls.length > 0) {
-    const result: OpenAIChatCompletionResponse = {
+    const result: OpenAIChatCompletionResponse & { _responseMessageId?: number } = {
       id: `chatcmpl-${responseMessageId}`,
       object: 'chat.completion',
       created: info.created,
@@ -781,7 +781,7 @@ export async function translateDeepSeekStreamToJSON(
   }
 
   // No tool calls - return standard text response
-  const result: OpenAIChatCompletionResponse = {
+  const result: OpenAIChatCompletionResponse & { _responseMessageId?: number } = {
     id: `chatcmpl-${responseMessageId}`,
     object: 'chat.completion',
     created: info.created,
@@ -798,7 +798,6 @@ export async function translateDeepSeekStreamToJSON(
       completion_tokens: accumulatedTokens,
       total_tokens: accumulatedTokens,
     },
-  }
     _responseMessageId: responseMessageId === 'null' ? undefined : Number(responseMessageId),
   }
   logger?.logOutgoingToClient(result)
