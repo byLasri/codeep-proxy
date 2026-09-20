@@ -347,7 +347,24 @@ message: 'Tool name is empty or missing in <invoke> tag',
       const paramName = paramMatch[1]
       const stringAttr = paramMatch[2]
       const rawValue = paramMatch[3] || ''
-      
+
+      // A new parameter tag appeared before this one closed (nested / jammed tags).
+      // The closer regex is non-greedy, so without this check the current parameter
+      // absorbs the next parameter's tag and content.
+      if (
+        /<｜｜DSML｜｜\s+parameter\b/.test(rawValue) ||
+        /<\/｜｜DSML｜｜\s+parameter\s+\S/.test(rawValue)
+      ) {
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: 'Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag',
+            syntaxRules: buildCorrectiveMessage('Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag')
+          }
+        }
+      }
+
       // Parameter name must be non-empty
       if (!paramName || paramName.trim() === '') {
         return {
