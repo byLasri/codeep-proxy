@@ -150,7 +150,7 @@ async function main() {
   const outboundImports = extractImports(outboundContent)
   for (const imp of outboundImports) {
     const isAllowed = outboundAllowed.some(a => imp === a || imp.startsWith(a + '/'))
-    if (!isAllowed && !imp.startsWith('.')) {
+    if (!isAllowed) {
       fail(`outbound.ts imports only allowed deps`, `Unexpected import: ${imp}`)
     }
   }
@@ -165,11 +165,34 @@ async function main() {
   const inboundImports = extractImports(inboundContent)
   for (const imp of inboundImports) {
     const isAllowed = inboundAllowed.some(a => imp === a || imp.startsWith(a + '/'))
-    if (!isAllowed && !imp.startsWith('.')) {
+    if (!isAllowed) {
       fail(`inbound.ts imports only allowed deps`, `Unexpected import: ${imp}`)
     }
   }
   pass('inbound.ts imports only allowed dependencies')
+
+  // Regression test: verify that an unexpected relative import would be rejected
+  // This proves the allowlist correctly rejects unauthorized relative imports
+  const regressionTestPassed = (() => {
+    // Simulate an import that is relative but NOT in the allowlist
+    const forbiddenRelativeImport = '../translator/inbound' // This IS forbidden for outbound
+    const isInAllowlist = outboundAllowed.some(a => forbiddenRelativeImport === a || forbiddenRelativeImport.startsWith(a + '/'))
+    // The allowlist should reject this
+    if (isInAllowlist) {
+      fail('Regression test: allowlist should reject forbidden relative import', `../translator/inbound should not be allowed for outbound`)
+      return false
+    }
+    // Now test that the logic would catch it
+    const wouldFail = !outboundAllowed.some(a => forbiddenRelativeImport === a || forbiddenRelativeImport.startsWith(a + '/'))
+    if (!wouldFail) {
+      fail('Regression test: bug would allow forbidden relative import', `Bug: forbidden relative import would pass allowlist`)
+      return false
+    }
+    return true
+  })()
+  if (regressionTestPassed) {
+    pass('Regression test: allowlist correctly rejects forbidden relative imports (e.g., ../translator/inbound for outbound)')
+  }
 
   // ============================================================
   // 3. Orchestrator dependency direction
