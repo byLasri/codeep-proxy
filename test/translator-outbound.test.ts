@@ -4,11 +4,9 @@ import {
   getXSessionIdFromHeaders, 
   isFirstTurn,
   type ToolResult, 
-  type PromptWithToolResults,
-  type DeepSeekCompletionInput
+  type PromptWithToolResults
 } from '../src/translator/outbound.js'
 import type { OpenAIChatCompletionRequest, OpenAIChatMessage } from '../src/translator/types.js'
-import type { ModelConfig } from '../src/translator/models.js'
 
 function makeHeaders(sessionId?: string, affinityId?: string): Headers {
   const h = new Headers()
@@ -24,6 +22,13 @@ function makeRequest(overrides: Partial<OpenAIChatCompletionRequest> = {}): Open
     tools: [],
     ...overrides
   }
+}
+
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+
+function readFile(filePath: string): string {
+  return readFileSync(resolve(process.cwd(), filePath), 'utf-8')
 }
 
 function runTest(name: string, fn: () => void): boolean {
@@ -521,32 +526,36 @@ async function main() {
   })
 
   // ============================================================
-  // Independence verification
+  // Independence verification (real source inspection)
   // ============================================================
-  console.log('\n--- Independence verification ---\n')
+  console.log('\n--- Independence verification (source inspection) ---\n')
 
   failed += runTest('outbound does not import from inbound', () => {
-    // This is verified by the fact that the test file only imports from outbound
-    // and the test runs successfully. The import graph is verified by the test runner.
-    // We can also check the source file directly.
-    const content = `import { buildDeepSeekPrompt, translateOpenAIRequest } from '../src/translator/outbound.js'`
-    // If this test runs, the import worked
-    expect(true).toBe(true)
+    const content = readFile('src/translator/outbound.ts')
+    if (content.includes('../translator/inbound') || content.includes('./inbound')) {
+      throw new Error('outbound.ts imports from inbound')
+    }
   })
 
   failed += runTest('outbound does not import orchestrator', () => {
-    // Verified by successful test execution without orchestrator imports
-    expect(true).toBe(true)
+    const content = readFile('src/translator/outbound.ts')
+    if (content.includes('orchestrator')) {
+      throw new Error('outbound.ts imports orchestrator')
+    }
   })
 
   failed += runTest('outbound does not import deepseek_api/client', () => {
-    // Verified by successful test execution
-    expect(true).toBe(true)
+    const content = readFile('src/translator/outbound.ts')
+    if (content.includes('deepseek_api/client')) {
+      throw new Error('outbound.ts imports deepseek_api/client')
+    }
   })
 
   failed += runTest('outbound does not import src/index', () => {
-    // Verified by successful test execution
-    expect(true).toBe(true)
+    const content = readFile('src/translator/outbound.ts')
+    if (content.includes('src/index')) {
+      throw new Error('outbound.ts imports src/index')
+    }
   })
 
   console.log(`\n${failed === 0 ? 'All' : failed} test${failed !== 1 ? 's' : ''} ${failed === 0 ? 'passed' : 'failed'}!`)
