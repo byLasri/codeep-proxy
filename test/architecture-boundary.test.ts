@@ -1,5 +1,5 @@
-import { readFileSync } from 'fs'
-import { resolve } from 'path'
+import { readFileSync, readdirSync, statSync } from 'fs'
+import { resolve, extname } from 'path'
 
 interface BoundaryRule {
   file: string
@@ -13,7 +13,7 @@ interface RequiredImportRule {
   description: string
 }
 
-const BOUNDARY_RULES: BoundaryRule[] = [
+const BOUNDARY_RULES = [
   {
     file: 'src/translator/outbound.ts',
     forbiddenPatterns: [
@@ -53,9 +53,9 @@ const BOUNDARY_RULES: BoundaryRule[] = [
     ],
     description: 'deepseek_api must not import from translator, orchestrator, or src/index',
   },
-]
+] as const
 
-const REQUIRED_IMPORTS: RequiredImportRule[] = [
+const REQUIRED_IMPORTS = [
   {
     file: 'src/orchestrator/completion.ts',
     requiredPatterns: [
@@ -64,150 +64,106 @@ const REQUIRED_IMPORTS: RequiredImportRule[] = [
     ],
     description: 'orchestrator/completion.ts must import both outbound and inbound',
   },
-]
+] as const
 
 const STALE_REFERENCES = [
   'translator/request',
   'translator/response',
-]
+] as const
+
+const EXCLUDED_TEST_FILE = 'test/architecture-boundary.test.ts'
 
 function readFile(filePath: string): string {
-  const fullPath = resolve(process.cwd(), filePath)
-  return readFileSync(fullPath, 'utf-8')
+  return readFileSync(resolve(process.cwd(), filePath), 'utf-8')
+}
+
+function getTsFiles(dir: string): string[] {
+  const files: string[] = []
+  const entries = readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })
+  for (const entry of entries) {
+    const fullPath = resolve(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...getTsFiles(fullPath))
+    } else if (extname(entry.name) === '.ts') {
+      files.push(fullPath)
+    }
+  }
+  return files
 }
 
 function checkForbiddenImports(): { passed: boolean; errors: string[] } {
   const errors: string[] = []
 
-  for (const rule of BOUNDARY_RULES) {
-    let content: string
-    let filesToCheck: string[] = []
-
-    if (rule.file === 'src/deepseek_api') {
-      // Check all files in deepseek_api directory
-      const deepseekFiles = [
-        'src/deepseek_api/client.ts',
-        'src/deepseek_api/completion.ts',
-        'src/deepseek_api/edit-message.ts',
-        'src/deepseek_api/constants.ts',
-        'src/deepseek_api/errors.ts',
-        'src/deepseek_api/headers.ts',
-        'src/deepseek_api/hif-leim.ts',
-        'src/deepseek_api/pow-challenge.ts',
-        'src/deepseek_api/pow.ts',
-        'src/deepseek_api/session.ts',
-        'src/deepseek_api/session-store.ts',
-        'src/deepseek_api/state-store.ts',
-        'src/deepseek_api/types.js',
-      ]
-      filesToCheck = deepseekFiles.filter(f => {
-        try {
-          return readFile(f).length > 0
-        } catch {
-          return false
-        }
-      })
-    } else {
-      filesToCheck = [rule.file]
-    }
-
-    for (const file of filesToCheck) {
-      let content: string
-      try {
-        content = readFile(file)
-      } catch {
-        continue
-      }
-
-      for (const pattern of rule.forbiddenPatterns) {
-        if (content.includes(pattern)) {
-          // Find the line number for better error reporting
-          const lines = content.split('\n')
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].includes(pattern)) {
-              errors.push(`${file}:${i + 1}: forbidden import/reference "${pattern}" - ${rule.description}`)
-              break
-            }
-          }
-        }
+  for (const rule of [
+    { file: 'src/translator/outbound.ts', forbidden: ['../translator/inbound', './inbound', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'outbound.ts must not depend on inbound, orchestrator, src/index, or deepseek_api/client' },
+    { file: 'src/translator/inbound.ts', forbidden: ['../translator/outbound', './outbound', 'request.ts', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'inbound.ts must not depend on outbound, request.ts, orchestrator, src/index, or deepseek_api/client' },
+    { file: 'src/orchestrator/completion.ts', forbidden: ['src/index'], desc: 'orchestrator/completion.ts must not depend on src/index' },
+  ] as const) {
+    const content = readFile(rule.file)
+    for (const pattern of rule.forbidden) {
+      if (content.includes(pattern)) {
+        const line = content.split('\n').findIndex(l => l.includes(pattern)) + 1
+        return { passed: false, errors: [`${rule.file}:${line}: forbidden import/reference "${pattern}" - ${rule.desc}`] }
       }
     }
   }
 
-  return { passed: errors.length === 0, errors }
+  // deepseek_api: dynamic recursive scan
+  const deepseekApiFiles = getTsFiles('src/deepseek_api')
+  const deepseekForbidden = ['translator/', 'orchestrator/', 'src/index']
+  for (const file of deepseekApiFiles) {
+    const content = readFile(file)
+    for (const pattern of deepseekForbidden) {
+      if (content.includes(pattern)) {
+        const line = content.split('\n').findIndex(l => l.includes(pattern)) + 1
+        return { passed: false, errors: [`src/deepseek_api/${file}:${line}: forbidden import/reference "${pattern}" - deepseek_api must not import from translator, orchestrator, or src/index`] }
+      }
+    }
+  }
+
+  return { passed: true, errors: [] }
 }
 
 function checkRequiredImports(): { passed: boolean; errors: string[] } {
   const errors: string[] = []
-
-  for (const rule of REQUIRED_IMPORTS) {
+  for (const rule of [
+    { file: 'src/orchestrator/completion.ts', required: ['../translator/outbound', '../translator/inbound'], desc: 'orchestrator/completion.ts must import both outbound and inbound' },
+  ] as const) {
     const content = readFile(rule.file)
-    for (const pattern of rule.requiredPatterns) {
+    for (const pattern of rule.required) {
       if (!content.includes(pattern)) {
-        errors.push(`${rule.file}: missing required import "${pattern}" - ${rule.description}`)
+        return { passed: false, errors: [`${rule.file}: missing required import "${pattern}" - ${rule.desc}`] }
       }
     }
   }
-
-  return { passed: errors.length === 0, errors }
+  return { passed: true, errors: [] }
 }
 
 function checkStaleReferences(): { passed: boolean; errors: string[] } {
   const errors: string[] = []
-  const srcFiles = [
-    'src/index.ts',
-    'src/orchestrator/completion.ts',
-    'src/translator/index.ts',
-    'src/translator/outbound.ts',
-    'src/translator/inbound.ts',
-    'src/translator/types.ts',
-    'src/translator/models.ts',
-    'src/orchestrator/completion.ts',
-  ]
+  const stalePatterns = ['translator/request', 'translator/response']
 
+  // Recursively scan src/
+  const srcFiles = getTsFiles('src')
   for (const file of srcFiles) {
-    try {
-      const content = readFile(file)
-      for (const pattern of STALE_REFERENCES) {
-        if (content.includes(pattern)) {
-          const lines = content.split('\n')
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].includes(pattern)) {
-              errors.push(`${file}:${i + 1}: stale reference to "${pattern}"`)
-              break
-            }
-          }
-        }
+    const content = readFile(file)
+    for (const pattern of ['translator/request', 'translator/response']) {
+      if (content.includes(pattern)) {
+        const line = content.split('\n').findIndex(l => l.includes(pattern)) + 1
+        errors.push(`${file}:${line}: stale reference to "${pattern}"`)
       }
-    } catch {
-      continue
     }
   }
 
-  // Also check test files for stale imports
-  const testFiles = [
-    'test/request-translation.test.ts',
-    'test/architecture-baseline.test.ts',
-    'test/dsml-malformed.test.ts',
-    'test/orchestrator-completion.test.ts',
-  ]
-
+  // Scan test/ (excluding this test file)
+  const testFiles = getTsFiles('test').filter(f => !f.includes('architecture-boundary.test.ts'))
   for (const file of testFiles) {
-    try {
-      const content = readFile(file)
-      for (const pattern of STALE_REFERENCES) {
-        if (content.includes(pattern)) {
-          const lines = content.split('\n')
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].includes(pattern)) {
-              errors.push(`${file}:${i + 1}: stale test import/reference to "${pattern}"`)
-              break
-            }
-          }
-        }
+    const content = readFile(file)
+    for (const pattern of ['translator/request', 'translator/response']) {
+      if (content.includes(pattern)) {
+        const line = content.split('\n').findIndex(l => l.includes(pattern)) + 1
+        errors.push(`${file}:${line}: stale test import/reference to "${pattern}"`)
       }
-    } catch {
-      continue
     }
   }
 
@@ -219,50 +175,67 @@ async function main() {
 
   let totalErrors = 0
 
-  // Check forbidden imports
   console.log('--- Forbidden Import Checks ---')
   const forbiddenResult = checkForbiddenImports()
   if (!forbiddenResult.passed) {
     console.log('✗ FORBIDDEN IMPORT VIOLATIONS:')
     for (const error of forbiddenResult.errors) {
       console.log(`  ${error}`)
-      totalErrors++
+      process.exit(1)
     }
+    console.log('✓ No forbidden imports found')
   } else {
     console.log('✓ No forbidden imports found')
   }
 
-  // Check required imports
   console.log('\n--- Required Import Checks ---')
-  const requiredResult = checkRequiredImports()
-  if (!requiredResult.passed) {
-    console.log('✗ MISSING REQUIRED IMPORTS:')
-    for (const error of requiredResult.errors) {
-      console.log(`  ${error}`)
-      totalErrors++
+  const requiredResult = { passed: true, errors: [] }
+  for (const rule of [{ file: 'src/orchestrator/completion.ts', required: ['../translator/outbound', '../translator/inbound'], desc: 'orchestrator/completion.ts must import both outbound and inbound' }]) {
+    const content = readFile(rule.file)
+    for (const pattern of rule.required) {
+      if (!content.includes(pattern)) {
+        console.log(`✗ MISSING REQUIRED IMPORTS:`)
+        console.log(`  ${rule.file}: missing required import "${pattern}" - ${rule.desc}`)
+        process.exit(1)
+      }
     }
-  } else {
-    console.log('✓ All required imports present')
   }
+  console.log('✓ All required imports present')
 
-  // Check stale references
   console.log('\n--- Stale Reference Checks ---')
-  const staleResult = checkStaleReferences()
-  if (!staleResult.passed) {
-    console.log('✗ STALE REFERENCES FOUND:')
-    for (const error of staleResult.errors) {
-      console.log(`  ${error}`)
-      totalErrors++
+  let staleErrors = 0
+  // src/
+  const srcFiles = getTsFiles('src')
+  for (const file of srcFiles) {
+    const content = readFile(file)
+    for (const pattern of ['translator/request', 'translator/response']) {
+      if (content.includes(pattern)) {
+        const line = content.split('\n').findIndex(l => l.includes(pattern)) + 1
+        console.log(`  ${file}:${line}: stale reference to "${pattern}"`)
+        staleErrors++
+      }
     }
+  }
+  // test/ (excluding this test file)
+  const testFiles = getTsFiles('test').filter(f => !f.includes('architecture-boundary.test.ts'))
+  for (const file of testFiles) {
+    const content = readFile(file)
+    for (const pattern of ['translator/request', 'translator/response']) {
+      if (content.includes(pattern)) {
+        const line = content.split('\n').findIndex(l => l.includes(pattern)) + 1
+        console.log(`  ${file}:${line}: stale test import/reference to "${pattern}"`)
+        staleErrors++
+      }
+    }
+  }
+  if (staleErrors > 0) {
+    console.log('✗ STALE REFERENCES FOUND:')
+    process.exit(1)
   } else {
     console.log('✓ No stale references found')
   }
 
-  console.log(`\n${totalErrors === 0 ? 'All' : totalErrors} test${totalErrors !== 1 ? 's' : ''} ${totalErrors === 0 ? 'passed' : 'failed'}!`)
-
-  if (totalErrors > 0) {
-    process.exit(1)
-  }
+  console.log('\nAll tests passed!')
 }
 
 main()
