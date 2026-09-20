@@ -28,6 +28,7 @@ interface SSEParserState {
   parsedToolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   parseError: { message: string; syntaxRules: string } | null
   pendingLookahead: string
+  detectedDialect: DSMLDialect | null
 }
 
 export interface DSMLParseResult {
@@ -36,41 +37,212 @@ export interface DSMLParseResult {
   error?: { message: string; syntaxRules: string }
 }
 
-const CORRECTIVE_MESSAGE = `Your previous response contained a malformed tool call that could not be parsed.
+type DSMLDelimiter = 'single' | 'double' | 'mixed' | 'ascii'
+type DSMLWrapper = 'function_calls' | 'tool_calls' | 'calls' | 'toolcalls' | 'tool'
+
+interface DSMLDialect {
+  delimiter: DSMLDelimiter
+  wrapper: DSMLWrapper
+  openCalls: string
+  closeCalls: string
+  openInvoke: string
+  closeInvoke: string
+  openParameter: string
+  closeParameter: string
+}
+
+const DELIMITER_PATTERNS: Record<DSMLDelimiter, { prefix: string }> = {
+  single: { prefix: '<｜DSML｜' },
+  double: { prefix: '<｜｜DSML｜｜' },
+  mixed: { prefix: '<｜DSML｜｜' },
+  ascii: { prefix: '<||DSML||' },
+}
+
+const WRAPPER_NAMES: DSMLWrapper[] = ['function_calls', 'tool_calls', 'calls', 'toolcalls', 'tool']
+
+function generateAllDialects(): DSMLDialect[] {
+  const dialects: DSMLDialect[] = []
+  for (const [delimiterKey, { prefix }] of Object.entries(DELIMITER_PATTERNS) as [DSMLDelimiter, { prefix: string }][]) {
+    for (const wrapper of WRAPPER_NAMES) {
+      // Try with space first (full-width forms), then without space (ASCII form)
+      const openCallsWithSpace = `${prefix} ${wrapper}>`
+      const openCallsNoSpace = `${prefix}${wrapper}>`
+      const closeCallsWithSpace = `</${prefix.slice(1)} ${wrapper}>`
+      const closeCallsNoSpace = `</${prefix.slice(1)}${wrapper}>`
+      const openInvokeWithSpace = `${prefix} invoke`
+      const openInvokeNoSpace = `${prefix}invoke`
+      const closeInvokeWithSpace = `</${prefix.slice(1)} invoke>`
+      const closeInvokeNoSpace = `</${prefix.slice(1)}invoke>`
+      const openParameterWithSpace = `${prefix} parameter`
+      const openParameterNoSpace = `${prefix}parameter`
+      const closeParameterWithSpace = `</${prefix.slice(1)} parameter>`
+      const closeParameterNoSpace = `</${prefix.slice(1)}parameter>`
+      
+      dialects.push({
+        delimiter: delimiterKey,
+        wrapper,
+        openCalls: openCallsWithSpace,
+        closeCalls: closeCallsWithSpace,
+        openInvoke: openInvokeWithSpace,
+        closeInvoke: closeInvokeWithSpace,
+        openParameter: openParameterWithSpace,
+        closeParameter: closeParameterWithSpace,
+      })
+      dialects.push({
+        delimiter: delimiterKey,
+        wrapper,
+        openCalls: openCallsNoSpace,
+        closeCalls: closeCallsNoSpace,
+        openInvoke: openInvokeNoSpace,
+        closeInvoke: closeInvokeNoSpace,
+        openParameter: openParameterNoSpace,
+        closeParameter: closeParameterNoSpace,
+      })
+    }
+  }
+  return dialects
+}
+
+const ALL_DIALECTS = generateAllDialects()
+
+function getAllOpenCallsPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.openCalls)
+}
+
+function getAllCloseCallsPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.closeCalls)
+}
+
+function getAllCloseInvokePatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.closeInvoke)
+}
+
+function getAllCloseParameterPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.closeParameter)
+}
+
+function getHoldbackPatterns(): string[] {
+  return ALL_DIALECTS.map(d => d.openCalls)
+}
+
+function detectDialect(xml: string): DSMLDialect | null {
+  for (const dialect of ALL_DIALECTS) {
+    if (xml.includes(dialect.openCalls)) {
+      return dialect
+    }
+  }
+  return null
+}
+
+function detectInvokeDialect(xml: string): DSMLDialect | null {
+  for (const dialect of ALL_DIALECTS) {
+    const invokePattern = new RegExp(escapeRegExp(dialect.openInvoke) + '\\s+name="[^"]+"')
+    if (invokePattern.test(xml)) {
+      return dialect
+    }
+  }
+  return null
+}
+
+function wrapWithSyntheticCalls(xml: string, dialect: DSMLDialect): string {
+  return `${dialect.openCalls}${xml}${dialect.closeCalls}`
+}
+
+function normalizeToCanonical(xml: string, dialect: DSMLDialect): string {
+  let normalized = xml
+  
+  // Replace calls tags
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.openCalls), 'g'), '<｜｜DSML｜｜ calls>')
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.closeCalls), 'g'), '</｜｜DSML｜｜ calls>')
+  
+  // Replace invoke tags
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.openInvoke), 'g'), '<｜｜DSML｜｜ invoke')
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.closeInvoke), 'g'), '</｜｜DSML｜｜ invoke>')
+  
+  // Replace parameter tags
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.openParameter), 'g'), '<｜｜DSML｜｜ parameter')
+  normalized = normalized.replace(new RegExp(escapeRegExp(dialect.closeParameter), 'g'), '</｜｜DSML｜｜ parameter>')
+  
+  return normalized
+}
+
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export const DSML_CORRECTIVE_MESSAGE_TEMPLATE = `Your previous response contained a malformed tool call.
 The tool call was NOT executed.
 
-Here is the EXACT format you must follow:
+Parsing error:
+{{PARSER_ERROR}}
 
-<｜｜DSML｜｜ calls>
-<｜｜DSML｜｜ invoke name="tool_name">
-<｜｜DSML｜｜ parameter name="param1" string="true">value1</｜｜DSML｜｜ parameter>
-<｜｜DSML｜｜ parameter name="param2" string="false">value2</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-<｜｜DSML｜｜ invoke name="another_tool">
-<｜｜DSML｜｜ parameter name="param" string="true">value</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>
+Please correct the structural error and retry the tool call.`
 
-Rules:
-1. Structure: <｜｜DSML｜｜ calls> contains one or more <｜｜DSML｜｜ invoke> blocks. Each <｜｜DSML｜｜ invoke> contains one or more <｜｜DSML｜｜ parameter> blocks.
-2. Parameters MUST be inside an <｜｜DSML｜｜ invoke> block. Never place a parameter outside an invoke.
-3. Always use the full tag format: <｜｜DSML｜｜ parameter name="param_name" string="true">value</｜｜DSML｜｜ parameter>
-4. Every opening tag must have exactly ONE matching closing tag with a forward slash: </｜｜DSML｜｜ tagname>
-5. Closing tags must NOT contain any attributes. Write </｜｜DSML｜｜ invoke>, not <｜｜DSML｜｜ invoke>.
-6. Each separate tool call needs its own <｜｜DSML｜｜ invoke name="..."> block.
-7. Do not add extra text or tags outside the DSML structure.
-
-Please retry the tool call now using exactly this syntax. Do not add any text outside the DSML structure.`
+function buildCorrectiveMessage(parserError: string): string {
+  return DSML_CORRECTIVE_MESSAGE_TEMPLATE.replace('{{PARSER_ERROR}}', parserError)
+}
 
 function parseDSMLToolCalls(xml: string): DSMLParseResult {
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = []
   
-  // Check for basic DSML structure
-  const hasCallsStart = xml.includes('<｜｜DSML｜｜ calls>')
-  const hasCallsEnd = xml.includes('</｜｜DSML｜｜ calls>')
+  // Detect dialect from outer wrapper first
+  let dialect = detectDialect(xml)
+  let normalizedXml: string
+
+  if (!dialect) {
+    // Fallback: check for wrapperless invoke blocks
+    const invokeDialect = detectInvokeDialect(xml)
+    if (invokeDialect) {
+      const openCount = (xml.match(new RegExp(escapeRegExp(invokeDialect.openInvoke), 'g')) || []).length
+      const closeCount = (xml.match(new RegExp(escapeRegExp(invokeDialect.closeInvoke), 'g')) || []).length
+      
+      // Check for stray calls tags in wrapperless input - these are malformed
+      const hasStrayCallsOpen = getAllOpenCallsPatterns().some(pattern => xml.includes(pattern))
+      const hasStrayCallsClose = getAllCloseCallsPatterns().some(pattern => xml.includes(pattern))
+      if (hasStrayCallsOpen || hasStrayCallsClose) {
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: hasStrayCallsOpen ? 'Stray opening <calls> tag found in wrapperless invoke' : 'Stray closing </calls> tag found in wrapperless invoke',
+            syntaxRules: buildCorrectiveMessage(hasStrayCallsOpen ? 'Stray opening <calls> tag found in wrapperless invoke' : 'Stray closing </calls> tag found in wrapperless invoke')
+          }
+        }
+      }
+      
+      if (openCount > 0 && openCount === closeCount) {
+        // Complete invoke block(s) - wrap and parse normally
+        const wrappedXml = wrapWithSyntheticCalls(xml, invokeDialect)
+        dialect = invokeDialect
+        normalizedXml = normalizeToCanonical(wrappedXml, dialect)
+      } else if (openCount > 0) {
+        // Malformed: invoke start tag exists but no matching close tag
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: `Mismatched <invoke> tags: ${openCount} opening tags but only ${closeCount} closing tags`,
+            syntaxRules: buildCorrectiveMessage(`Mismatched <invoke> tags: ${openCount} opening tags but only ${closeCount} closing tags`)
+          }
+        }
+      } else {
+        // No supported DSML dialect detected - this is normal for text responses
+        return { toolCalls: [] }
+      }
+    } else {
+      // No supported DSML dialect detected - this is normal for text responses
+      return { toolCalls: [] }
+    }
+  } else {
+    // Normalize to canonical form for structural validation
+    normalizedXml = normalizeToCanonical(xml, dialect)
+  }
+  
+  // Check for basic DSML structure in normalized form
+  const hasCallsStart = normalizedXml.includes('<｜｜DSML｜｜ calls>')
+  const hasCallsEnd = normalizedXml.includes('</｜｜DSML｜｜ calls>')
   
   if (!hasCallsStart && !hasCallsEnd) {
-    // No DSML tool calls present - this is normal for text responses
     return { toolCalls: [] }
   }
   
@@ -82,20 +254,20 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: 'Missing closing </｜｜DSML｜｜ calls> tag',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('Missing closing </｜｜DSML｜｜ calls> tag')
       }
     }
   }
   
   // Extract content between calls tags
-  const callsMatch = xml.match(/<｜｜DSML｜｜\s+calls>([\s\S]*?)<\/｜｜DSML｜｜\s+calls>/)
+  const callsMatch = normalizedXml.match(/<｜｜DSML｜｜\s+calls>([\s\S]*?)<\/｜｜DSML｜｜\s+calls>/)
   if (!callsMatch) {
     return {
       toolCalls: [],
       isMalformed: true,
       error: {
         message: 'Invalid DSML calls structure',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('Invalid DSML calls structure')
       }
     }
   }
@@ -111,7 +283,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: `Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`,
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage(`Mismatched <invoke> tags: ${openInvokeCount} opening tags but only ${closedInvokeCount} closing tags`)
       }
     }
   }
@@ -126,7 +298,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: 'Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('Parameter found outside of <invoke> block. Parameters MUST be inside an <invoke> block.')
       }
     }
   }
@@ -141,7 +313,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: `Invalid DSML element found: ${invalidElementMatch[0]}. Only <invoke> elements are allowed inside <calls>.`,
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage(`Invalid DSML element found: ${invalidElementMatch[0]}. Only <invoke> elements are allowed inside <calls>.`)
       }
     }
   }
@@ -160,30 +332,74 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         toolCalls: [],
         isMalformed: true,
         error: {
-          message: 'Tool name is empty or missing in <invoke> tag',
-          syntaxRules: CORRECTIVE_MESSAGE
+message: 'Tool name is empty or missing in <invoke> tag',
+        syntaxRules: buildCorrectiveMessage('Tool name is empty or missing in <invoke> tag')
         }
       }
     }
     
     // Extract parameters from this invoke block
-    const params: Record<string, string> = {}
-    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]+)"\s+string="(true|false)"\s*>([^<]*)<\/｜｜DSML｜｜\s+parameter>/g
+    const params: Record<string, unknown> = {}
+    const paramRegex = /<｜｜DSML｜｜\s+parameter\s+name="([^"]*)"\s+string="(true|false)"\s*>([\s\S]*?)<\/｜｜DSML｜｜\s+parameter>/g
     let paramMatch
     
     while ((paramMatch = paramRegex.exec(invokeContent)) !== null) {
       const paramName = paramMatch[1]
-      const paramValue = paramMatch[3]?.trim() || ''
+      const stringAttr = paramMatch[2]
+      const rawValue = paramMatch[3] || ''
+
+      // A new parameter tag appeared before this one closed (nested / jammed tags).
+      // The closer regex is non-greedy, so without this check the current parameter
+      // absorbs the next parameter's tag and content.
+      if (
+        /<｜｜DSML｜｜\s+parameter\b/.test(rawValue) ||
+        /<\/｜｜DSML｜｜\s+parameter\s+\S/.test(rawValue)
+      ) {
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+            message: 'Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag',
+            syntaxRules: buildCorrectiveMessage('Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag')
+          }
+        }
+      }
+
+      // Parameter name must be non-empty
+      if (!paramName || paramName.trim() === '') {
+        return {
+          toolCalls: [],
+          isMalformed: true,
+          error: {
+message: 'Parameter name is empty or missing',
+        syntaxRules: buildCorrectiveMessage('Parameter name is empty or missing')
+          }
+        }
+      }
       
-      // Only include valid parameter names
-      if (paramName && paramName.trim() !== '') {
-        params[paramName] = paramValue
+      if (stringAttr === 'true') {
+        // string="true" - store as raw string, preserving all whitespace exactly
+        params[paramName] = rawValue
+      } else {
+        // string="false" - parse as JSON (trim whitespace before parsing since JSON whitespace is insignificant)
+        try {
+          params[paramName] = JSON.parse(rawValue.trim())
+        } catch {
+          return {
+            toolCalls: [],
+            isMalformed: true,
+            error: {
+              message: `Parameter "${paramName}" has string="false" but value is not valid JSON`,
+              syntaxRules: buildCorrectiveMessage(`Parameter "${paramName}" has string="false" but value is not valid JSON`)
+            }
+          }
+        }
       }
     }
     
     // Check for malformed parameter tags within this invoke
-    // Look for parameters without proper closing tags
-    const malformedParamRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![^<]*<\/｜｜DSML｜｜\s+parameter>)/g
+    // Look for parameter tags that don't match the expected format
+    const malformedParamRegex = /<｜｜DSML｜｜\s+parameter\s+name="[^"]*"[^>]*>(?![\s\S]*?<\/｜｜DSML｜｜\s+parameter>)/g
     const hasMalformedParam = invokeContent.match(malformedParamRegex)
     if (hasMalformedParam) {
       return {
@@ -191,7 +407,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         isMalformed: true,
         error: {
           message: 'Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag',
-          syntaxRules: CORRECTIVE_MESSAGE
+          syntaxRules: buildCorrectiveMessage('Malformed parameter tag detected - missing closing </｜｜DSML｜｜ parameter> tag')
         }
       }
     }
@@ -204,8 +420,23 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
         toolCalls: [],
         isMalformed: true,
         error: {
-          message: 'Parameter tag missing required string="true|false" attribute',
-          syntaxRules: CORRECTIVE_MESSAGE
+message: 'Parameter tag missing required string="true|false" attribute',
+        syntaxRules: buildCorrectiveMessage('Parameter tag missing required string="true|false" attribute')
+        }
+      }
+    }
+    
+    // Check for any unknown elements inside invoke (not parameter or text)
+    // Valid children of invoke are only parameter tags
+    const validInvokeChildrenRegex = /<｜｜DSML｜｜\s+(?!parameter\b)[a-zA-Z]+/g
+    const invalidInvokeChildMatch = invokeContent.match(validInvokeChildrenRegex)
+    if (invalidInvokeChildMatch) {
+      return {
+        toolCalls: [],
+        isMalformed: true,
+        error: {
+          message: `Invalid DSML element found inside invoke: ${invalidInvokeChildMatch[0]}. Only <parameter> elements are allowed inside <invoke>.`,
+          syntaxRules: buildCorrectiveMessage(`Invalid DSML element found inside invoke: ${invalidInvokeChildMatch[0]}. Only <parameter> elements are allowed inside <invoke>.`)
         }
       }
     }
@@ -228,7 +459,7 @@ function parseDSMLToolCalls(xml: string): DSMLParseResult {
       isMalformed: true,
       error: {
         message: '<calls> block must contain at least one <invoke> element',
-        syntaxRules: CORRECTIVE_MESSAGE
+        syntaxRules: buildCorrectiveMessage('<calls> block must contain at least one <invoke> element')
       }
     }
   }
@@ -258,6 +489,7 @@ function createParser(
     parsedToolCalls: [],
     parseError: null,
     pendingLookahead: '',
+    detectedDialect: null,
   }
 
   const emitFinal = () => {
@@ -353,12 +585,11 @@ function createParser(
   }
 
   const emitContent = (text: string) => {
-    const DSML_START = '<｜｜DSML｜｜ calls>'
-    
     // If tool call buffering is already in progress
     if (state.isToolCallInProgress) {
       state.toolCallBuffer += text
-      if (state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
+      // Check for closing calls tag using the detected dialect
+      if (state.detectedDialect && state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
         const result = parseDSMLToolCalls(state.toolCallBuffer)
         state.parsedToolCalls = result.toolCalls
         // Store parse error in state for malformed DSML detection
@@ -378,10 +609,18 @@ function createParser(
     // Build full prospective content
     const fullContent = state.accumulatedContent + combined
 
-    // Check for full DSML start pattern
-    if (fullContent.includes(DSML_START)) {
-      const dsmlIdx = fullContent.indexOf(DSML_START)
-      
+    // Check for full DSML start pattern (any supported dialect)
+    let dsmlIdx = -1
+    let matchedDialect: DSMLDialect | null = null
+    for (const dialect of ALL_DIALECTS) {
+      const idx = fullContent.indexOf(dialect.openCalls)
+      if (idx !== -1 && (dsmlIdx === -1 || idx < dsmlIdx)) {
+        dsmlIdx = idx
+        matchedDialect = dialect
+      }
+    }
+
+    if (dsmlIdx !== -1 && matchedDialect) {
       // Emit everything before DSML that hasn't been emitted yet
       const beforeDSML = fullContent.substring(0, dsmlIdx)
       const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
@@ -410,6 +649,7 @@ function createParser(
       
       // Start tool call buffering
       state.isToolCallInProgress = true
+      state.detectedDialect = matchedDialect
       state.toolCallBuffer = fullContent.substring(dsmlIdx)
       state.accumulatedContent = beforeDSML
       return
@@ -417,9 +657,11 @@ function createParser(
 
     // Check for partial DSML prefix at the end - HOLD BACK these characters
     let holdbackLength = 0
-    for (let i = 1; i < DSML_START.length; i++) {
-      if (fullContent.endsWith(DSML_START.substring(0, i))) {
-        holdbackLength = i
+    for (const pattern of getHoldbackPatterns()) {
+      for (let i = 1; i < pattern.length; i++) {
+        if (fullContent.endsWith(pattern.substring(0, i))) {
+          holdbackLength = Math.max(holdbackLength, i)
+        }
       }
     }
 
@@ -631,11 +873,57 @@ function createParser(
   return { state, emitFinal, emitContent, processLine }
 }
 
-export { parseDSMLToolCalls, CORRECTIVE_MESSAGE }
+export { parseDSMLToolCalls, buildCorrectiveMessage, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper }
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
   parseError: { message: string; syntaxRules: string } | null
+}
+
+export type TranslationAttemptResult<T> =
+  | { kind: 'success'; result: T }
+  | { kind: 'retry'; correction: string; error: { message: string; syntaxRules: string } }
+
+export async function translateDeepSeekStreamToSSEAttempt(
+  deepSeekStream: ReadableStream<Uint8Array>,
+  info: { model: string; id: string; created: number },
+  logger?: RequestLogger
+): Promise<TranslationAttemptResult<SSEParseResult>> {
+  const sseResult = await translateDeepSeekStreamToSSE(deepSeekStream, info, logger)
+  
+  if (sseResult.parseError) {
+    return {
+      kind: 'retry',
+      correction: sseResult.parseError.syntaxRules,
+      error: sseResult.parseError
+    }
+  }
+  
+  return {
+    kind: 'success',
+    result: sseResult
+  }
+}
+
+export async function translateDeepSeekStreamToJSONAttempt(
+  deepSeekStream: ReadableStream<Uint8Array>,
+  info: { model: string; id: string; created: number },
+  logger?: RequestLogger
+): Promise<TranslationAttemptResult<Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>>>> {
+  const jsonResult = await translateDeepSeekStreamToJSON(deepSeekStream, info, logger)
+  
+  if (jsonResult._malformedError) {
+    return {
+      kind: 'retry',
+      correction: jsonResult._malformedError.syntaxRules,
+      error: jsonResult._malformedError
+    }
+  }
+  
+  return {
+    kind: 'success',
+    result: jsonResult
+  }
 }
 
 export async function translateDeepSeekStreamToSSE(
@@ -684,15 +972,26 @@ export async function translateDeepSeekStreamToSSE(
     parser.emitContent('')
   }
 
-  // Check for unclosed DSML at EOF
-  if (parser.state.isToolCallInProgress && !parser.state.toolCallBuffer.includes('</｜｜DSML｜｜ calls>')) {
-    const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
-    parser.state.parsedToolCalls = result.toolCalls
-    if (result.isMalformed && result.error) {
-      parser.state.parseError = result.error
+  // Check for unclosed DSML at EOF using the detected dialect
+  if (parser.state.isToolCallInProgress && parser.state.detectedDialect) {
+    if (!parser.state.toolCallBuffer.includes(parser.state.detectedDialect.closeCalls)) {
+      const result = parseDSMLToolCalls(parser.state.toolCallBuffer)
+      parser.state.parsedToolCalls = result.toolCalls
+      if (result.isMalformed && result.error) {
+        parser.state.parseError = result.error
+      }
+      parser.state.isToolCallInProgress = false
+      parser.state.toolCallBuffer = ''
     }
-    parser.state.isToolCallInProgress = false
-    parser.state.toolCallBuffer = ''
+  }
+
+  // Check for malformed wrapperless DSML in accumulated content at EOF
+  // This catches cases like stray closing calls tags without opening calls tag
+  if (!parser.state.parseError && parser.state.accumulatedContent) {
+    const dsmlResult = parseDSMLToolCalls(parser.state.accumulatedContent)
+    if (dsmlResult.isMalformed && dsmlResult.error) {
+      parser.state.parseError = dsmlResult.error
+    }
   }
 
   parseError = parser.state.parseError
