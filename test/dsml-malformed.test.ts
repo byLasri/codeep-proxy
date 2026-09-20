@@ -1,4 +1,4 @@
-import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE } from '../src/translator/response.js'
+import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE } from '../src/translator/inbound.js'
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()

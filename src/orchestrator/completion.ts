@@ -9,7 +9,7 @@ import {
   translateDeepSeekStreamToSSEAttempt,
   translateDeepSeekStreamToJSONAttempt,
   type SSEParseResult 
-} from '../translator/response.js'
+} from '../translator/inbound.js'
 
 export interface CompletionClient {
   completeWithAutoSession(

@@ -1,5 +1,5 @@
 import { buildDeepSeekPrompt, translateOpenAIRequest, type ToolResult, type PromptWithToolResults } from '../src/translator/request.js'
-import { translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, parseDSMLToolCalls, type SSEParseResult } from '../src/translator/response.js'
+import { translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, parseDSMLToolCalls, type SSEParseResult } from '../src/translator/inbound.js'
 import type { OpenAIChatCompletionRequest, OpenAIChatMessage } from '../src/translator/types.js'
 import type { DeepSeekCompletionInput } from '../src/deepseek_api/types.js'
 

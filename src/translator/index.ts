@@ -7,7 +7,7 @@ export type {
   OpenAIChatCompletionStreamResponse,
 } from './types.js'
 
-export type { SSEParseResult, DSMLParseResult, TranslationAttemptResult } from './response.js'
+export type { SSEParseResult, DSMLParseResult, TranslationAttemptResult } from './inbound.js'
 
 export { mapOpenAIModelToDeepSeek } from './models.js'
 export { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt, translateOpenAIRequest } from './request.js'
@@ -20,4 +20,4 @@ export {
   translateDeepSeekStreamToSSEAttempt,
   translateDeepSeekStreamToJSONAttempt,
   buildCorrectiveMessage,
-} from './response.js'
+} from './inbound.js'
