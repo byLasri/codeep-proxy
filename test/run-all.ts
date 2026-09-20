@@ -11,6 +11,7 @@ const SUITES = [
   'test/translator-outbound.test.ts',
   'test/translator-inbound.test.ts',
   'test/architecture-boundary.test.ts',
+  'test/architecture-mission-final.test.ts',
   'test/architecture-baseline.test.ts',
   'test/dsml-malformed.test.ts',
   'test/orchestrator-completion.test.ts',
