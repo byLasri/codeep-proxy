@@ -10,7 +10,7 @@ export type {
 export type { SSEParseResult, DSMLParseResult, TranslationAttemptResult } from './inbound.js'
 
 export { mapOpenAIModelToDeepSeek } from './models.js'
-export { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt, translateOpenAIRequest } from './request.js'
+export { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt, translateOpenAIRequest } from './outbound.js'
 export type { RequestLogger } from '../observability/logger.js'
 export {
   formatOpenAISSEChunk,

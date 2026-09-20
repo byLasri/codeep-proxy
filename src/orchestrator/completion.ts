@@ -2,7 +2,7 @@ import type { DeepSeekCompletionInput } from '../deepseek_api/types.js'
 import type { CompletionResult } from '../deepseek_api/client.js'
 import type { OpenAIChatCompletionRequest } from '../translator/types.js'
 import type { RequestLogger } from '../observability/logger.js'
-import { translateOpenAIRequest } from '../translator/request.js'
+import { translateOpenAIRequest } from '../translator/outbound.js'
 import { 
   translateDeepSeekStreamToSSE, 
   translateDeepSeekStreamToJSON, 

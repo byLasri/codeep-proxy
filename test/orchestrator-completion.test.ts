@@ -2,7 +2,7 @@ import type { DeepSeekCompletionInput } from '../src/deepseek_api/types.js'
 import type { CompletionResult } from '../src/deepseek_api/client.js'
 import type { CompletionClient } from '../src/orchestrator/completion.js'
 import { executeCompletionAttempt, executeCompletionWithRetry } from '../src/orchestrator/completion.js'
-import { translateOpenAIRequest } from '../src/translator/request.js'
+import { translateOpenAIRequest } from '../src/translator/outbound.js'
 import type { OpenAIChatCompletionRequest } from '../src/translator/types.js'
 import type { RequestLogger } from '../src/observability/logger.js'
 

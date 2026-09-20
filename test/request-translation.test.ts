@@ -1,4 +1,4 @@
-import { buildDeepSeekPrompt, translateOpenAIRequest, type ToolResult, type PromptWithToolResults } from '../src/translator/request.js'
+import { buildDeepSeekPrompt, translateOpenAIRequest, type ToolResult, type PromptWithToolResults } from '../src/translator/outbound.js'
 import type { OpenAIChatCompletionRequest, OpenAIChatMessage } from '../src/translator/types.js'
 
 function makeHeaders(sessionId?: string): Headers {
