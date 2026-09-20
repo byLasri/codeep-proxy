@@ -7,7 +7,7 @@ import { translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON } from './t
 import type { SSEParseResult } from './translator/index.js'
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
-import { executeCompletionAttempt, type CompletionAttemptResult } from './orchestrator/completion.js'
+import { executeCompletionWithRetry, type FinalCompletionResult } from './orchestrator/completion.js'
 
 // Global FIFO queue for request delay between requests
 let globalQueue: Promise<void> = Promise.resolve();
@@ -268,12 +268,11 @@ export default {
                 })
               }
               
-              const jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
+const jsonResp = await translateDeepSeekStreamToJSON(response.body, info, logger)
               return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
             }
             
-            // NORMAL FLOW: Continue with existing completion logic with internal retry for malformed DSML
-            // Check turn_count to determine if we should send system prompt (turns 1 and 2 only)
+            // NORMAL FLOW: Delegate to orchestrator for completion with retry
             const xSessionId = getXSessionIdFromHeaders(request.headers)
             let sendSystemPrompt = true
             if (xSessionId) {
@@ -288,113 +287,46 @@ export default {
 
             // Extract timeout from request or use default (10 seconds)
             const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
-            
-            // Internal retry loop for malformed DSML (max 5 attempts)
-            const MAX_MALFORMED_RETRIES = 5
-            let malformedRetryCount = 0
-            let jsonResp: Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>> | null = null
-            let lastMalformedError: { message: string; syntaxRules: string } | null = null
 
-            while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
-              await enqueueGlobalRequest(timeoutMs)
+            const finalResult = await executeCompletionWithRetry(openaiReq, request.headers, {
+              createClient: () => createDeepSeekClient(env),
+              timeoutMs,
+              sendSystemPrompt,
+              logger,
+              beforeAttempt: () => enqueueGlobalRequest(timeoutMs),
+              registerSessionUpdate: (promise) => ctx.waitUntil(promise),
+            })
 
-              // Retry never sends system prompt - only the initial request uses sendSystemPrompt
-              const retrySendSystemPrompt = malformedRetryCount > 0 ? false : sendSystemPrompt
-
-              const client = createDeepSeekClient(env)
-
-              const attemptResult = await executeCompletionAttempt(openaiReq, request.headers, {
-                client,
-                timeoutMs,
-                sendSystemPrompt: retrySendSystemPrompt,
-                logger,
+            // Handle final result
+            if (finalResult.kind === 'upstream-error') {
+              return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${finalResult.status} ${finalResult.statusText}`, type: 'upstream_error', code: finalResult.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+            }
+            if (finalResult.kind === 'missing-body') {
+              return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+            }
+            if (finalResult.kind === 'retry-exhausted') {
+              return new Response(JSON.stringify({ 
+                error: { 
+                  message: finalResult.message, 
+                  type: 'model_error' 
+                } 
+              }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+            }
+            if (finalResult.kind === 'streaming-success') {
+              return new Response(finalResult.sseResult.stream, {
+                headers: {
+                  'Content-Type': 'text/event-stream; charset=utf-8',
+                  'Cache-Control': 'no-cache, no-transform',
+                  'Connection': 'keep-alive',
+                },
               })
-
-              // MUST run before returning, otherwise attachSessionPersistence may be cancelled
-              ctx.waitUntil(attemptResult.sessionUpdatePromise)
-
-              // Handle upstream errors
-              if (attemptResult.kind === 'upstream-error') {
-                return new Response(JSON.stringify({ error: { message: `DeepSeek API error: ${attemptResult.status} ${attemptResult.statusText}`, type: 'upstream_error', code: attemptResult.status } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-              }
-              if (attemptResult.kind === 'missing-body') {
-                return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-              }
-
-              if (attemptResult.kind === 'streaming-success') {
-                // Check if DSML parsing failed (malformed DSML detected)
-                const parseError = attemptResult.sseResult.parseError
-                if (parseError) {
-                  lastMalformedError = parseError
-                  malformedRetryCount++
-                  
-                  if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
-                    // Max retries reached - return error to client
-                    return new Response(JSON.stringify({ 
-                      error: { 
-                        message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
-                        type: 'model_error' 
-                      } 
-                    }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-                  }
-                  
-                  // Inject corrective feedback into messages for retry
-                  openaiReq.messages.push({
-                    role: 'user',
-                    content: lastMalformedError.syntaxRules
-                  })
-                  
-                  // Continue loop for retry
-                  continue
-                }
-                
-                // Valid DSML - stream to client
-                return new Response(attemptResult.sseResult.stream, {
-                  headers: {
-                    'Content-Type': 'text/event-stream; charset=utf-8',
-                    'Cache-Control': 'no-cache, no-transform',
-                    'Connection': 'keep-alive',
-                  },
-                })
-              }
-
-              // json-success
-              jsonResp = attemptResult.jsonResult
-              
-              // Check if response has malformed DSML error
-              if (jsonResp._malformedError) {
-                lastMalformedError = jsonResp._malformedError
-                malformedRetryCount++
-                
-                if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
-                  // Max retries reached - return error to client
-                  return new Response(JSON.stringify({ 
-                    error: { 
-                      message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`, 
-                      type: 'model_error' 
-                    } 
-                  }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-                }
-                
-                // Inject corrective feedback into messages for retry
-                openaiReq.messages.push({
-                  role: 'user',
-                  content: lastMalformedError.syntaxRules
-                })
-                
-                // Continue loop for retry
-                continue
-              }
-              
-              // Valid response - break out of retry loop
-              break
             }
-            
-            if (!jsonResp) {
-              return new Response(JSON.stringify({ error: { message: 'No response from DeepSeek', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+            if (finalResult.kind === 'json-success') {
+              return new Response(JSON.stringify(finalResult.jsonResult), { headers: { 'Content-Type': 'application/json' } })
             }
-            
-            return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
+
+            // Should not reach here
+            return new Response(JSON.stringify({ error: { message: 'Unexpected completion result', type: 'internal_error' } }), { status: 500, headers: { 'Content-Type': 'application/json' } })
           } catch (err) {
             // translateOpenAIRequest throws 'No user message found' on bad input -> 400
             const message = err instanceof Error ? err.message : 'Internal error'

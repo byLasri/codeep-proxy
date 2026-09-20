@@ -863,6 +863,52 @@ export interface SSEParseResult {
   parseError: { message: string; syntaxRules: string } | null
 }
 
+export type TranslationAttemptResult<T> =
+  | { kind: 'success'; result: T }
+  | { kind: 'retry'; correction: string; error: { message: string; syntaxRules: string } }
+
+export async function translateDeepSeekStreamToSSEAttempt(
+  deepSeekStream: ReadableStream<Uint8Array>,
+  info: { model: string; id: string; created: number },
+  logger?: RequestLogger
+): Promise<TranslationAttemptResult<SSEParseResult>> {
+  const sseResult = await translateDeepSeekStreamToSSE(deepSeekStream, info, logger)
+  
+  if (sseResult.parseError) {
+    return {
+      kind: 'retry',
+      correction: sseResult.parseError.syntaxRules,
+      error: sseResult.parseError
+    }
+  }
+  
+  return {
+    kind: 'success',
+    result: sseResult
+  }
+}
+
+export async function translateDeepSeekStreamToJSONAttempt(
+  deepSeekStream: ReadableStream<Uint8Array>,
+  info: { model: string; id: string; created: number },
+  logger?: RequestLogger
+): Promise<TranslationAttemptResult<Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>>>> {
+  const jsonResult = await translateDeepSeekStreamToJSON(deepSeekStream, info, logger)
+  
+  if (jsonResult._malformedError) {
+    return {
+      kind: 'retry',
+      correction: jsonResult._malformedError.syntaxRules,
+      error: jsonResult._malformedError
+    }
+  }
+  
+  return {
+    kind: 'success',
+    result: jsonResult
+  }
+}
+
 export async function translateDeepSeekStreamToSSE(
   deepSeekStream: ReadableStream<Uint8Array>,
   info: { model: string; id: string; created: number },
