@@ -23,6 +23,7 @@ function makePEvent(data: object): string {
 function createMockClient(overrides: Partial<{
   response: Response;
   sessionUpdatePromise: Promise<void>;
+  onInput?: (input: DeepSeekCompletionInput) => void;
 }> = {}): CompletionClient {
   const defaultSessionUpdatePromise = Promise.resolve()
   
@@ -31,6 +32,7 @@ function createMockClient(overrides: Partial<{
       input: DeepSeekCompletionInput,
       logger?: RequestLogger
     ): Promise<CompletionResult> => {
+      overrides.onInput?.(input)
       const response = overrides.response ?? new Response(null, { status: 200 })
       return {
         response,
@@ -706,7 +708,6 @@ async function main() {
   // Test 20: real retry path - malformed first attempt, correction appended, valid second attempt
   failed += await runTestAsync('real retry path: malformed first attempt -> correction appended -> valid second attempt', async () => {
     let attemptCount = 0
-    let secondAttemptInput: DeepSeekCompletionInput | null = null
 
     // Create a request with system prompt to verify retry suppression
     const reqWithSystem: OpenAIChatCompletionRequest = {
@@ -725,7 +726,7 @@ async function main() {
           // First attempt: return malformed DSML
           return createMockClient({ response: new Response(createMalformedDSMLStream()) })
         }
-        // Second attempt: capture the input and return valid DSML
+        // Second attempt: return valid DSML
         return createMockClient({
           response: new Response(createValidDSMLStream()),
         })
@@ -781,10 +782,12 @@ async function main() {
         if (attemptCount === 1) {
           return createMockClient({ response: new Response(createMalformedDSMLStream()) })
         }
+        // Second attempt: capture the input and return valid DSML
         return createMockClient({
           response: new Response(createValidDSMLStream()),
-          // Capture the input for the second attempt
-          sessionUpdatePromise: Promise.resolve(),
+          onInput: (input) => {
+            secondAttemptInput = input
+          },
         })
       },
       timeoutMs: 15000,
@@ -798,6 +801,24 @@ async function main() {
 
     // The correction text should have been captured
     expect(correctionText).not.toBeNull()
+
+    // Verify the second attempt's input was captured
+    expect(secondAttemptInput).not.toBeNull()
+
+    // Verify the correction was propagated into the second attempt's prompt
+    if (secondAttemptInput && correctionText) {
+      expect(secondAttemptInput.prompt).toContain(correctionText)
+    }
+
+    // Verify system prompt was suppressed on retry
+    if (secondAttemptInput) {
+      expect(secondAttemptInput.prompt).not.toContain('System instruction for testing')
+    }
+
+    // Verify no toolResults crosses the boundary
+    if (secondAttemptInput) {
+      expect(secondAttemptInput).not.toHaveProperty('toolResults')
+    }
   })
 
   // Test 22: retry exhaustion - exactly MAX_MALFORMED_RETRIES + 1 attempts, then retry-exhausted
