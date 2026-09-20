@@ -690,6 +690,96 @@ Some text after`
       expect(result.error).toBeDefined()
       expect(result.error!.message).toContain('string=')
     }},
+    { name: 'nested parameter tags (missing closing tag before next parameter) should be detected as malformed', fn: async () => {
+      const xml = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="edit">
+<｜｜DSML｜｜ parameter name="filePath" string="true">C:\\Users\\Damas\\workground\\script.js</｜｜DSML｜｜ parameter name="oldString" string="true">const countEl = document.getElementById("count");
+const incrementBtn = document.getElementById("increment");
+const decrementBtn = document.getElementById("decrement");
+const resetBtn = document.getElementById("reset");
+
+let count = 0;
+
+function render() {
+countEl.textContent = count;
+countEl.classList.remove("pop");
+void countEl.offsetWidth;
+countEl.classList.add("pop");
+}
+
+function increment() {
+count++;
+render();
+}
+
+function decrement() {
+count--;
+render();
+}
+
+function reset() {
+count = 0;
+render();
+}</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="newString" string="true">const countEl = document.getElementById("count");
+const fruitEl = document.getElementById("fruit");
+const incrementBtn = document.getElementById("increment");
+const decrementBtn = document.getElementById("decrement");
+const resetBtn = document.getElementById("reset");
+
+const fruits = [
+"Apple", "Banana", "Cherry", "Mango", "Grapes",
+"Orange", "Peach", "Kiwi", "Papaya", "Melon",
+"Lychee", "Guava", "Plum", "Berry", "Fig"
+];
+
+let count = 0;
+let fruitIndex = 0;
+
+function render() {
+countEl.textContent = count;
+countEl.classList.remove("pop");
+void countEl.offsetWidth;
+countEl.classList.add("pop");
+
+fruitEl.textContent = fruits[fruitIndex];
+fruitEl.classList.remove("pop");
+void fruitEl.offsetWidth;
+fruitEl.classList.add("pop");
+}
+
+function nextFruit() {
+fruitIndex = Math.floor(Math.random() * fruits.length);
+}
+
+function increment() {
+count++;
+nextFruit();
+render();
+}
+
+function decrement() {
+count--;
+nextFruit();
+render();
+}
+
+function reset() {
+count = 0;
+nextFruit();
+render();
+}</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+
+      const result = parseDSMLToolCalls(xml)
+
+      expect(result.isMalformed).toBe(true)
+      expect(result.toolCalls).toHaveLength(0)
+      expect(result.error).toBeDefined()
+      // The parser should detect the missing closing parameter tag
+      expect(result.error!.message).toContain('missing closing')
+    }},
     { name: 'prose mentioning invoke without structured tag should not be detected', fn: async () => {
       const xml = 'The model should invoke the read tool when necessary.'
 
