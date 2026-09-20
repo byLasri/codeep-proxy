@@ -9,6 +9,7 @@ interface SuiteResult {
 const SUITES = [
   'test/request-translation.test.ts',
   'test/translator-outbound.test.ts',
+  'test/translator-inbound.test.ts',
   'test/architecture-boundary.test.ts',
   'test/architecture-baseline.test.ts',
   'test/dsml-malformed.test.ts',
