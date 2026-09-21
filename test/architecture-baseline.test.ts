@@ -1,5 +1,7 @@
 import { buildDeepSeekPrompt, translateOpenAIRequest, type ToolResult, type PromptWithToolResults } from '../src/translator/outbound.js'
-import { translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, parseDSMLToolCalls, type SSEParseResult } from '../src/translator/inbound.js'
+import { translateParserEventsToSSE, translateParserEventsToJSON, type SSEParseResult } from '../src/translator/inbound.js'
+import { parseDeepSeekSSE } from '../src/parser/index.js'
+import { parseDSMLToolCalls } from '../src/parser/dsml.js'
 import type { OpenAIChatCompletionRequest, OpenAIChatMessage } from '../src/translator/types.js'
 import type { DeepSeekCompletionInput } from '../src/deepseek_api/types.js'
 
@@ -7,6 +9,14 @@ function makeHeaders(sessionId?: string): Headers {
   const h = new Headers()
   if (sessionId) h.set('X-Session-Id', sessionId)
   return h
+}
+
+async function translateDeepSeekStreamToSSE(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }) {
+  return translateParserEventsToSSE(parseDeepSeekSSE(stream), info)
+}
+
+async function translateDeepSeekStreamToJSON(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }) {
+  return translateParserEventsToJSON(parseDeepSeekSSE(stream), info)
 }
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
