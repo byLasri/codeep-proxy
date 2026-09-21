@@ -12,7 +12,6 @@ export function formatOpenAIDone(): string {
 
 export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
-  parseError: { message: string; syntaxRules: string } | null
 }
 
 function mapToolCall(tc: ParserToolCall): ToolCall {
@@ -185,7 +184,6 @@ export async function translateParserEventsToSSE(
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
 ): Promise<SSEParseResult> {
-  let parseError: { message: string; syntaxRules: string } | null = null
   let hasEmittedRole = false
   let responseMessageId: string = 'null'
   let hasEmittedToolCalls = false
@@ -214,10 +212,7 @@ export async function translateParserEventsToSSE(
 
       try {
         for await (const event of events) {
-          const result = handleParserEventSSE(event, info, ctx)
-          if (result.parseError) {
-            parseError = result.parseError
-          }
+          handleParserEventSSE(event, info, ctx)
         }
       } finally {
         controller.close()
@@ -229,7 +224,7 @@ export async function translateParserEventsToSSE(
     logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
   }
 
-  return { stream, parseError }
+  return { stream }
 }
 
 interface JSONAccumulatorContext {
@@ -281,7 +276,7 @@ export async function translateParserEventsToJSON(
   events: AsyncIterable<ParserEvent>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): Promise<OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } }> {
+): Promise<OpenAIChatCompletionResponse> {
   const ctx: JSONAccumulatorContext = {
     accumulatedReasoning: '',
     accumulatedContent: '',
@@ -297,7 +292,7 @@ export async function translateParserEventsToJSON(
   }
 
   if (ctx.parseError) {
-    const result: OpenAIChatCompletionResponse & { _malformedError?: { message: string; syntaxRules: string } } = {
+    const result: OpenAIChatCompletionResponse = {
       id: `chatcmpl-${ctx.responseMessageId}`,
       object: 'chat.completion',
       created: info.created,
@@ -318,7 +313,6 @@ export async function translateParserEventsToJSON(
         completion_tokens: ctx.accumulatedTokens,
         total_tokens: ctx.accumulatedTokens,
       },
-      _malformedError: mapParserError(ctx.parseError),
     }
     logger?.logOutgoingToClient(result)
     return result

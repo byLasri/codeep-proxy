@@ -7,7 +7,7 @@ import { translateParserEventsToSSE, translateParserEventsToJSON } from './trans
 import { parseDeepSeekSSE } from './parser/index.js'
 import { generateTraceId, RequestLogger } from './observability/index.js'
 import type { OpenAIChatCompletionRequest } from './translator/types.js'
-import { executeCompletionWithRetry, type FinalCompletionResult } from './orchestrator/completion.js'
+import { executeCompletion, type OrchestratorCompletionResult } from './orchestrator/completion.js'
 
 // Global FIFO queue for request delay between requests
 let globalQueue: Promise<void> = Promise.resolve();
@@ -272,7 +272,7 @@ const jsonResp = await translateParserEventsToJSON(parseDeepSeekSSE(response.bod
               return new Response(JSON.stringify(jsonResp), { headers: { 'Content-Type': 'application/json' } })
             }
             
-            // NORMAL FLOW: Delegate to orchestrator for completion with retry
+            // NORMAL FLOW: Delegate to orchestrator for completion
             const xSessionId = getXSessionIdFromHeaders(request.headers)
             let sendSystemPrompt = true
             if (xSessionId) {
@@ -288,7 +288,7 @@ const jsonResp = await translateParserEventsToJSON(parseDeepSeekSSE(response.bod
             // Extract timeout from request or use default (10 seconds)
             const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
 
-            const finalResult = await executeCompletionWithRetry(openaiReq, request.headers, {
+            const finalResult: OrchestratorCompletionResult = await executeCompletion(openaiReq, request.headers, {
               createClient: () => createDeepSeekClient(env),
               timeoutMs,
               sendSystemPrompt,
@@ -303,14 +303,6 @@ const jsonResp = await translateParserEventsToJSON(parseDeepSeekSSE(response.bod
             }
             if (finalResult.kind === 'missing-body') {
               return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
-            }
-            if (finalResult.kind === 'retry-exhausted') {
-              return new Response(JSON.stringify({ 
-                error: { 
-                  message: finalResult.message, 
-                  type: 'model_error' 
-                } 
-              }), { status: 502, headers: { 'Content-Type': 'application/json' } })
             }
             if (finalResult.kind === 'streaming-success') {
               return new Response(finalResult.sseResult.stream, {

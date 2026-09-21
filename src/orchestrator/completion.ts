@@ -1,16 +1,16 @@
 import type { DeepSeekCompletionInput } from '../deepseek_api/types.js'
-import type { CompletionResult } from '../deepseek_api/client.js'
+import type { CompletionResult as DeepSeekCompletionResult } from '../deepseek_api/client.js'
 import type { OpenAIChatCompletionRequest } from '../translator/types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { translateOpenAIRequest } from '../translator/outbound.js'
-import { translateParserEventsToSSE, translateParserEventsToJSON, type SSEParseResult } from '../translator/inbound.js'
+import { translateParserEventsToSSE, translateParserEventsToJSON } from '../translator/inbound.js'
 import { parseDeepSeekSSE } from '../parser/index.js'
 
 export interface CompletionClient {
   completeWithAutoSession(
     input: DeepSeekCompletionInput,
     logger?: RequestLogger
-  ): Promise<CompletionResult>;
+  ): Promise<DeepSeekCompletionResult>;
 }
 
 export interface OrchestratorConfig {
@@ -34,16 +34,9 @@ export type MissingBodyResult = {
   sessionUpdatePromise: Promise<void>;
 };
 
-export type RetryResult = {
-  kind: 'retry';
-  correction: string;
-  error: { message: string; syntaxRules: string };
-  sessionUpdatePromise: Promise<void>;
-};
-
 export type StreamingSuccessResult = {
   kind: 'streaming-success';
-  sseResult: SSEParseResult;
+  sseResult: { stream: ReadableStream<Uint8Array> };
   sessionUpdatePromise: Promise<void>;
 };
 
@@ -53,30 +46,17 @@ export type JsonSuccessResult = {
   sessionUpdatePromise: Promise<void>;
 };
 
-export type RetryExhaustedResult = {
-  kind: 'retry-exhausted';
-  message: string;
-};
-
-export type CompletionAttemptResult =
+export type OrchestratorCompletionResult =
   | UpstreamErrorResult
   | MissingBodyResult
-  | RetryResult
   | StreamingSuccessResult
   | JsonSuccessResult;
 
-export type FinalCompletionResult =
-  | UpstreamErrorResult
-  | MissingBodyResult
-  | StreamingSuccessResult
-  | JsonSuccessResult
-  | RetryExhaustedResult;
-
-export async function executeCompletionAttempt(
+export async function executeCompletion(
   openaiReq: OpenAIChatCompletionRequest,
   headers: Headers,
   config: OrchestratorConfig
-): Promise<CompletionAttemptResult> {
+): Promise<OrchestratorCompletionResult> {
   const { createClient, timeoutMs, sendSystemPrompt, logger, beforeAttempt, registerSessionUpdate } = config;
 
   // Call beforeAttempt callback if provided
@@ -119,112 +99,23 @@ export async function executeCompletionAttempt(
     };
   }
 
-  // 6. Call translator-in with retry-aware functions
+  // 6. Call translator-in
   const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) };
 
   if (openaiReq.stream === true) {
     const sseResult = await translateParserEventsToSSE(parseDeepSeekSSE(response.body), info, logger);
-    if (sseResult.parseError) {
-      return {
-        kind: 'retry',
-        correction: sseResult.parseError.syntaxRules,
-        error: sseResult.parseError,
-        sessionUpdatePromise,
-      };
-    }
     return {
       kind: 'streaming-success',
-      sseResult,
+      sseResult: { stream: sseResult.stream },
       sessionUpdatePromise,
     };
   }
 
   const jsonResult = await translateParserEventsToJSON(parseDeepSeekSSE(response.body), info, logger);
-  if (jsonResult._malformedError) {
-    return {
-      kind: 'retry',
-      correction: jsonResult._malformedError.syntaxRules,
-      error: jsonResult._malformedError,
-      sessionUpdatePromise,
-    };
-  }
 
   return {
     kind: 'json-success',
     jsonResult,
     sessionUpdatePromise,
   };
-}
-
-export async function executeCompletionWithRetry(
-  openaiReq: OpenAIChatCompletionRequest,
-  headers: Headers,
-  config: OrchestratorConfig
-): Promise<FinalCompletionResult> {
-  const { timeoutMs, sendSystemPrompt, logger } = config;
-  
-  const MAX_MALFORMED_RETRIES = 5
-  let malformedRetryCount = 0
-  let lastMalformedError: { message: string; syntaxRules: string } | null = null
-  
-  // Work with a copy of messages that we can mutate for retries
-  let messages = [...openaiReq.messages]
-  
-  while (malformedRetryCount <= MAX_MALFORMED_RETRIES) {
-    // Retry never sends system prompt - only the initial request uses sendSystemPrompt
-    const retrySendSystemPrompt = malformedRetryCount > 0 ? false : sendSystemPrompt
-    
-    const attemptResult = await executeCompletionAttempt(
-      { ...openaiReq, messages },
-      headers,
-      {
-        ...config,
-        sendSystemPrompt: retrySendSystemPrompt,
-      }
-    )
-
-    // Handle upstream errors
-    if (attemptResult.kind === 'upstream-error') {
-      return attemptResult
-    }
-    if (attemptResult.kind === 'missing-body') {
-      return attemptResult
-    }
-    
-    // Valid success - return immediately
-    if (attemptResult.kind === 'streaming-success') {
-      return attemptResult
-    }
-    if (attemptResult.kind === 'json-success') {
-      return attemptResult
-    }
-    
-    // Retry case
-    if (attemptResult.kind === 'retry') {
-      lastMalformedError = attemptResult.error
-      malformedRetryCount++
-      
-      if (malformedRetryCount > MAX_MALFORMED_RETRIES) {
-        return {
-          kind: 'retry-exhausted',
-          message: `Model failed to produce valid DSML after ${MAX_MALFORMED_RETRIES} attempts. Last error: ${lastMalformedError.message}`
-        }
-      }
-      
-      // Inject corrective feedback into messages for retry
-      messages.push({
-        role: 'user',
-        content: attemptResult.correction
-      })
-      
-      // Continue loop for retry
-      continue
-    }
-  }
-  
-  // Should not reach here, but TypeScript needs it
-  return {
-    kind: 'retry-exhausted',
-    message: 'Unexpected state in retry loop'
-  }
 }
