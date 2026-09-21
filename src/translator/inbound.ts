@@ -181,42 +181,40 @@ export async function translateParserEventsToSSE(
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
 ): Promise<SSEParseResult> {
-  const outputChunks: Uint8Array[] = []
   let parseError: { message: string; syntaxRules: string } | null = null
   let hasEmittedRole = false
   let responseMessageId: string = 'null'
   let hasEmittedToolCalls = false
   let hasEmittedContent = false
 
-  const enqueue = (chunk: Uint8Array) => {
-    outputChunks.push(chunk)
-  }
-
-  const ctx: SSEEventHandlerContext = {
-    enqueue,
-    hasEmittedRole: () => hasEmittedRole,
-    setHasEmittedRole: (v: boolean) => { hasEmittedRole = v },
-    responseMessageId: () => responseMessageId,
-    setResponseMessageId: (v: string) => { responseMessageId = v },
-    hasEmittedToolCalls: () => hasEmittedToolCalls,
-    setHasEmittedToolCalls: (v: boolean) => { hasEmittedToolCalls = v },
-    hasEmittedContent: () => hasEmittedContent,
-    setHasEmittedContent: (v: boolean) => { hasEmittedContent = v },
-  }
-
-  for await (const event of events) {
-    const result = handleParserEventSSE(event, info, ctx)
-    if (result.parseError) {
-      parseError = result.parseError
-    }
-  }
-
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of outputChunks) {
+    async start(controller) {
+      const enqueue = (chunk: Uint8Array) => {
         controller.enqueue(chunk)
       }
-      controller.close()
+
+      const ctx: SSEEventHandlerContext = {
+        enqueue,
+        hasEmittedRole: () => hasEmittedRole,
+        setHasEmittedRole: (v: boolean) => { hasEmittedRole = v },
+        responseMessageId: () => responseMessageId,
+        setResponseMessageId: (v: string) => { responseMessageId = v },
+        hasEmittedToolCalls: () => hasEmittedToolCalls,
+        setHasEmittedToolCalls: (v: boolean) => { hasEmittedToolCalls = v },
+        hasEmittedContent: () => hasEmittedContent,
+        setHasEmittedContent: (v: boolean) => { hasEmittedContent = v },
+      }
+
+      try {
+        for await (const event of events) {
+          const result = handleParserEventSSE(event, info, ctx)
+          if (result.parseError) {
+            parseError = result.parseError
+          }
+        }
+      } finally {
+        controller.close()
+      }
     },
   })
 

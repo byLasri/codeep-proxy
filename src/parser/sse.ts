@@ -238,11 +238,15 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
   if (state.isToolCallInProgress) {
     state.toolCallBuffer += text
     const endMarker = 'END_CODEEP_CALL'
-    const endIdx = state.toolCallBuffer.indexOf(endMarker)
-    if (endIdx !== -1) {
+    
+    while (true) {
+      const endIdx = state.toolCallBuffer.indexOf(endMarker)
+      if (endIdx === -1) {
+        break
+      }
+      
       const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
       state.toolCallBuffer = state.toolCallBuffer.substring(endIdx + endMarker.length)
-      state.isToolCallInProgress = false
       
       try {
         const parsed = JSON.parse(jsonStr)
@@ -263,6 +267,14 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
           message: 'Invalid CODEEP_CALL JSON format',
           syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
         }
+      }
+    }
+    
+    if (!state.toolCallBuffer.includes(endMarker)) {
+      state.isToolCallInProgress = false
+      if (state.toolCallBuffer.length > 0) {
+        events.push(emitContent(state.toolCallBuffer))
+        state.toolCallBuffer = ''
       }
     }
     return events
@@ -329,9 +341,16 @@ function finalizeToolCallBuffer(state: InternalParserState): ParserEvent[] {
   
   if (state.isToolCallInProgress) {
     const endMarker = 'END_CODEEP_CALL'
-    const endIdx = state.toolCallBuffer.indexOf(endMarker)
-    if (endIdx !== -1) {
+    
+    while (true) {
+      const endIdx = state.toolCallBuffer.indexOf(endMarker)
+      if (endIdx === -1) {
+        break
+      }
+      
       const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
+      state.toolCallBuffer = state.toolCallBuffer.substring(endIdx + endMarker.length)
+      
       try {
         const parsed = JSON.parse(jsonStr)
         if (parsed && typeof parsed.name === 'string' && parsed.arguments && typeof parsed.arguments === 'object') {
@@ -352,7 +371,9 @@ function finalizeToolCallBuffer(state: InternalParserState): ParserEvent[] {
           syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
         }
       }
-    } else {
+    }
+    
+    if (!state.toolCallBuffer.includes(endMarker)) {
       state.parseError = {
         message: 'Unclosed CODEEP_CALL block at end of response',
         syntaxRules: 'Each CODEEP_CALL must have a matching END_CODEEP_CALL marker.'
