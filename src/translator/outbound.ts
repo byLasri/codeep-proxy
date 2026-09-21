@@ -68,7 +68,10 @@ export function buildDeepSeekPrompt(
     }
     if (tools && tools.length) {
       const toolDefs = JSON.stringify(tools)
-      const codeepInstruction = `When you need to call one or more tools, output each tool call using exactly this format:
+      parts.push(`Available tools:\n${toolDefs}`)
+      parts.push(`Tool calling protocol:
+
+When calling a tool, you MUST use exactly this format:
 
 CODEEP_CALL
 {"name":"tool_name","arguments":{"parameter":"value"}}
@@ -76,18 +79,16 @@ END_CODEEP_CALL
 
 Rules:
 
-* \`name\` must be the exact name of an available tool.
-* \`arguments\` must be a JSON object containing the tool arguments.
-* Output no explanatory text inside a \`CODEEP_CALL\` block.
-* Each tool call must have its own \`CODEEP_CALL\` and \`END_CODEEP_CALL\` markers.
-* Multiple tool calls may be emitted in the same response.
-* When you are not calling a tool, respond normally.
-* Do not output XML, DSML, \`<invoke>\`, \`<parameter>\`, or any other tool-call syntax.
-* After receiving tool results, continue from those results and call another tool if needed.
+* \`name\` MUST be the exact name of an available tool.
+* \`arguments\` MUST be a valid JSON object containing the tool arguments.
+* A tool call MUST be completely contained between \`CODEEP_CALL\` and \`END_CODEEP_CALL\`.
+* Each block MUST contain exactly one tool call.
+* Multiple tool calls MUST use separate complete \`CODEEP_CALL\` blocks.
+* No explanatory text may appear inside a \`CODEEP_CALL\` block.
+* When no tool call is required, respond with normal text.
+* After receiving a tool result, continue the task using that result and emit another \`CODEEP_CALL\` block when another tool call is required.
 
-Available tools:
-${toolDefs}`
-      parts.push(codeepInstruction)
+Every tool call in your response MUST follow this protocol.`)
     }
 
     const userMsg = [...messages].reverse().find((m) => m.role === 'user')
