@@ -1,4 +1,14 @@
-import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, translateDeepSeekStreamToSSE, translateDeepSeekStreamToJSON, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE } from '../src/translator/inbound.js'
+import { parseDSMLToolCalls, buildCorrectiveMessage, type DSMLParseResult, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE } from '../src/parser/dsml.js'
+import { parseDeepSeekSSE } from '../src/parser/index.js'
+import { translateParserEventsToSSE, translateParserEventsToJSON } from '../src/translator/inbound.js'
+
+async function translateDeepSeekStreamToSSE(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }) {
+  return translateParserEventsToSSE(parseDeepSeekSSE(stream), info)
+}
+
+async function translateDeepSeekStreamToJSON(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }) {
+  return translateParserEventsToJSON(parseDeepSeekSSE(stream), info)
+
 
 function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
