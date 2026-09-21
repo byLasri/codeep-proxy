@@ -360,36 +360,23 @@ async function main() {
     'DeepSeekCompletionInput not found in deepseek_api/types.ts'
   )
 
-  // Check inbound exports
+  // Inbound is the boring semantic-to-OpenAI translator: it consumes parser events only.
   assert(
-    inboundContent.includes('export async function translateDeepSeekStreamToSSEAttempt'),
-    'translateDeepSeekStreamToSSEAttempt exported from inbound.ts',
-    'SSE attempt not exported'
+    inboundContent.includes('export async function translateParserEventsToSSE'),
+    'translateParserEventsToSSE exported from inbound.ts',
+    'SSE parser-event translator not exported'
   )
 
   assert(
-    inboundContent.includes('export async function translateDeepSeekStreamToJSONAttempt'),
-    'translateDeepSeekStreamToJSONAttempt exported from inbound.ts',
-    'JSON attempt not exported'
+    inboundContent.includes('export async function translateParserEventsToJSON'),
+    'translateParserEventsToJSON exported from inbound.ts',
+    'JSON parser-event translator not exported'
   )
 
   assert(
-    inboundContent.includes('export type TranslationAttemptResult'),
-    'TranslationAttemptResult type exported from inbound.ts',
-    'TranslationAttemptResult not exported'
-  )
-
-  // Verify TranslationAttemptResult structure
-  assert(
-    inboundContent.includes("kind: 'success'") && inboundContent.includes("kind: 'retry'"),
-    'TranslationAttemptResult has success/retry discriminated union',
-    'TranslationAttemptResult missing discriminated union'
-  )
-
-  assert(
-    inboundContent.includes('correction: string') && inboundContent.includes('error: { message: string; syntaxRules: string }'),
-    'Retry variant has correction and error with syntaxRules',
-    'Retry variant missing required fields'
+    !inboundContent.includes('DeepSeekSSEParser'),
+    'inbound.ts does not instantiate the raw parser',
+    'inbound.ts still owns parser construction'
   )
 
   // ============================================================
