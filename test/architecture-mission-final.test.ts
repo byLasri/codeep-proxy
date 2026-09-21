@@ -161,6 +161,7 @@ async function main() {
   const inboundAllowed = [
     './types',
     '../observability/logger',
+    '../parser/index',
   ]
 
   const inboundImports = extractImports(inboundContent)
