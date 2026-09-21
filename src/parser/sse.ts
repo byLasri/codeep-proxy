@@ -286,10 +286,12 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
   const fullContent = state.accumulatedContent + combined
 
   const startMarker = 'CODEEP_CALL'
-  const startIdx = fullContent.indexOf(startMarker)
+  const confirmedStartRegex = /(^|\n)CODEEP_CALL\r?\n\{/
+  const startMatch = confirmedStartRegex.exec(fullContent)
 
-  if (startIdx !== -1) {
-    const beforeMarker = fullContent.substring(0, startIdx)
+  if (startMatch) {
+    const markerStart = startMatch.index + startMatch[1].length
+    const beforeMarker = fullContent.substring(0, markerStart)
     const newSafeContent = beforeMarker.substring(state.accumulatedContent.length)
     if (newSafeContent.length > 0) {
       state.accumulatedContent = beforeMarker
@@ -297,12 +299,12 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
     }
 
     state.isToolCallInProgress = true
-    state.toolCallBuffer = fullContent.substring(startIdx + startMarker.length)
+    state.toolCallBuffer = fullContent.substring(markerStart + startMarker.length)
     state.accumulatedContent = beforeMarker
     return events
   }
 
-  const holdbackPatterns = [startMarker]
+  const holdbackPatterns = [startMarker, 'CODEEP_CALL\n{', 'CODEEP_CALL\r\n{']
   let holdbackLength = 0
   for (const pattern of holdbackPatterns) {
     for (let i = 1; i < pattern.length; i++) {
