@@ -10,22 +10,11 @@ export function formatOpenAIDone(): string {
   return 'data: [DONE]\n\n'
 }
 
-export interface SSEParseResult {
-  stream: ReadableStream<Uint8Array>
-}
-
 function mapToolCall(tc: ParserToolCall): ToolCall {
   return {
     id: tc.id,
     type: tc.type,
     function: tc.function
-  }
-}
-
-function mapParserError(pe: ParserError): { message: string; syntaxRules: string } {
-  return {
-    message: pe.message,
-    syntaxRules: pe.syntaxRules
   }
 }
 
@@ -37,8 +26,6 @@ interface SSEEventHandlerContext {
   setResponseMessageId: (v: string) => void
   hasEmittedToolCalls: () => boolean
   setHasEmittedToolCalls: (v: boolean) => void
-  hasEmittedContent: () => boolean
-  setHasEmittedContent: (v: boolean) => void
   toolCallIndex: () => number
   incrementToolCallIndex: () => void
 }
@@ -47,7 +34,7 @@ function handleParserEventSSE(
   event: ParserEvent,
   info: { model: string; id: string; created: number },
   ctx: SSEEventHandlerContext
-): { parseError?: { message: string; syntaxRules: string } } {
+): void {
   switch (event.type) {
     case 'session_id': {
       ctx.setResponseMessageId(event.id)
@@ -87,7 +74,6 @@ function handleParserEventSSE(
         }
         ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(roleChunk)))
       }
-      ctx.setHasEmittedContent(true)
       const chunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${ctx.responseMessageId()}`,
         object: 'chat.completion.chunk',
@@ -126,16 +112,7 @@ function handleParserEventSSE(
       break
     }
     case 'done': {
-      if (event.state.parseError) {
-        const finalChunk: OpenAIChatCompletionStreamResponse = {
-          id: `chatcmpl-${ctx.responseMessageId()}`,
-          object: 'chat.completion.chunk',
-          created: info.created,
-          model: info.model,
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        }
-        ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
-      } else if (ctx.hasEmittedToolCalls()) {
+      if (ctx.hasEmittedToolCalls()) {
       } else {
         const finalChunk: OpenAIChatCompletionStreamResponse = {
           id: `chatcmpl-${ctx.responseMessageId()}`,
@@ -163,31 +140,25 @@ function handleParserEventSSE(
         ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(usageChunk)))
       }
       ctx.enqueue(new TextEncoder().encode(formatOpenAIDone()))
-      
-      if (event.state.parseError) {
-        return { parseError: mapParserError(event.state.parseError) }
-      }
       break
     }
     case 'tokens': {
       break
     }
     case 'error': {
-      return { parseError: mapParserError(event.error) }
+      break
     }
   }
-  return {}
 }
 
 export async function translateParserEventsToSSE(
   events: AsyncIterable<ParserEvent>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): Promise<SSEParseResult> {
+): Promise<ReadableStream<Uint8Array>> {
   let hasEmittedRole = false
   let responseMessageId: string = 'null'
   let hasEmittedToolCalls = false
-  let hasEmittedContent = false
   let toolCallIndex = 0
 
   const stream = new ReadableStream<Uint8Array>({
@@ -204,8 +175,6 @@ export async function translateParserEventsToSSE(
         setResponseMessageId: (v: string) => { responseMessageId = v },
         hasEmittedToolCalls: () => hasEmittedToolCalls,
         setHasEmittedToolCalls: (v: boolean) => { hasEmittedToolCalls = v },
-        hasEmittedContent: () => hasEmittedContent,
-        setHasEmittedContent: (v: boolean) => { hasEmittedContent = v },
         toolCallIndex: () => toolCallIndex,
         incrementToolCallIndex: () => { toolCallIndex += 1; },
       }
@@ -224,7 +193,7 @@ export async function translateParserEventsToSSE(
     logger.logOutgoingToClient({ info, event: 'sse_stream_complete' })
   }
 
-  return { stream }
+  return stream
 }
 
 interface JSONAccumulatorContext {

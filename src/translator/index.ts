@@ -7,8 +7,6 @@ export type {
   OpenAIChatCompletionStreamResponse,
 } from './types.js'
 
-export type { SSEParseResult } from './inbound.js'
-
 export { mapOpenAIModelToDeepSeek } from './models.js'
 export { getXSessionIdFromHeaders, isFirstTurn, buildDeepSeekPrompt, translateOpenAIRequest } from './outbound.js'
 export type { RequestLogger } from '../observability/logger.js'

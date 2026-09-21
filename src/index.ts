@@ -259,7 +259,7 @@ export default {
               
               if (openaiReq.stream === true) {
                 const sseResult = await translateParserEventsToSSE(parseDeepSeekSSE(response.body), info, logger)
-                return new Response(sseResult.stream, {
+                return new Response(sseResult, {
                   headers: {
                     'Content-Type': 'text/event-stream; charset=utf-8',
                     'Cache-Control': 'no-cache, no-transform',
@@ -305,7 +305,7 @@ const jsonResp = await translateParserEventsToJSON(parseDeepSeekSSE(response.bod
               return new Response(JSON.stringify({ error: { message: 'DeepSeek API returned no body', type: 'upstream_error' } }), { status: 502, headers: { 'Content-Type': 'application/json' } })
             }
             if (finalResult.kind === 'streaming-success') {
-              return new Response(finalResult.sseResult.stream, {
+              return new Response(finalResult.stream, {
                 headers: {
                   'Content-Type': 'text/event-stream; charset=utf-8',
                   'Cache-Control': 'no-cache, no-transform',

@@ -36,7 +36,7 @@ export type MissingBodyResult = {
 
 export type StreamingSuccessResult = {
   kind: 'streaming-success';
-  sseResult: { stream: ReadableStream<Uint8Array> };
+  stream: ReadableStream<Uint8Array>;
   sessionUpdatePromise: Promise<void>;
 };
 
@@ -103,10 +103,10 @@ export async function executeCompletion(
   const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) };
 
   if (openaiReq.stream === true) {
-    const sseResult = await translateParserEventsToSSE(parseDeepSeekSSE(response.body), info, logger);
+    const stream = await translateParserEventsToSSE(parseDeepSeekSSE(response.body), info, logger);
     return {
       kind: 'streaming-success',
-      sseResult: { stream: sseResult.stream },
+      stream,
       sessionUpdatePromise,
     };
   }
