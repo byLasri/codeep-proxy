@@ -224,6 +224,32 @@ function processLine(state: InternalParserState, line: string): ParserEvent[] {
   return events
 }
 
+function findEndMarker(buffer: string, endMarker: string): number {
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < buffer.length; i++) {
+    const ch = buffer[i]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (ch === '\\') {
+        escaped = true
+      } else if (ch === '"') {
+        inString = false
+      }
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (buffer.startsWith(endMarker, i)) {
+      return i
+    }
+  }
+  return -1
+}
+
 function emitContentForFragment(state: InternalParserState, text: string, fragmentType: FragmentType): ParserEvent[] {
   const events: ParserEvent[] = []
 
@@ -240,7 +266,7 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
     const endMarker = 'END_CODEEP_CALL'
     
     while (true) {
-      const endIdx = state.toolCallBuffer.indexOf(endMarker)
+      const endIdx = findEndMarker(state.toolCallBuffer, endMarker)
       if (endIdx === -1) {
         break
       }
@@ -345,7 +371,7 @@ function finalizeToolCallBuffer(state: InternalParserState): ParserEvent[] {
     const endMarker = 'END_CODEEP_CALL'
     
     while (true) {
-      const endIdx = state.toolCallBuffer.indexOf(endMarker)
+      const endIdx = findEndMarker(state.toolCallBuffer, endMarker)
       if (endIdx === -1) {
         break
       }
