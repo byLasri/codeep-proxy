@@ -379,7 +379,7 @@ function finalizeToolCallBuffer(state: InternalParserState): ParserEvent[] {
       }
     }
     
-    if (!state.toolCallBuffer.includes(endMarker)) {
+    if (state.isToolCallInProgress) {
       state.parseError = {
         message: 'Unclosed CODEEP_CALL block at end of response',
         syntaxRules: 'Each CODEEP_CALL must have a matching END_CODEEP_CALL marker.'
