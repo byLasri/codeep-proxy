@@ -126,6 +126,7 @@ async function main() {
     '../translator/outbound',
     './outbound',
     'translator/' + 'request',
+    'parser/',
     'orchestrator',
     'deepseek_api/client',
     'src/index',
@@ -205,6 +206,7 @@ async function main() {
   const requiredOrchestratorImports = [
     '../translator/outbound',
     '../translator/inbound',
+    '../parser/index',
     '../deepseek_api/types',
     '../deepseek_api/client',
   ]
@@ -289,7 +291,7 @@ async function main() {
   // Verify edit-message path is separate
   const editFlowSection = indexContent.substring(editFlowStart, normalFlowStart)
   assert(
-    editFlowSection.includes('translateDeepSeekStreamToSSE') && editFlowSection.includes('translateDeepSeekStreamToJSON'),
+    editFlowSection.includes('translateParserEventsToSSE') && editFlowSection.includes('translateParserEventsToJSON') && editFlowSection.includes('parseDeepSeekSSE'),
     'Edit flow uses translator directly (not orchestrator)',
     'Edit flow does not use translator directly'
   )
