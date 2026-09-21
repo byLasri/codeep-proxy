@@ -123,35 +123,35 @@ export async function executeCompletionAttempt(
   const info = { model: openaiReq.model, id: 'chatcmpl', created: Math.floor(Date.now() / 1000) };
 
   if (openaiReq.stream === true) {
-    const sseAttemptResult = await translateDeepSeekStreamToSSEAttempt(response.body, info, logger);
-    if (sseAttemptResult.kind === 'retry') {
+    const sseResult = await translateParserEventsToSSE(parseDeepSeekSSE(response.body), info, logger);
+    if (sseResult.parseError) {
       return {
         kind: 'retry',
-        correction: sseAttemptResult.correction,
-        error: sseAttemptResult.error,
+        correction: sseResult.parseError.syntaxRules,
+        error: sseResult.parseError,
         sessionUpdatePromise,
       };
     }
     return {
       kind: 'streaming-success',
-      sseResult: sseAttemptResult.result,
+      sseResult,
       sessionUpdatePromise,
     };
   }
 
-  const jsonAttemptResult = await translateDeepSeekStreamToJSONAttempt(response.body, info, logger);
-  if (jsonAttemptResult.kind === 'retry') {
+  const jsonResult = await translateParserEventsToJSON(parseDeepSeekSSE(response.body), info, logger);
+  if (jsonResult._malformedError) {
     return {
       kind: 'retry',
-      correction: jsonAttemptResult.correction,
-      error: jsonAttemptResult.error,
+      correction: jsonResult._malformedError.syntaxRules,
+      error: jsonResult._malformedError,
       sessionUpdatePromise,
     };
   }
 
   return {
     kind: 'json-success',
-    jsonResult: jsonAttemptResult.result,
+    jsonResult,
     sessionUpdatePromise,
   };
 }
