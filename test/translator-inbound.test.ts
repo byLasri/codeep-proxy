@@ -1,18 +1,12 @@
-import { 
-  parseDSMLToolCalls, 
-  buildCorrectiveMessage, 
-  DSML_CORRECTIVE_MESSAGE_TEMPLATE,
-  ALL_DIALECTS,
-  translateDeepSeekStreamToSSE,
-  translateDeepSeekStreamToJSON,
-  translateDeepSeekStreamToSSEAttempt,
-  translateDeepSeekStreamToJSONAttempt,
+import {
+  translateParserEventsToSSE,
+  translateParserEventsToJSON,
   formatOpenAISSEChunk,
   formatOpenAIDone,
-  type DSMLParseResult,
-  type TranslationAttemptResult,
-  type SSEParseResult
+  type SSEParseResult,
 } from '../src/translator/inbound.js'
+import { parseDeepSeekSSE } from '../src/parser/index.js'
+import { parseDSMLToolCalls, buildCorrectiveMessage, ALL_DIALECTS, DSML_CORRECTIVE_MESSAGE_TEMPLATE, type DSMLParseResult } from '../src/parser/dsml.js'
 
 import { readFileSync } from 'fs'
 import { resolve, extname } from 'path'
@@ -33,6 +27,32 @@ function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
       }
     },
   })
+}
+
+type TranslationAttemptResult<T> =
+  | { kind: 'success'; result: T }
+  | { kind: 'retry'; correction: string; error: { message: string; syntaxRules: string } }
+
+async function translateDeepSeekStreamToSSE(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }) {
+  return translateParserEventsToSSE(parseDeepSeekSSE(stream), info)
+}
+
+async function translateDeepSeekStreamToJSON(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }) {
+  return translateParserEventsToJSON(parseDeepSeekSSE(stream), info)
+}
+
+async function translateDeepSeekStreamToSSEAttempt(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }): Promise<TranslationAttemptResult<Awaited<ReturnType<typeof translateDeepSeekStreamToSSE>>>> {
+  const result = await translateDeepSeekStreamToSSE(stream, info)
+  return result.parseError
+    ? { kind: 'retry', correction: result.parseError.syntaxRules, error: result.parseError }
+    : { kind: 'success', result }
+}
+
+async function translateDeepSeekStreamToJSONAttempt(stream: ReadableStream<Uint8Array>, info: { model: string; id: string; created: number }): Promise<TranslationAttemptResult<Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>>>> {
+  const result = await translateDeepSeekStreamToJSON(stream, info)
+  return result._malformedError
+    ? { kind: 'retry', correction: result._malformedError.syntaxRules, error: result._malformedError }
+    : { kind: 'success', result }
 }
 
 function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
@@ -996,6 +1016,166 @@ async function main() {
     const result = await translateDeepSeekStreamToJSON(stream, info)
     expect(result.usage.completion_tokens).toBe(42)
     expect(result.usage.total_tokens).toBe(42)
+  })
+
+  // ============================================================
+  // THINK/RESPONSE semantic boundary regression tests
+  // ============================================================
+  console.log('\n--- THINK/RESPONSE semantic boundary ---\n')
+
+  const validDSMLToolCall = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read_file">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜ calls>`
+
+  failed += await runTestAsync('THINK fragment containing valid DSML structure produces reasoning only (no tool calls)', async () => {
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 600 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'THINK', content: validDSMLToolCall }] } } }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream = createSSEStream(sseInput)
+    const result = await translateDeepSeekStreamToSSE(stream, info)
+    const output = await consumeStream(result.stream)
+    const { content, reasoning } = extractSSEContent(output)
+    expect(reasoning).toBe(validDSMLToolCall)
+    expect(content).toBe('')
+    expect(output).not.toContain('tool_calls')
+    expect(output).toContain('[DONE]')
+    expect(result.parseError).toBeNull()
+  })
+
+  failed += await runTestAsync('THINK fragment containing malformed DSML produces reasoning only (no parser error)', async () => {
+    const malformedDSML = `<｜｜DSML｜｜ calls>
+<｜｜DSML｜｜ invoke name="read_file">
+<｜｜DSML｜｜ parameter name="filePath" string="true">README.md</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>`
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 601 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'THINK', content: malformedDSML }] } } }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream = createSSEStream(sseInput)
+    const result = await translateDeepSeekStreamToSSE(stream, info)
+    const output = await consumeStream(result.stream)
+    const { content, reasoning } = extractSSEContent(output)
+    expect(reasoning).toBe(malformedDSML)
+    expect(content).toBe('')
+    expect(output).not.toContain('tool_calls')
+    expect(output).toContain('[DONE]')
+    expect(result.parseError).toBeNull()
+  })
+
+  failed += await runTestAsync('THINK fragment with DSML-like text produces reasoning only', async () => {
+    const thinkContent = 'Let me think about this <｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="test"></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls> and then respond'
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 602 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'THINK', content: thinkContent }] } } }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream = createSSEStream(sseInput)
+    const result = await translateDeepSeekStreamToSSE(stream, info)
+    const output = await consumeStream(result.stream)
+    const { content, reasoning } = extractSSEContent(output)
+    expect(reasoning).toBe(thinkContent)
+    expect(content).toBe('')
+    expect(output).not.toContain('tool_calls')
+    expect(result.parseError).toBeNull()
+  })
+
+  failed += await runTestAsync('THINK fragment with DSML produces no retry in JSON mode', async () => {
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 603 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'THINK', content: validDSMLToolCall }] } } }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream = createSSEStream(sseInput)
+    const result = await translateDeepSeekStreamToJSONAttempt(stream, info)
+    expect(result.kind).toBe('success')
+    if (result.kind === 'success') {
+      expect(result.result.choices[0].message.reasoning_content).toBe(validDSMLToolCall)
+      expect(result.result.choices[0].message.content).toBe('')
+      expect(result.result.choices[0].message.tool_calls).toBeUndefined()
+      expect(result.result._malformedError).toBeUndefined()
+    }
+  })
+
+  failed += await runTestAsync('RESPONSE fragment with valid DSML still produces tool_calls', async () => {
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 604 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+      makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: validDSMLToolCall }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream = createSSEStream(sseInput)
+    const result = await translateDeepSeekStreamToSSE(stream, info)
+    const output = await consumeStream(result.stream)
+    expect(output).toContain('tool_calls')
+    expect(output).toContain('read_file')
+    expect(output).toContain('README.md')
+    expect(result.parseError).toBeNull()
+  })
+
+  failed += await runTestAsync('RESPONSE normal text produces content (no tool calls)', async () => {
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 605 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: 'Normal response text' }] } } }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream = createSSEStream(sseInput)
+    const result = await translateDeepSeekStreamToSSE(stream, info)
+    const output = await consumeStream(result.stream)
+    const { content, reasoning } = extractSSEContent(output)
+    expect(content).toBe('Normal response text')
+    expect(reasoning).toBe('')
+    expect(output).not.toContain('tool_calls')
+    expect(result.parseError).toBeNull()
+  })
+
+  failed += await runTestAsync('streaming and non-streaming use same parser for THINK DSML', async () => {
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 606 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'THINK', content: validDSMLToolCall }] } } }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream1 = createSSEStream(sseInput)
+    const stream2 = createSSEStream(sseInput)
+    const sseResult = await translateDeepSeekStreamToSSE(stream1, info)
+    const jsonResult = await translateDeepSeekStreamToJSON(stream2, info)
+    const sseOutput = await consumeStream(sseResult.stream)
+    const { content: sseContent, reasoning: sseReasoning } = extractSSEContent(sseOutput)
+    expect(sseReasoning).toBe(validDSMLToolCall)
+    expect(sseContent).toBe('')
+    expect(jsonResult.choices[0].message.reasoning_content).toBe(validDSMLToolCall)
+    expect(jsonResult.choices[0].message.content).toBe('')
+    expect(jsonResult.choices[0].message.tool_calls).toBeUndefined()
+  })
+
+  failed += await runTestAsync('streaming and non-streaming use same parser for RESPONSE DSML', async () => {
+    const sseInput = [
+      makeSSEEvent('ready', { response_message_id: 607 }),
+      makeSSEEvent('update_session', { v: { response: { fragments: [{ type: 'RESPONSE', content: '' }] } } }),
+      makeSSEEvent('p', { p: 'response/fragments/-1/content', o: 'APPEND', v: validDSMLToolCall }),
+      makeSSEEvent('p', { p: 'response/status', o: 'SET', v: 'FINISHED' }),
+      makeSSEEvent('close', {}),
+    ]
+    const stream1 = createSSEStream(sseInput)
+    const stream2 = createSSEStream(sseInput)
+    const sseResult = await translateDeepSeekStreamToSSE(stream1, info)
+    const jsonResult = await translateDeepSeekStreamToJSON(stream2, info)
+    const sseOutput = await consumeStream(sseResult.stream)
+    expect(sseOutput).toContain('tool_calls')
+    expect(jsonResult.choices[0].message.tool_calls).toBeDefined()
+    expect(jsonResult.choices[0].message.tool_calls).toHaveLength(1)
+    expect(jsonResult.choices[0].message.tool_calls[0].function.name).toBe('read_file')
   })
 
   console.log(`\n${failed === 0 ? 'All' : failed} test${failed !== 1 ? 's' : ''} ${failed === 0 ? 'passed' : 'failed'}!`)
