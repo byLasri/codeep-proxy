@@ -1,5 +1,4 @@
 import type { DeepSeekSSEEvent, ParserEvent, ParserStateSnapshot, ParserError, ToolCall, FragmentType } from './types.js'
-import { parseDSMLToolCalls, type DSMLParseResult, type DSMLDialect, ALL_DIALECTS, getHoldbackPatterns } from './dsml.js'
 
 interface InternalParserState {
   buffer: string
@@ -17,7 +16,6 @@ interface InternalParserState {
   parsedToolCalls: ToolCall[]
   parseError: ParserError | null
   pendingLookahead: string
-  detectedDialect: DSMLDialect | null
   hasEmittedDone: boolean
   pendingInitialContent: string
   pendingInitialFragmentType: FragmentType | null
@@ -40,7 +38,6 @@ function createInitialState(): InternalParserState {
     parsedToolCalls: [],
     parseError: null,
     pendingLookahead: '',
-    detectedDialect: null,
     hasEmittedDone: false,
     pendingInitialContent: '',
     pendingInitialFragmentType: null,
@@ -231,7 +228,6 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
   const events: ParserEvent[] = []
 
   if (fragmentType === 'THINK') {
-    // THINK fragments: always reasoning, never DSML detection
     state.accumulatedReasoning += text
     if (text.length > 0) {
       events.push(emitReasoning(text))
@@ -239,19 +235,34 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
     return events
   }
 
-  // RESPONSE fragments: may contain DSML tool calls
   if (state.isToolCallInProgress) {
     state.toolCallBuffer += text
-    if (state.detectedDialect && state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
-      const result = parseDSMLToolCalls(state.toolCallBuffer)
-      state.parsedToolCalls = result.toolCalls
-      if (result.isMalformed && result.error) {
-        state.parseError = result.error
-      }
+    const endMarker = 'END_CODEEP_CALL'
+    const endIdx = state.toolCallBuffer.indexOf(endMarker)
+    if (endIdx !== -1) {
+      const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
+      state.toolCallBuffer = state.toolCallBuffer.substring(endIdx + endMarker.length)
       state.isToolCallInProgress = false
-      state.toolCallBuffer = ''
-      if (state.parsedToolCalls.length > 0) {
-        events.push(emitToolCalls(state.parsedToolCalls))
+      
+      try {
+        const parsed = JSON.parse(jsonStr)
+        if (parsed && typeof parsed.name === 'string' && parsed.arguments && typeof parsed.arguments === 'object') {
+          const toolCall: ToolCall = {
+            id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: 'function',
+            function: {
+              name: parsed.name,
+              arguments: JSON.stringify(parsed.arguments)
+            }
+          }
+          state.parsedToolCalls.push(toolCall)
+          events.push(emitToolCalls([toolCall]))
+        }
+      } catch {
+        state.parseError = {
+          message: 'Invalid CODEEP_CALL JSON format',
+          syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
+        }
       }
     }
     return events
@@ -262,33 +273,26 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
 
   const fullContent = state.accumulatedContent + combined
 
-  let dsmlIdx = -1
-  let matchedDialect: DSMLDialect | null = null
-  for (const dialect of ALL_DIALECTS) {
-    const idx = fullContent.indexOf(dialect.openCalls)
-    if (idx !== -1 && (dsmlIdx === -1 || idx < dsmlIdx)) {
-      dsmlIdx = idx
-      matchedDialect = dialect
-    }
-  }
+  const startMarker = 'CODEEP_CALL'
+  const startIdx = fullContent.indexOf(startMarker)
 
-  if (dsmlIdx !== -1 && matchedDialect) {
-    const beforeDSML = fullContent.substring(0, dsmlIdx)
-    const newSafeContent = beforeDSML.substring(state.accumulatedContent.length)
+  if (startIdx !== -1) {
+    const beforeMarker = fullContent.substring(0, startIdx)
+    const newSafeContent = beforeMarker.substring(state.accumulatedContent.length)
     if (newSafeContent.length > 0) {
-      state.accumulatedContent = beforeDSML
+      state.accumulatedContent = beforeMarker
       events.push(emitContent(newSafeContent))
     }
-    
+
     state.isToolCallInProgress = true
-    state.detectedDialect = matchedDialect
-    state.toolCallBuffer = fullContent.substring(dsmlIdx)
-    state.accumulatedContent = beforeDSML
+    state.toolCallBuffer = fullContent.substring(startIdx + startMarker.length)
+    state.accumulatedContent = beforeMarker
     return events
   }
 
+  const holdbackPatterns = [startMarker]
   let holdbackLength = 0
-  for (const pattern of getHoldbackPatterns()) {
+  for (const pattern of holdbackPatterns) {
     for (let i = 1; i < pattern.length; i++) {
       if (fullContent.endsWith(pattern.substring(0, i))) {
         holdbackLength = Math.max(holdbackLength, i)
@@ -323,39 +327,39 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
 function finalizeToolCallBuffer(state: InternalParserState): ParserEvent[] {
   const events: ParserEvent[] = []
   
-  if (state.isToolCallInProgress && state.detectedDialect) {
-    if (state.toolCallBuffer.includes(state.detectedDialect.closeCalls)) {
-      // Complete DSML - parse and emit tool calls
-      const result = parseDSMLToolCalls(state.toolCallBuffer)
-      state.parsedToolCalls = result.toolCalls
-      if (result.isMalformed && result.error) {
-        state.parseError = result.error
-      }
-      if (state.parsedToolCalls.length > 0) {
-        events.push(emitToolCalls(state.parsedToolCalls))
+  if (state.isToolCallInProgress) {
+    const endMarker = 'END_CODEEP_CALL'
+    const endIdx = state.toolCallBuffer.indexOf(endMarker)
+    if (endIdx !== -1) {
+      const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
+      try {
+        const parsed = JSON.parse(jsonStr)
+        if (parsed && typeof parsed.name === 'string' && parsed.arguments && typeof parsed.arguments === 'object') {
+          const toolCall: ToolCall = {
+            id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: 'function',
+            function: {
+              name: parsed.name,
+              arguments: JSON.stringify(parsed.arguments)
+            }
+          }
+          state.parsedToolCalls.push(toolCall)
+          events.push(emitToolCalls([toolCall]))
+        }
+      } catch {
+        state.parseError = {
+          message: 'Invalid CODEEP_CALL JSON format',
+          syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
+        }
       }
     } else {
-      // Incomplete DSML at EOF - treat as malformed
-      const result = parseDSMLToolCalls(state.toolCallBuffer)
-      state.parsedToolCalls = result.toolCalls
-      if (result.isMalformed && result.error) {
-        state.parseError = result.error
+      state.parseError = {
+        message: 'Unclosed CODEEP_CALL block at end of response',
+        syntaxRules: 'Each CODEEP_CALL must have a matching END_CODEEP_CALL marker.'
       }
     }
     state.isToolCallInProgress = false
     state.toolCallBuffer = ''
-  }
-  
-  // Also check accumulated content including any pending lookahead for malformed DSML
-  const fullAccumulatedContent = state.accumulatedContent + state.pendingLookahead
-  if (!state.parseError && fullAccumulatedContent) {
-    const dsmlResult = parseDSMLToolCalls(fullAccumulatedContent)
-    if (dsmlResult.isMalformed && dsmlResult.error) {
-      state.parseError = dsmlResult.error
-    } else if (dsmlResult.toolCalls.length > 0) {
-      state.parsedToolCalls = dsmlResult.toolCalls
-      events.push(emitToolCalls(state.parsedToolCalls))
-    }
   }
   
   return events
@@ -408,8 +412,6 @@ export class DeepSeekSSEParser {
     return createEmptySnapshot(this.state)
   }
 }
-
-export { parseDSMLToolCalls, buildCorrectiveMessage, ALL_DIALECTS, type DSMLDialect, type DSMLDelimiter, type DSMLWrapper, type DSMLParseResult, DSML_CORRECTIVE_MESSAGE_TEMPLATE } from './dsml.js'
 
 export async function* parseDeepSeekSSE(
   deepSeekStream: ReadableStream<Uint8Array>

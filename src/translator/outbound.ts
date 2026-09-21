@@ -67,7 +67,27 @@ export function buildDeepSeekPrompt(
       parts.push(systems.join('\n\n'))
     }
     if (tools && tools.length) {
-      parts.push(JSON.stringify(tools))
+      const toolDefs = JSON.stringify(tools)
+      const codeepInstruction = `When you need to call one or more tools, output each tool call using exactly this format:
+
+CODEEP_CALL
+{"name":"tool_name","arguments":{"parameter":"value"}}
+END_CODEEP_CALL
+
+Rules:
+
+* \`name\` must be the exact name of an available tool.
+* \`arguments\` must be a JSON object containing the tool arguments.
+* Output no explanatory text inside a \`CODEEP_CALL\` block.
+* Each tool call must have its own \`CODEEP_CALL\` and \`END_CODEEP_CALL\` markers.
+* Multiple tool calls may be emitted in the same response.
+* When you are not calling a tool, respond normally.
+* Do not output XML, DSML, \`<invoke>\`, \`<parameter>\`, or any other tool-call syntax.
+* After receiving tool results, continue from those results and call another tool if needed.
+
+Available tools:
+${toolDefs}`
+      parts.push(codeepInstruction)
     }
 
     const userMsg = [...messages].reverse().find((m) => m.role === 'user')
