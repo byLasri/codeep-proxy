@@ -3,13 +3,8 @@ import type { CompletionResult } from '../deepseek_api/client.js'
 import type { OpenAIChatCompletionRequest } from '../translator/types.js'
 import type { RequestLogger } from '../observability/logger.js'
 import { translateOpenAIRequest } from '../translator/outbound.js'
-import { 
-  translateDeepSeekStreamToSSE, 
-  translateDeepSeekStreamToJSON, 
-  translateDeepSeekStreamToSSEAttempt,
-  translateDeepSeekStreamToJSONAttempt,
-  type SSEParseResult 
-} from '../translator/inbound.js'
+import { translateParserEventsToSSE, translateParserEventsToJSON, type SSEParseResult } from '../translator/inbound.js'
+import { parseDeepSeekSSE } from '../parser/index.js'
 
 export interface CompletionClient {
   completeWithAutoSession(
@@ -54,7 +49,7 @@ export type StreamingSuccessResult = {
 
 export type JsonSuccessResult = {
   kind: 'json-success';
-  jsonResult: Awaited<ReturnType<typeof translateDeepSeekStreamToJSON>>;
+  jsonResult: Awaited<ReturnType<typeof translateParserEventsToJSON>>;
   sessionUpdatePromise: Promise<void>;
 };
 
