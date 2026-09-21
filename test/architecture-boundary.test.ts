@@ -96,7 +96,7 @@ function checkForbiddenImports(): { passed: boolean; errors: string[] } {
 
   for (const rule of [
     { file: 'src/translator/outbound.ts', forbidden: ['../translator/inbound', './inbound', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'outbound.ts must not depend on inbound, orchestrator, src/index, or deepseek_api/client' },
-    { file: 'src/translator/inbound.ts', forbidden: ['../translator/outbound', './outbound', 'request.ts', 'parser/', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'inbound.ts must not depend on outbound, parser, orchestrator, src/index, or deepseek_api/client' },
+    { file: 'src/translator/inbound.ts', forbidden: ['../translator/outbound', './outbound', 'request.ts', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'inbound.ts must not depend on outbound, parser, orchestrator, src/index, or deepseek_api/client' },
     { file: 'src/orchestrator/completion.ts', forbidden: ['src/index'], desc: 'orchestrator/completion.ts must not depend on src/index' },
   ] as const) {
     const content = readFile(rule.file)
@@ -106,6 +106,12 @@ function checkForbiddenImports(): { passed: boolean; errors: string[] } {
         return { passed: false, errors: [`${rule.file}:${line}: forbidden import/reference "${pattern}" - ${rule.desc}`] }
       }
     }
+  }
+
+  const inbound = readFile('src/translator/inbound.ts')
+  const hasRuntimeParserImport = /import\s+\{[\s\S]*?\}\s+from\s+['"]\.\.\/parser\//.test(inbound)
+  if (hasRuntimeParserImport) {
+    return { passed: false, errors: ['src/translator/inbound.ts: runtime parser import detected; parser dependency must be type-only'] }
   }
 
   // deepseek_api: dynamic recursive scan
