@@ -96,7 +96,7 @@ function checkForbiddenImports(): { passed: boolean; errors: string[] } {
 
   for (const rule of [
     { file: 'src/translator/outbound.ts', forbidden: ['../translator/inbound', './inbound', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'outbound.ts must not depend on inbound, orchestrator, src/index, or deepseek_api/client' },
-    { file: 'src/translator/inbound.ts', forbidden: ['../translator/outbound', './outbound', 'request.ts', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'inbound.ts must not depend on outbound, request.ts, orchestrator, src/index, or deepseek_api/client' },
+    { file: 'src/translator/inbound.ts', forbidden: ['../translator/outbound', './outbound', 'request.ts', 'parser/', 'orchestrator', 'src/index', 'deepseek_api/client'], desc: 'inbound.ts must not depend on outbound, parser, orchestrator, src/index, or deepseek_api/client' },
     { file: 'src/orchestrator/completion.ts', forbidden: ['src/index'], desc: 'orchestrator/completion.ts must not depend on src/index' },
   ] as const) {
     const content = readFile(rule.file)
@@ -127,7 +127,7 @@ function checkForbiddenImports(): { passed: boolean; errors: string[] } {
 function checkRequiredImports(): { passed: boolean; errors: string[] } {
   const errors: string[] = []
   for (const rule of [
-    { file: 'src/orchestrator/completion.ts', required: ['../translator/outbound', '../translator/inbound'], desc: 'orchestrator/completion.ts must import both outbound and inbound' },
+    { file: 'src/orchestrator/completion.ts', required: ['../translator/outbound', '../translator/inbound', '../parser/index'], desc: 'orchestrator/completion.ts must import both outbound and inbound' },
   ] as const) {
     const content = readFile(rule.file)
     for (const pattern of rule.required) {
