@@ -112,6 +112,37 @@ function handleParserEventSSE(
       break
     }
     case 'done': {
+      if (!ctx.hasEmittedToolCalls() && event.state.hasLegacyToolSyntax) {
+        const reminder =
+          'Invalid tool call format detected. Use the CODEEP_CALL protocol only: ' +
+          'put the CODEEP_CALL marker on its own line, then one JSON object with name and arguments, ' +
+          'then END_CODEEP_CALL on its own line. Do not use XML, DSML, or angle-bracket tags.'
+        const correctionChunk: OpenAIChatCompletionStreamResponse = {
+          id: `chatcmpl-${ctx.responseMessageId()}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: ctx.toolCallIndex(),
+                id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                type: 'function',
+                function: {
+                  name: 'bash',
+                  arguments: JSON.stringify({ command: `echo "${reminder}"` }),
+                },
+              }],
+            },
+            finish_reason: null,
+          }],
+        }
+        ctx.setHasEmittedToolCalls(true)
+        ctx.incrementToolCallIndex()
+        ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(correctionChunk)))
+      }
+
       const finalChunk: OpenAIChatCompletionStreamResponse = {
         id: `chatcmpl-${ctx.responseMessageId()}`,
         object: 'chat.completion.chunk',

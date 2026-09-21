@@ -13,6 +13,7 @@ export interface ParserStateSnapshot {
   accumulatedTokens: number
   isComplete: boolean
   parseError: ParserError | null
+  hasLegacyToolSyntax: boolean
 }
 
 export interface ParserError {

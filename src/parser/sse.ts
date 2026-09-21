@@ -44,6 +44,22 @@ function createInitialState(): InternalParserState {
   }
 }
 
+const LEGACY_TOOL_NAME_ATTR = /<(invoke|parameter)\b[^>]*\bname\s*=/i
+
+function detectLegacyToolSyntax(content: string): boolean {
+  if (!content) {
+    return false
+  }
+  if (
+    content.includes('<｜DSML｜') ||
+    content.includes('<｜｜DSML｜｜') ||
+    content.includes('<||DSML||')
+  ) {
+    return true
+  }
+  return LEGACY_TOOL_NAME_ATTR.test(content)
+}
+
 function createEmptySnapshot(state: InternalParserState): ParserStateSnapshot {
   return {
     currentFragmentType: state.currentFragmentType,
@@ -53,6 +69,7 @@ function createEmptySnapshot(state: InternalParserState): ParserStateSnapshot {
     accumulatedTokens: state.accumulatedTokens,
     isComplete: state.hasEmittedDone,
     parseError: state.parseError,
+    hasLegacyToolSyntax: detectLegacyToolSyntax(state.accumulatedContent + state.pendingLookahead),
   }
 }
 
