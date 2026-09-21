@@ -10,7 +10,7 @@ export function formatOpenAIDone(): string {
   return 'data: [DONE]\n\n'
 }
 
-export interface SSETranslateResult {
+export interface SSEParseResult {
   stream: ReadableStream<Uint8Array>
   parseError: { message: string; syntaxRules: string } | null
 }
@@ -180,7 +180,7 @@ export async function translateParserEventsToSSE(
   events: AsyncIterable<ParserEvent>,
   info: { model: string; id: string; created: number },
   logger?: RequestLogger
-): Promise<SSETranslateResult> {
+): Promise<SSEParseResult> {
   const outputChunks: Uint8Array[] = []
   let parseError: { message: string; syntaxRules: string } | null = null
   let hasEmittedRole = false
