@@ -40,6 +40,8 @@ interface SSEEventHandlerContext {
   setHasEmittedToolCalls: (v: boolean) => void
   hasEmittedContent: () => boolean
   setHasEmittedContent: (v: boolean) => void
+  toolCallIndex: () => number
+  incrementToolCallIndex: () => void
 }
 
 function handleParserEventSSE(
@@ -100,6 +102,7 @@ function handleParserEventSSE(
     case 'tool_calls': {
       if (event.toolCalls.length > 0) {
         ctx.setHasEmittedToolCalls(true)
+        const baseIndex = ctx.toolCallIndex()
         const toolCallChunk: OpenAIChatCompletionStreamResponse = {
           id: `chatcmpl-${ctx.responseMessageId()}`,
           object: 'chat.completion.chunk',
@@ -109,7 +112,7 @@ function handleParserEventSSE(
             index: 0,
             delta: {
               tool_calls: event.toolCalls.map((tc, idx) => ({
-                index: idx,
+                index: baseIndex + idx,
                 id: tc.id,
                 type: tc.type,
                 function: tc.function
@@ -118,6 +121,7 @@ function handleParserEventSSE(
             finish_reason: 'tool_calls'
           }]
         }
+        ctx.incrementToolCallIndex()
         ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(toolCallChunk)))
       }
       break
@@ -186,6 +190,7 @@ export async function translateParserEventsToSSE(
   let responseMessageId: string = 'null'
   let hasEmittedToolCalls = false
   let hasEmittedContent = false
+  let toolCallIndex = 0
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -203,6 +208,8 @@ export async function translateParserEventsToSSE(
         setHasEmittedToolCalls: (v: boolean) => { hasEmittedToolCalls = v },
         hasEmittedContent: () => hasEmittedContent,
         setHasEmittedContent: (v: boolean) => { hasEmittedContent = v },
+        toolCallIndex: () => toolCallIndex,
+        incrementToolCallIndex: () => { toolCallIndex += 1; },
       }
 
       try {
