@@ -103,7 +103,7 @@ function handleParserEventSSE(
                 function: tc.function
               }))
             },
-            finish_reason: 'tool_calls'
+            finish_reason: null
           }]
         }
         ctx.incrementToolCallIndex()
@@ -112,17 +112,14 @@ function handleParserEventSSE(
       break
     }
     case 'done': {
-      if (ctx.hasEmittedToolCalls()) {
-      } else {
-        const finalChunk: OpenAIChatCompletionStreamResponse = {
-          id: `chatcmpl-${ctx.responseMessageId()}`,
-          object: 'chat.completion.chunk',
-          created: info.created,
-          model: info.model,
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        }
-        ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
+      const finalChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${ctx.responseMessageId()}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{ index: 0, delta: {}, finish_reason: ctx.hasEmittedToolCalls() ? 'tool_calls' : 'stop' }],
       }
+      ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(finalChunk)))
       
       if (event.state.accumulatedTokens > 0) {
         const usageChunk: OpenAIChatCompletionStreamResponse = {
