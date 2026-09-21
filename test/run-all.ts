@@ -15,6 +15,7 @@ const SUITES = [
   'test/architecture-baseline.test.ts',
   'test/dsml-malformed.test.ts',
   'test/orchestrator-completion.test.ts',
+  'test/parser-challenge.test.ts',
 ] as const
 
 function runSuite(file: string): Promise<SuiteResult> {

@@ -146,6 +146,16 @@ function handleParserEventSSE(
       break
     }
     case 'error': {
+      ctx.enqueue(new TextEncoder().encode(
+        formatOpenAISSEChunk({
+          id: `chatcmpl-${ctx.responseMessageId()}`,
+          object: 'chat.completion.chunk',
+          created: info.created,
+          model: info.model,
+          choices: [{ index: 0, delta: {}, finish_reason: null }],
+          error: { message: event.error.message, type: 'parser_error' },
+        } as OpenAIChatCompletionStreamResponse)
+      ))
       break
     }
   }

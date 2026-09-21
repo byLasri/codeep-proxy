@@ -250,6 +250,89 @@ function findEndMarker(buffer: string, endMarker: string): number {
   return -1
 }
 
+function parseAndEmitToolCall(state: InternalParserState, jsonStr: string, events: ParserEvent[]): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonStr)
+  } catch {
+    const error: ParserError = {
+      message: 'Invalid CODEEP_CALL JSON format',
+      syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
+    }
+    state.parseError = error
+    events.push(emitError(error))
+    return
+  }
+
+  const obj = parsed as { name?: unknown; arguments?: unknown } | null
+  if (!obj || typeof obj !== 'object') {
+    const error: ParserError = {
+      message: 'CODEEP_CALL payload must be a JSON object',
+      syntaxRules: 'Tool call must be a JSON object with "name" (string) and "arguments" (object) fields.'
+    }
+    state.parseError = error
+    events.push(emitError(error))
+    return
+  }
+
+  if (typeof obj.name !== 'string' || obj.name.trim() === '') {
+    const error: ParserError = {
+      message: 'CODEEP_CALL is missing a valid "name" string',
+      syntaxRules: 'The "name" field must be a non-empty string matching an available tool.'
+    }
+    state.parseError = error
+    events.push(emitError(error))
+    return
+  }
+
+  if (obj.arguments === null || typeof obj.arguments !== 'object' || Array.isArray(obj.arguments)) {
+    const error: ParserError = {
+      message: 'CODEEP_CALL is missing a valid "arguments" object',
+      syntaxRules: 'The "arguments" field must be a JSON object containing the tool arguments.'
+    }
+    state.parseError = error
+    events.push(emitError(error))
+    return
+  }
+
+  const toolCall: ToolCall = {
+    id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    type: 'function',
+    function: {
+      name: obj.name,
+      arguments: JSON.stringify(obj.arguments)
+    }
+  }
+  state.parsedToolCalls.push(toolCall)
+  events.push(emitToolCalls([toolCall]))
+}
+
+function drainCompleteToolCalls(state: InternalParserState, events: ParserEvent[]): void {
+  const endMarker = 'END_CODEEP_CALL'
+
+  while (true) {
+    if (!state.isToolCallInProgress) {
+      if (state.toolCallBuffer.length === 0) {
+        break
+      }
+      const remaining = state.toolCallBuffer
+      state.toolCallBuffer = ''
+      events.push(...emitContentForFragment(state, remaining, 'RESPONSE'))
+      continue
+    }
+
+    const endIdx = findEndMarker(state.toolCallBuffer, endMarker)
+    if (endIdx === -1) {
+      break
+    }
+
+    const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
+    state.toolCallBuffer = state.toolCallBuffer.substring(endIdx + endMarker.length)
+    state.isToolCallInProgress = false
+    parseAndEmitToolCall(state, jsonStr, events)
+  }
+}
+
 function emitContentForFragment(state: InternalParserState, text: string, fragmentType: FragmentType): ParserEvent[] {
   const events: ParserEvent[] = []
 
@@ -263,46 +346,7 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
 
   if (state.isToolCallInProgress) {
     state.toolCallBuffer += text
-    const endMarker = 'END_CODEEP_CALL'
-    
-    while (true) {
-      const endIdx = findEndMarker(state.toolCallBuffer, endMarker)
-      if (endIdx === -1) {
-        break
-      }
-      
-      const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
-      state.toolCallBuffer = state.toolCallBuffer.substring(endIdx + endMarker.length)
-      state.isToolCallInProgress = false
-      
-      try {
-        const parsed = JSON.parse(jsonStr)
-        if (parsed && typeof parsed.name === 'string' && parsed.arguments && typeof parsed.arguments === 'object') {
-          const toolCall: ToolCall = {
-            id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            type: 'function',
-            function: {
-              name: parsed.name,
-              arguments: JSON.stringify(parsed.arguments)
-            }
-          }
-          state.parsedToolCalls.push(toolCall)
-          events.push(emitToolCalls([toolCall]))
-        }
-      } catch {
-        state.parseError = {
-          message: 'Invalid CODEEP_CALL JSON format',
-          syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
-        }
-      }
-      
-      if (state.toolCallBuffer.length > 0) {
-        const remaining = state.toolCallBuffer
-        state.toolCallBuffer = ''
-        events.push(...emitContentForFragment(state, remaining, 'RESPONSE'))
-      }
-    }
-    
+    drainCompleteToolCalls(state, events)
     return events
   }
 
@@ -327,6 +371,7 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
     state.isToolCallInProgress = true
     state.toolCallBuffer = fullContent.substring(markerStart + startMarker.length)
     state.accumulatedContent = beforeMarker
+    drainCompleteToolCalls(state, events)
     return events
   }
 
@@ -366,57 +411,27 @@ function emitContentForFragment(state: InternalParserState, text: string, fragme
 
 function finalizeToolCallBuffer(state: InternalParserState): ParserEvent[] {
   const events: ParserEvent[] = []
-  
+
   if (state.isToolCallInProgress) {
-    const endMarker = 'END_CODEEP_CALL'
-    
-    while (true) {
-      const endIdx = findEndMarker(state.toolCallBuffer, endMarker)
-      if (endIdx === -1) {
-        break
-      }
-      
-      const jsonStr = state.toolCallBuffer.substring(0, endIdx).trim()
-      state.toolCallBuffer = state.toolCallBuffer.substring(endIdx + endMarker.length)
-      
-      try {
-        const parsed = JSON.parse(jsonStr)
-        if (parsed && typeof parsed.name === 'string' && parsed.arguments && typeof parsed.arguments === 'object') {
-          const toolCall: ToolCall = {
-            id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            type: 'function',
-            function: {
-              name: parsed.name,
-              arguments: JSON.stringify(parsed.arguments)
-            }
-          }
-          state.parsedToolCalls.push(toolCall)
-          events.push(emitToolCalls([toolCall]))
-        }
-      } catch {
-        state.parseError = {
-          message: 'Invalid CODEEP_CALL JSON format',
-          syntaxRules: 'Tool call must be valid JSON with "name" (string) and "arguments" (object) fields.'
-        }
-      }
-      
-      if (state.toolCallBuffer.length > 0) {
-        const remaining = state.toolCallBuffer
-        state.toolCallBuffer = ''
-        events.push(...emitContentForFragment(state, remaining, 'RESPONSE'))
-      }
-    }
-    
+    drainCompleteToolCalls(state, events)
+
     if (state.isToolCallInProgress) {
-      state.parseError = {
+      const error: ParserError = {
         message: 'Unclosed CODEEP_CALL block at end of response',
         syntaxRules: 'Each CODEEP_CALL must have a matching END_CODEEP_CALL marker.'
       }
+      state.parseError = error
+      events.push(emitError(error))
+      const leftover = state.toolCallBuffer.trim()
+      if (leftover.length > 0) {
+        events.push(emitContent(leftover))
+      }
     }
+
     state.isToolCallInProgress = false
     state.toolCallBuffer = ''
   }
-  
+
   return events
 }
 
