@@ -90,4 +90,9 @@ export {
   buildAndroidCompletionRequest,
   type AndroidCompletionRequest,
 } from "./android-completion.js";
+export {
+  buildAndroidEditMessageRequest,
+  generateClientStreamId,
+  type AndroidEditMessageRequest,
+} from "./android-edit.js";
 export { DeepSeekAndroidClient, type DeepSeekAndroidClientConfig } from "./android-client.js";

@@ -190,8 +190,51 @@ async function main() {
     check('edit_message never called hif-leim', !editCalls.some(c => c.url.includes('hif-leim')))
     const persisted = await sessionStore.get('xsess')
     check('edit_message persisted response_message_id', persisted?.parent_message_id === 21, String(persisted?.parent_message_id))
+
+    // Captured Android edit body shape and field order.
+    const eb = JSON.parse(editReq.body)
+    check('edit_message field order matches capture',
+      JSON.stringify(Object.keys(eb)) === JSON.stringify(['chat_session_id','message_id','prompt','ref_file_ids','thinking_enabled','search_enabled','client_stream_id','action']),
+      JSON.stringify(Object.keys(eb)))
+    check('edit_message has client_stream_id', typeof eb.client_stream_id === 'string' && /^\d{8}-[0-9a-f]{16}$/.test(eb.client_stream_id), String(eb.client_stream_id))
+    check('edit_message action === null', eb.action === null)
   } finally {
     globalThis.fetch = realFetchEdit
+  }
+
+  // --- Android create_session (empty body) ---
+  console.log('\n--- Android create_session ---')
+  const createCalls: { url: string; body: string; headers: Record<string, string> }[] = []
+  const realFetchCreate = globalThis.fetch
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = typeof input === 'string' ? input : input.url
+    const hdrs: Record<string, string> = {}
+    if (init?.headers) {
+      const hh = init.headers as any
+      if (typeof hh.forEach === 'function') hh.forEach((v: string, k: string) => { hdrs[k.toLowerCase()] = v })
+      else Object.entries(hh).forEach(([k, v]) => { hdrs[k.toLowerCase()] = String(v) })
+    }
+    createCalls.push({ url, body: typeof init?.body === 'string' ? init.body : (init?.body == null ? '<none>' : String(init.body)), headers: hdrs })
+    if (url.includes('chat_session/create')) {
+      return new Response(JSON.stringify({ code: 0, data: { biz_data: { chat_session: { id: 'new-sess-1' } } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as any
+  try {
+    const stateStore = new MemoryStateStore()
+    await stateStore.set(PROTOCOL_STATE_KEYS.AUTH, JSON.stringify({ authorizationToken: 'Bearer test-token' }))
+    const sessionStore = new MemorySessionStore()
+    const client = new DeepSeekAndroidClient({ stateStore, sessionStore })
+    const session = await client.createSession()
+    const cc = createCalls.find(c => c.url.includes('chat_session/create'))!
+    check('create_session requested', !!cc)
+    check('create_session body is empty', cc.body === '' , JSON.stringify(cc.body))
+    check('create_session content-type json', cc.headers['content-type'] === 'application/json')
+    check('create_session android platform', cc.headers['x-client-platform'] === 'android')
+    check('create_session no x-ds-pow-response', !('x-ds-pow-response' in cc.headers))
+    check('create_session returned id', session.id === 'new-sess-1')
+  } finally {
+    globalThis.fetch = realFetchCreate
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

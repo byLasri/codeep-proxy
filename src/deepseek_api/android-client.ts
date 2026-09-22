@@ -32,7 +32,8 @@ import {
   buildAndroidCompletionHeaders,
 } from "./android-headers.js";
 import { buildAndroidCompletionRequest } from "./android-completion.js";
-import { buildEditMessageRequest, type EditMessageOptions } from "./edit-message.js";
+import { buildAndroidEditMessageRequest } from "./android-edit.js";
+import type { EditMessageOptions } from "./edit-message.js";
 
 /** Parse response_message_id from a single SSE line (ready event data payload). */
 function extractResponseMessageId(line: string): number | null {
@@ -84,10 +85,11 @@ export class DeepSeekAndroidClient {
     const identity = await this.getIdentity();
     const headers = buildAndroidApiHeaders(credentials, identity);
 
+    // Captured Android app sends an empty body (content-length: 0).
     const response = await fetch(`${this.origin}${DEEPSEEK.ENDPOINTS.CREATE_SESSION}`, {
       method: "POST",
       headers,
-      body: JSON.stringify({}),
+      body: "",
     });
 
     if (!response.ok) {
@@ -381,7 +383,7 @@ export class DeepSeekAndroidClient {
     const powHeader = encodePowResponse(solution);
     const headers = buildAndroidCompletionHeaders(credentials, identity, powHeader);
 
-    const requestBody = buildEditMessageRequest(chatSessionId, messageId, prompt, options ?? {});
+    const requestBody = buildAndroidEditMessageRequest(chatSessionId, messageId, prompt, options ?? {});
 
     if (logger) {
       logger.logUpstreamRequest(`${this.origin}${DEEPSEEK.ENDPOINTS.EDIT_MESSAGE}`, {
