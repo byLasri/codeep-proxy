@@ -245,7 +245,7 @@ export default {
                 timeout: timeoutMs,
               }
               
-              const client = createDeepSeekClient(env)
+              const client = createAndroidClient(env)
               const { response, sessionUpdatePromise } = await client.editMessage(
                 xSessionId,
                 messageId,
@@ -387,7 +387,7 @@ const input = body as {
               }
             }
 
-            const client = createDeepSeekClient(env)
+            const client = createAndroidClient(env)
 
             // Build completion input - protocol handles session creation/persistence via sessionStore
 const completionInput = {

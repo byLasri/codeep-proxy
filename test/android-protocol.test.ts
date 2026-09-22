@@ -144,6 +144,56 @@ async function main() {
     globalThis.fetch = realFetch
   }
 
+  // --- Android edit_message ---
+  console.log('\n--- Android edit_message ---')
+  const editCalls: { url: string; headers: Record<string, string>; body: string }[] = []
+  const realFetchEdit = globalThis.fetch
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = typeof input === 'string' ? input : input.url
+    const hdrs: Record<string, string> = {}
+    if (init?.headers) {
+      const hh = init.headers as any
+      if (typeof hh.forEach === 'function') hh.forEach((v: string, k: string) => { hdrs[k.toLowerCase()] = v })
+      else Object.entries(hh).forEach(([k, v]) => { hdrs[k.toLowerCase()] = String(v) })
+    }
+    editCalls.push({ url, headers: hdrs, body: typeof init?.body === 'string' ? init.body : '' })
+    if (url.includes('create_pow_challenge')) {
+      return new Response(JSON.stringify({ code: 0, data: { biz_data: { challenge: { algorithm: 'DeepSeekHashV1', challenge: powChallenge, salt: powSalt, signature: 'sig', difficulty: 1, expire_at: powExpireAt, target_path: '/api/v0/chat/completion' } } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (url.includes('edit_message')) {
+      const s = 'event: ready\ndata: {"request_message_id":20,"response_message_id":21,"model_type":"default"}\n\n'
+      return new Response(s, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as any
+
+  try {
+    const stateStore = new MemoryStateStore()
+    await stateStore.set(PROTOCOL_STATE_KEYS.AUTH, JSON.stringify({ authorizationToken: 'Bearer test-token' }))
+    const sessionStore = new MemorySessionStore()
+    await sessionStore.set('xsess', { x_session_id: 'xsess', chat_session_id: 'chat-9', parent_message_id: 7, turn_count: 3, created_at: 1, updated_at: 1 })
+    const client = new DeepSeekAndroidClient({ stateStore, sessionStore })
+    const result = await client.editMessage('xsess', 7, 'edited prompt', { thinking_enabled: true, search_enabled: false })
+    await result.response.text()
+    await result.sessionUpdatePromise
+
+    const editReq = editCalls.find(c => c.url.includes('edit_message'))!
+    check('edit_message requested', !!editReq)
+    check('edit_message uses android platform', editReq.headers['x-client-platform'] === 'android')
+    check('edit_message has x-ds-pow-response', !!editReq.headers['x-ds-pow-response'])
+    check('edit_message NO x-hif-leim', !('x-hif-leim' in editReq.headers))
+    check('edit_message NO origin', !('origin' in editReq.headers))
+    check('edit_message NO referer', !('referer' in editReq.headers))
+    check('edit_message NO cookie', !('cookie' in editReq.headers))
+    check('edit_message body has message_id', JSON.parse(editReq.body).message_id === 7)
+    check('edit_message body has chat_session_id', JSON.parse(editReq.body).chat_session_id === 'chat-9')
+    check('edit_message never called hif-leim', !editCalls.some(c => c.url.includes('hif-leim')))
+    const persisted = await sessionStore.get('xsess')
+    check('edit_message persisted response_message_id', persisted?.parent_message_id === 21, String(persisted?.parent_message_id))
+  } finally {
+    globalThis.fetch = realFetchEdit
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)
 }
