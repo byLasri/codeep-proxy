@@ -71,3 +71,23 @@ export {
 // Client
 export { DeepSeekWebClient, createDefaultCredentialsReader } from "./client.js";
 export type { DeepSeekWebClientConfig, CompletionResult } from "./client.js";
+
+// Android Profile
+export {
+  ANDROID_DEVICE_MODEL,
+  generateAndroidDeviceId,
+  generateAndroidRangersId,
+  getAndroidIdentity,
+  type AndroidDeviceIdentity,
+} from "./android-identity.js";
+export {
+  ANDROID_PROFILE,
+  buildAndroidClientHeaders,
+  buildAndroidApiHeaders,
+  buildAndroidCompletionHeaders,
+} from "./android-headers.js";
+export {
+  buildAndroidCompletionRequest,
+  type AndroidCompletionRequest,
+} from "./android-completion.js";
+export { DeepSeekAndroidClient, type DeepSeekAndroidClientConfig } from "./android-client.js";

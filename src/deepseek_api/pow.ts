@@ -148,3 +148,12 @@ function keccakP(
 export function encodePowResponse(solution: DeepSeekPowSolution): string {
   return btoa(JSON.stringify(solution));
 }
+
+/**
+ * Computes the DeepSeekHashV1 digest for a given input.
+ * Exposed so callers can construct verifiable fixtures without duplicating
+ * the algorithm.
+ */
+export function computePowHash(input: string): string {
+  return hash(input);
+}

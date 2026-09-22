@@ -1,7 +1,7 @@
 import { PROTOCOL_STATE_KEYS } from './deepseek_api/index.js'
 import { CloudflareKVStateStore } from './adapters/cloudflare-kv-state-store.js'
 import { CloudflareD1SessionStore } from './adapters/cloudflare-d1-session-store.js'
-import { DeepSeekWebClient } from './deepseek_api/index.js'
+import { DeepSeekWebClient, DeepSeekAndroidClient } from './deepseek_api/index.js'
 import { getXSessionIdFromHeaders, mapOpenAIModelToDeepSeek } from './translator/index.js'
 import { translateParserEventsToSSE, translateParserEventsToJSON } from './translator/index.js'
 import { parseDeepSeekSSE } from './parser/index.js'
@@ -60,6 +60,15 @@ function createDeepSeekClient(env: Env): DeepSeekWebClient {
   const stateStore = new CloudflareKVStateStore(env.AUTH_KV)
   const sessionStore = new CloudflareD1SessionStore(env.DB)
   return new DeepSeekWebClient({ stateStore, sessionStore })
+}
+
+// Android protocol profile client, used by the normal OpenAI-compatible
+// completion path. The web client above remains available as a backup and is
+// still used by edit_message and the raw /deepseekprotocol endpoint.
+function createAndroidClient(env: Env): DeepSeekAndroidClient {
+  const stateStore = new CloudflareKVStateStore(env.AUTH_KV)
+  const sessionStore = new CloudflareD1SessionStore(env.DB)
+  return new DeepSeekAndroidClient({ stateStore, sessionStore })
 }
 
 export default {
@@ -289,7 +298,7 @@ const jsonResp = await translateParserEventsToJSON(parseDeepSeekSSE(response.bod
             const timeoutMs = typeof openaiReq.timeout === 'number' ? openaiReq.timeout : 15000
 
             const finalResult: OrchestratorCompletionResult = await executeCompletion(openaiReq, request.headers, {
-              createClient: () => createDeepSeekClient(env),
+              createClient: () => createAndroidClient(env),
               timeoutMs,
               sendSystemPrompt,
               logger,

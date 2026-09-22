@@ -36,4 +36,5 @@ export interface ProtocolStateStore {
 export const PROTOCOL_STATE_KEYS = {
   AUTH: 'deepseek:auth',
   HIF_LEIM: 'deepseek:hif:leim',
+  ANDROID_IDENTITY: 'deepseek:android:identity',
 } as const;
