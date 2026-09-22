@@ -174,16 +174,35 @@ function handleParserEventSSE(
       break
     }
     case 'error': {
-      ctx.enqueue(new TextEncoder().encode(
-        formatOpenAISSEChunk({
-          id: `chatcmpl-${ctx.responseMessageId()}`,
-          object: 'chat.completion.chunk',
-          created: info.created,
-          model: info.model,
-          choices: [{ index: 0, delta: {}, finish_reason: null }],
-          error: { message: event.error.message, type: 'parser_error' },
-        } as OpenAIChatCompletionStreamResponse)
-      ))
+      const reminder = (
+        'Malformed tool call: ' + event.error.message + '. ' +
+        'The call was NOT executed. Re-emit it using the CODEEP_CALL format only: ' +
+        'marker on its own line, then one JSON object with name and arguments, then the closing marker on its own line.'
+      ).replace(/"/g, "'")
+      const correctionChunk: OpenAIChatCompletionStreamResponse = {
+        id: `chatcmpl-${ctx.responseMessageId()}`,
+        object: 'chat.completion.chunk',
+        created: info.created,
+        model: info.model,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: ctx.toolCallIndex(),
+              id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              type: 'function',
+              function: {
+                name: 'bash',
+                arguments: JSON.stringify({ command: `echo "${reminder}"` }),
+              },
+            }],
+          },
+          finish_reason: null,
+        }],
+      }
+      ctx.setHasEmittedToolCalls(true)
+      ctx.incrementToolCallIndex()
+      ctx.enqueue(new TextEncoder().encode(formatOpenAISSEChunk(correctionChunk)))
       break
     }
   }
