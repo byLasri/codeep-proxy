@@ -112,7 +112,7 @@ function handleParserEventSSE(
       break
     }
     case 'done': {
-      if (!ctx.hasEmittedToolCalls() && event.state.hasLegacyToolSyntax) {
+      if (!ctx.hasEmittedToolCalls() && event.state.hasMalformedToolSyntax) {
         const reminder =
           'Invalid tool call format detected. Use the CODEEP_CALL protocol only: ' +
           'put the CODEEP_CALL marker on its own line, then one JSON object with name and arguments, ' +

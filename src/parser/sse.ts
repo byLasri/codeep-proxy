@@ -46,7 +46,13 @@ function createInitialState(): InternalParserState {
 
 const LEGACY_TOOL_NAME_ATTR = /<(invoke|parameter)\b[^>]*\bname\s*=/i
 
-function detectLegacyToolSyntax(content: string): boolean {
+// A line that begins with a marker-like token (CODEEP_CALL, CODEEP_CODEEP_CALL,
+// CODEEP_CALLS, ...) followed by a JSON object on the next line. The exact valid
+// marker is consumed into tool mode, so anything matching this in accumulated
+// content is a malformed tool-call attempt.
+const MALFORMED_CODEEP_MARKER = /(^|\n)CODEEP[_A-Za-z]*\r?\n\s*\{/
+
+function detectMalformedToolSyntax(content: string): boolean {
   if (!content) {
     return false
   }
@@ -57,7 +63,10 @@ function detectLegacyToolSyntax(content: string): boolean {
   ) {
     return true
   }
-  return LEGACY_TOOL_NAME_ATTR.test(content)
+  if (LEGACY_TOOL_NAME_ATTR.test(content)) {
+    return true
+  }
+  return MALFORMED_CODEEP_MARKER.test(content)
 }
 
 function createEmptySnapshot(state: InternalParserState): ParserStateSnapshot {
@@ -69,7 +78,7 @@ function createEmptySnapshot(state: InternalParserState): ParserStateSnapshot {
     accumulatedTokens: state.accumulatedTokens,
     isComplete: state.hasEmittedDone,
     parseError: state.parseError,
-    hasLegacyToolSyntax: detectLegacyToolSyntax(state.accumulatedContent + state.pendingLookahead),
+    hasMalformedToolSyntax: detectMalformedToolSyntax(state.accumulatedContent + state.pendingLookahead),
   }
 }
 

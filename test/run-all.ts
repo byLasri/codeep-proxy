@@ -17,6 +17,7 @@ const SUITES = [
   'test/orchestrator-completion.test.ts',
   'test/parser-challenge.test.ts',
   'test/android-protocol.test.ts',
+  'test/malformed-marker.test.ts',
 ] as const
 
 function runSuite(file: string): Promise<SuiteResult> {
