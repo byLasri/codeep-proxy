@@ -146,7 +146,28 @@ function keccakP(
 }
 
 export function encodePowResponse(solution: DeepSeekPowSolution): string {
-  return btoa(JSON.stringify(solution));
+  // The real DeepSeek clients (web bundle module 84212 and the Android app)
+  // serialize exactly these six keys, in this order. The challenge object also
+  // carries difficulty/expire_at/expire_after, but those are NOT part of the
+  // x-ds-pow-response payload.
+  const s = solution as {
+    algorithm?: unknown;
+    challenge?: unknown;
+    salt?: unknown;
+    signature?: unknown;
+    answer?: unknown;
+    target_path?: unknown;
+  };
+  return btoa(
+    JSON.stringify({
+      algorithm: s.algorithm,
+      challenge: s.challenge,
+      salt: s.salt,
+      signature: s.signature,
+      answer: s.answer,
+      target_path: s.target_path,
+    })
+  );
 }
 
 /**

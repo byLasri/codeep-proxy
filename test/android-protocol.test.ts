@@ -102,6 +102,31 @@ async function main() {
   check('shared solvePow exported', typeof solvePow === 'function')
   check('shared encodePowResponse exported', typeof encodePowResponse === 'function')
 
+  // The encoded x-ds-pow-response must carry exactly the six captured keys.
+  {
+    const fakeChallenge = {
+      algorithm: 'DeepSeekHashV1',
+      challenge: 'abc',
+      salt: 'def',
+      signature: 'sig',
+      difficulty: 144000,
+      expire_at: 123,
+      expire_after: 300000,
+      target_path: '/api/v0/chat/completion',
+      answer: 42,
+    }
+    const enc = encodePowResponse(fakeChallenge as any)
+    const decoded = JSON.parse(atob(enc))
+    const keys = Object.keys(decoded)
+    check('pow response has exactly 6 keys', keys.length === 6, JSON.stringify(keys))
+    check('pow response key order matches capture',
+      JSON.stringify(keys) === JSON.stringify(['algorithm','challenge','salt','signature','answer','target_path']),
+      JSON.stringify(keys))
+    check('pow response omits difficulty', !('difficulty' in decoded))
+    check('pow response omits expire_at', !('expire_at' in decoded))
+    check('pow response omits expire_after', !('expire_after' in decoded))
+  }
+
   // Build a genuinely solvable challenge using the shared hash so the client's
   // PoW path runs end-to-end without duplicating the algorithm.
   const powSalt = 'fixturesalt'
