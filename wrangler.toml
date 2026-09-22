@@ -5,11 +5,26 @@ compatibility_date = "2026-09-07"
 [dev]
 port = 3568
 
+# Local development uses placeholder bindings -> wrangler's local miniflare store.
 [[kv_namespaces]]
+binding = "AUTH_KV"
+id = "local-auth"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "deepseek-sessions"
+database_id = "local-db"
+
+# Production: real Cloudflare resources. Deploy with:
+#   npx wrangler deploy --env production
+[env.production]
+name = "deepfree-cloudflare-proxy"
+
+[[env.production.kv_namespaces]]
 binding = "AUTH_KV"
 id = "ffe261f15ea04f5b8b1499d6650386f9"
 
-[[d1_databases]]
+[[env.production.d1_databases]]
 binding = "DB"
 database_name = "deepseek-sessions"
 database_id = "af47a2cc-60f1-4b13-92df-1acbe88e009f"
